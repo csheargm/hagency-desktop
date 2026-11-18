@@ -5,6 +5,7 @@
 //! the owner API's `track` record.
 use super::merge_hold::{self, Gate};
 use super::review_loop::{self, LoopCtx, LoopIo};
+use super::reviewer_pick::{self, Candidate, Pick};
 use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
@@ -75,19 +76,43 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     Ok(tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, open_issues: watched.open_issues, own_pulls: &own }).await)
 }
 
-/// Another active Agent of this owner that is in the room, to review.
-async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<OwnedUserId> {
-    use matrix_sdk::ruma::events::room::member::MembershipState;
+/// Another Agent in the room to review, any owner's, preferring one on a
+/// different runtime while the room asks for that (ADR 0024).
+async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<Pick> {
     let me = worker.agent["id"].as_str().unwrap_or_default();
     let joined = crate::sliding_sync::get_client()?.get_room(room)?;
+    let mut candidates = Vec::new();
     for peer in worker.peers.iter().filter(|p| p["id"].as_str().is_some_and(|id| id != me)) {
         let Ok(puppet) = OwnedUserId::try_from(peer["puppetMxid"].as_str().unwrap_or_default()) else { continue };
-        let member = joined.get_member_no_sync(&puppet).await.ok().flatten();
-        if member.is_some_and(|m| *m.membership() == MembershipState::Join) {
-            return Some(puppet);
-        }
+        let Some(name) = joined_name(&joined, &puppet).await else { continue };
+        let runtime = crate::profile::agent_facts::runtime_kind(worker.service, peer["id"].as_str().unwrap_or_default()).await;
+        candidates.push(Candidate { puppet, name, runtime, own: true });
     }
-    None
+    let mine: Vec<&str> = worker.peers.iter().chain([worker.agent]).filter_map(|p| p["puppetMxid"].as_str()).collect();
+    match crate::profile::agent_facts::room_roster_with(worker.service, room.as_str()).await {
+        Ok(rows) => {
+            for (puppet, row) in rows.into_iter().filter(|(p, r)| !mine.contains(&p.as_str()) && r.binding_state == "active") {
+                let Some(name) = joined_name(&joined, &puppet).await else { continue };
+                candidates.push(Candidate { puppet, name, runtime: row.runtime, own: false });
+            }
+        }
+        // A room outside a project has no roster: this owner's Agents only.
+        Err(code) => makepad_widgets::log!("WARN issue_track_roster_unavailable room={room}: {code}"),
+    }
+    let prefer = super::room_review::prefers_different_model(&joined).await.unwrap_or_else(|error| {
+        // The room's own default applies when its setting cannot be read.
+        makepad_widgets::log!("WARN issue_track_review_setting_unreadable room={room}: {error}");
+        reviewer_pick::different_model(None)
+    });
+    let author = crate::profile::agent_facts::runtime_kind(worker.service, me).await;
+    reviewer_pick::pick(author, &candidates, prefer)
+}
+
+/// The name the room shows for `user`, when they are joined.
+async fn joined_name(room: &matrix_sdk::Room, user: &OwnedUserId) -> Option<String> {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let member = room.get_member_no_sync(user).await.ok().flatten().filter(|m| *m.membership() == MembershipState::Join)?;
+    Some(member.display_name().map_or_else(|| user.localpart().to_owned(), str::to_owned))
 }
 
 struct LiveTrack<'a> {
@@ -96,7 +121,7 @@ struct LiveTrack<'a> {
     repo: &'a str,
     room: OwnedRoomId,
     login: String,
-    peer: Option<OwnedUserId>,
+    peer: Option<Pick>,
     permission: Result<String, String>,
 }
 
@@ -176,7 +201,7 @@ impl TrackIo for LiveTrack<'_> {
         if pr.draft {
             return Ok(Followed::Draft);
         }
-        let Some(peer) = &self.peer else { return Ok(Followed::NeedsPerson) };
+        let Some(peer) = self.peer.as_ref().map(|p| &p.reviewer) else { return Ok(Followed::NeedsPerson) };
         let io = LiveLoop::new(self.worker, &self.watched.watch.setting.room_id)?;
         let target = review_loop::target_of(self.repo, pr);
         // The peer only reviews. The merge step is judged and addressed for
@@ -209,6 +234,9 @@ impl TrackIo for LiveTrack<'_> {
                 Followed::Unreachable(failures)
             }
         })
+    }
+    fn reviewer_notice(&self) -> Option<String> {
+        self.peer.as_ref().and_then(|p| p.notice.clone())
     }
     fn paused(&self) -> bool {
         crate::hagency::kill_switch::paused_here(self.agent_id())

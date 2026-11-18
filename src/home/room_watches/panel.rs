@@ -21,6 +21,7 @@ script_mod! {
             i18n_text: "GitHub repositories your Agents watch, with reports going to this room."
         }
         watches_notice := WatchText {visible: false margin: Inset{left: 16 right: 16 bottom: 8}}
+        review_setting := mod.widgets.RoomReviewSetting {}
         watches_list := PortalList {
             width: Fill height: Fill flow: Down
             Watch := View {
@@ -103,6 +104,8 @@ impl RoomWatchesPanelRef {
         let Some(mut panel) = self.borrow_mut() else { return };
         panel.room = Some(room.to_owned());
         super::refresh(room);
+        use super::review_setting::RoomReviewSettingWidgetExt;
+        panel.view.room_review_setting(cx, ids!(review_setting)).show(cx, room);
         panel.view.redraw(cx);
     }
 }

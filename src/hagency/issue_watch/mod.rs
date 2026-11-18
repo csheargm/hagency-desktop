@@ -14,6 +14,8 @@ mod merge_hold;
 #[cfg(test)]
 mod merge_hold_tests;
 mod review_loop;
+pub(crate) mod reviewer_pick;
+pub mod room_review;
 mod tracker;
 mod tracker_live;
 #[cfg(test)]

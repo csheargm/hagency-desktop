@@ -47,6 +47,9 @@ pub(crate) trait TrackIo {
     /// The Agent's cannot-fix comment during the current attempt.
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
+    /// The room line saying the reviewer is a fallback ("No Codex reviewer
+    /// in the room; asked anna-claude", ADR 0024), when it is one.
+    fn reviewer_notice(&self) -> Option<String>;
     fn paused(&self) -> bool;
 }
 
@@ -163,6 +166,10 @@ async fn follow_one(io: &impl TrackIo, repo: &str, track: &Track, pull: &PullReq
         // The review loop posted the notice (once per head and set of missing things).
         io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
     } else if matches!(followed, Followed::Requested | Followed::WaitingCi | Followed::Merging) && (track.state != State::Reviewed || track.pr != Some(pr)) {
+        // Said once, when the review is first asked for, before it is recorded.
+        if followed == Followed::Requested && let Some(text) = io.reviewer_notice() {
+            io.say(n, &format!("reviewer-fallback-{pr}"), text).await?;
+        }
         io.record(change_of(repo, n, json!({"state": "reviewed"}))).await?;
     }
     Ok(pr_line(n, pr, followed))

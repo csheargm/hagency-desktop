@@ -29,6 +29,8 @@ struct Fake {
     claimed_by_other: Cell<bool>,
     /// What the merge step finds, when set (else the review is just requested).
     outcome: RefCell<Option<Followed>>,
+    /// The reviewer pick's fallback line, when the reviewer is a fallback.
+    reviewer_notice: Option<String>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
@@ -80,6 +82,9 @@ impl TrackIo for Fake {
             return Ok(outcome);
         }
         Ok(if self.peer { Followed::Requested } else { Followed::NeedsPerson })
+    }
+    fn reviewer_notice(&self) -> Option<String> {
+        self.reviewer_notice.clone()
     }
     fn paused(&self) -> bool {
         false
@@ -255,4 +260,31 @@ fn a_reviewed_pr_that_cannot_merge_shows_what_is_missing_and_is_marked_told() {
     *fake.outcome.borrow_mut() = Some(Followed::Merging);
     assert_eq!(check(&fake, T0 + 720, &[issue(35)], std::slice::from_ref(&pr)), ["#35 PR #36 approved, merging"]);
     assert_eq!(fake.tracks()[0].state, State::Reviewed);
+}
+
+/// Chris (Nov 17): with "Review by a different model" on and no Codex Agent
+/// in the room, the tracker asks another Claude Agent and says so once.
+#[test]
+fn a_fallback_reviewer_is_announced_once_when_the_review_is_asked() {
+    let notice = "No Codex reviewer in the room; asked anna-claude".to_owned();
+    let fake = Fake { peer: true, reviewer_notice: Some(notice.clone()), ..Fake::default() };
+    first_hand_off(&fake, 31);
+    let pr = pull(32, "Closes #31");
+    assert_eq!(check(&fake, T0 + 10 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr)), ["#31 PR #32 in review"]);
+    check(&fake, T0 + 11 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr));
+    let fake = fake.restarted();
+    let fake = Fake { reviewer_notice: Some(notice.clone()), ..fake };
+    check(&fake, T0 + 12 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr));
+    assert!(fake.said.borrow().is_empty(), "not again once the review was asked (and recorded)");
+    let first = Fake { peer: true, reviewer_notice: Some(notice.clone()), ..Fake::default() };
+    first_hand_off(&first, 31);
+    check(&first, T0 + 10 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr));
+    check(&first, T0 + 11 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr));
+    assert_eq!(first.keys(), ["31:reviewer-fallback-32"], "one line, keyed by pull request");
+    assert_eq!(first.said.borrow()[0].2, notice);
+    // A different-model reviewer was found: nothing to say.
+    let quiet = Fake { peer: true, ..Fake::default() };
+    first_hand_off(&quiet, 31);
+    check(&quiet, T0 + 10 * HANDOFF_TIMEOUT_SECS, &[issue(31)], std::slice::from_ref(&pr));
+    assert!(quiet.said.borrow().is_empty());
 }

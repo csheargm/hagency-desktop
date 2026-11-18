@@ -4,6 +4,7 @@
 //! `room_watches` Agent tool returns. Limits, tokens and watches reporting to
 //! other rooms are never shown here.
 pub mod panel;
+pub mod review_setting;
 #[cfg(test)]
 mod tests;
 
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 pub fn script_mod(vm: &mut ScriptVm) {
+    review_setting::script_mod(vm);
     panel::script_mod(vm);
 }
 
