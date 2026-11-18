@@ -84,6 +84,26 @@ fn a_pinned_gh_line_is_recognised_and_a_git_line_is_not() {
     assert!(!runs_gh("printf %s gh"));
 }
 
+/// GPT review (Nov 18): every production gh shape a pinned line can take is
+/// one the tokenless guard sees; a pinned git line is not.
+#[test]
+fn every_production_gh_step_is_seen_by_the_guard() {
+    let review = super::super::review_post::ReviewPost::parse("gh pr review 7 -R a/b --approve -b 'Hagency verdict: APPROVE x'").unwrap();
+    assert!(runs_gh(&review.command()));
+    assert!(runs_gh(&super::super::read_only::command("gh issue list -R a/b")));
+    assert!(runs_gh(&super::super::pin_env("gh pr create --repo a/b --head fix/1")));
+    assert!(!runs_gh(&super::super::local_git::pinned_git(Path::new("/w/app"), &["commit", "-m", "gh"])));
+}
+
+#[test]
+fn a_relative_path_entry_never_reaches_the_step() {
+    let parent = |name: &str| (name == "PATH").then(|| OsString::from(".:/usr/bin::bin:/bin:"));
+    let mut sh = Command::new("/bin/sh");
+    sh.args(["-c", "printf %s \"$PATH\""]);
+    isolate_with(&mut sh, Path::new("/nonexistent/home"), Path::new("/nonexistent/gh"), None, parent);
+    assert_eq!(String::from_utf8(sh.output().unwrap().stdout).unwrap(), "/usr/bin:/bin");
+}
+
 /// The identity a commit runs with: `dir`'s `git var` under the step's
 /// global config `global` and an empty system config.
 fn ident(dir: &Path, global: &Path, var: &str) -> String {

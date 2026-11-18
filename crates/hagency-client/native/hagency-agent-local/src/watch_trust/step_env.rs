@@ -13,9 +13,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The only variables a step inherits from the host. Never `HOME`, never a
-/// token variable, never a gh or git config location.
-pub(crate) const INHERITED: [&str; 5] = ["PATH", "USER", "LOGNAME", "TMPDIR", "LANG"];
+/// The variables a step inherits from the host besides the absolute entries
+/// of its `PATH`. Never `HOME`, never a token variable, never a gh or git
+/// config location.
+pub(crate) const INHERITED: [&str; 4] = ["USER", "LOGNAME", "TMPDIR", "LANG"];
 /// The identity config a step keeps from the host's global config (no
 /// credential in it), so a commit reads as it did with the owner's `HOME`.
 const IDENTITY_KEYS: &str = "^(user|author|committer)\\.(name|email)$";
@@ -38,6 +39,11 @@ pub(crate) fn isolate_with<'a>(command: &'a mut Command, home: &Path, gh_config:
         if let Some(value) = parent(key) {
             command.env(key, value);
         }
+    }
+    // A relative entry (`.`, empty) would find a `git` or `gh` in the
+    // Agent's workspace, the step's working directory (GPT review, Nov 18).
+    if let Some(path) = parent("PATH") {
+        command.env("PATH", std::env::join_paths(std::env::split_paths(&path).filter(|p| p.is_absolute())).unwrap_or_default());
     }
     command.env("HOME", home).env("GH_CONFIG_DIR", gh_config);
     command.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null");
@@ -80,7 +86,7 @@ pub(crate) fn write_global_config(home: &Path, entries: &[(String, String)]) -> 
 /// The host's global commit identity ([`IDENTITY_KEYS`]). Reading config
 /// runs no helper, so this is safe with the owner's `HOME`; none is fine.
 pub(crate) fn host_identity() -> Vec<(String, String)> {
-    let Ok(out) = Command::new("git").args(["config", "--global", "-z", "--get-regexp", IDENTITY_KEYS]).env("GIT_CONFIG_NOSYSTEM", "1").output() else {
+    let Ok(out) = Command::new("git").args(["config", "--global", "--includes", "-z", "--get-regexp", IDENTITY_KEYS]).env("GIT_CONFIG_NOSYSTEM", "1").output() else {
         // No git to read with: the step has no global identity, as git itself would not.
         return Vec::new();
     };
