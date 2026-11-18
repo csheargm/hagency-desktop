@@ -15,6 +15,16 @@ pub(crate) async fn events_of_type(client: &Client, room_id: &RoomId, event_type
     Ok(of_type(response.room_state.iter().filter_map(|raw| serde_json::from_str(raw.json().get()).ok()), event_type))
 }
 
+/// The room's current state events of any of `event_types`, from one server read.
+pub(crate) async fn events_of_types(client: &Client, room_id: &RoomId, event_types: &[&str]) -> Result<Vec<Value>, String> {
+    let response = client
+        .send(get_state_events::v3::Request::new(room_id.to_owned()))
+        .await
+        .map_err(|error| crate::i18n::format("Room state is unavailable right now: {reason}", &[("reason", error.to_string())]))?;
+    let events = response.room_state.iter().filter_map(|raw| serde_json::from_str::<Value>(raw.json().get()).ok());
+    Ok(events.filter(|event| event_types.iter().any(|t| event["type"] == *t)).collect())
+}
+
 /// The events of one type from a full state listing.
 pub(crate) fn of_type(events: impl Iterator<Item = Value>, event_type: &str) -> Vec<Value> {
     events.filter(|event| event["type"] == event_type).collect()

@@ -24,8 +24,8 @@ its admins.
   moderators); the homeserver refuses anyone below it. A room that wants
   admins only sets `events["io.hagency.merge_rules"]` to 100.
 - **Which room.** The room the watch of the repository reports to
-  (`issueWatch.roomId` or the work list's `roomId`): the merging Agent's own
-  watch, else the single room every watch of that repository on this device
+  (`issueWatch.roomId` or the work list's `roomId`; paused watches never
+  count): the merging Agent's own active watch, else the single room every watch of that repository on this device
   reports to; none or several: no room rules. The binding repository → room
   is the owner's own watch setting, never room content, so a room admin of
   some other room cannot claim a repository.
@@ -33,14 +33,17 @@ its admins.
   the owner's desktop reads each watch room's full state from the homeserver
   (`GET /rooms/{id}/state`, never the sync store or a local echo), accepts the
   event only when its `type`, `state_key ""`, `room_id` and `$` event id
-  match, its sender is not an Agent puppet or Hagency service account, and
-  the room's power levels let that sender send the type now; then it POSTs
+  match, its sender is not an Agent puppet or Hagency service account, is
+  still joined (by the `m.room.member` state of the same server response; a
+  kick or ban can leave a power level behind) and the room's power levels let
+  that sender send the type now, and only while this account is joined; then it POSTs
   `roomMergeRules: [{repo, roomId, eventId, sender, policy}]` to the owner
   API (owner session, execution device). The ledger stores one row per
   repository and room (`room_merge_rules`: event id, sender, text, read at).
   No Agent tool reaches this path. A merge is judged by that row only while
-  it is younger than `ROOM_RULES_TTL_SECS` (300 s); older, missing, invalid
-  or refused rules need a person, with the reason
+  it is younger than `ROOM_RULES_TTL_SECS` (300 s); older, missing, invalid,
+  oversized (over 8 KiB, stored as invalid so they replace older rules) or
+  refused rules need a person, with the reason
   "no merge rules in this room — a room admin can set them in Room info →
   Status" (or the stale/invalid variant) in the room's hold notice.
 - **Judging.** The room's rules are required for every merge and judged

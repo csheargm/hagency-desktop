@@ -3805,7 +3805,6 @@
   "any path (trusted tier)": "any path (trusted tier)",
   "Low-risk paths: {paths}": "Low-risk paths: {paths}",
   "Up to {n} changed lines": "Up to {n} changed lines",
-  "{n} approval(s) from another Agent": "{n} approval(s) from another Agent",
   "Set by {who}": "Set by {who}",
   "Loading the merge rules…": "Loading the merge rules…",
   "The merge rules are unavailable: {error}": "The merge rules are unavailable: {error}",
@@ -3818,5 +3817,8 @@
   "Low-risk paths, comma separated": "Low-risk paths, comma separated",
   "Max changed lines": "Max changed lines",
   "Require CI": "Require CI",
-  "Save merge rules": "Save merge rules"
+  "Save merge rules": "Save merge rules",
+  "{n} approval(s): another Agent's, or under an owner's maintainer rules the maintainer's review of an outside author's PR or a trusted GitHub reviewer's": "{n} approval(s): another Agent's, or under an owner's maintainer rules the maintainer's review of an outside author's PR or a trusted GitHub reviewer's",
+  "set by someone who is no longer in the room": "set by someone who is no longer in the room",
+  "Room state is unavailable right now: {reason}": "Room state is unavailable right now: {reason}"
 }

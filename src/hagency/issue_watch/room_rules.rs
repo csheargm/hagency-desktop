@@ -33,12 +33,15 @@ impl RoomRead {
 }
 
 const REFUSED_SENDER: &str = "set by someone who may not set them now";
+const REFUSED_LEFT: &str = "set by someone who is no longer in the room";
 const REFUSED_AGENT: &str = "set by an Agent or a Hagency service account";
 const REFUSED_SHAPE: &str = "not a rules event of this room";
 
-/// The room's rules event among the server's state `events` of `room_id`.
-/// `may_send(sender)`: whether the room's power levels let the sender send
-/// the event now. An Agent puppet or Hagency service account never counts.
+/// The room's rules event among the server's state `events` of `room_id`
+/// (with its `m.room.member` events). `may_send(sender)`: whether the room's
+/// power levels let the sender send the event now. The sender must still be
+/// joined (GPT review: a kick or ban can leave a power level behind); an
+/// Agent puppet or Hagency service account never counts.
 pub fn accept(events: &[Value], room_id: &str, may_send: impl Fn(&str) -> bool) -> RoomRead {
     let Some(event) = events.iter().find(|e| e["type"] == MERGE_RULES_STATE_TYPE && e["state_key"] == "") else { return RoomRead::None };
     let (Some(event_id), Some(sender)) = (event["event_id"].as_str(), event["sender"].as_str()) else { return RoomRead::Refused(REFUSED_SHAPE) };
@@ -50,11 +53,20 @@ pub fn accept(events: &[Value], room_id: &str, may_send: impl Fn(&str) -> bool) 
     if localpart.starts_with(hagency_core::puppet::RESERVED_LOCALPART_PREFIX) {
         return RoomRead::Refused(REFUSED_AGENT);
     }
+    if !joined(events, sender) {
+        return RoomRead::Refused(REFUSED_LEFT);
+    }
     if !may_send(sender) {
         return RoomRead::Refused(REFUSED_SENDER);
     }
     RoomRead::Rules { event_id: event_id.to_owned(), sender: sender.to_owned(), content: event["content"].clone() }
 }
+
+/// Whether `user` is joined, by the server's `m.room.member` state in `events`.
+pub fn joined(events: &[Value], user: &str) -> bool {
+    events.iter().any(|e| e["type"] == MEMBER_EVENT && e["state_key"] == user && e["content"]["membership"] == "join")
+}
+const MEMBER_EVENT: &str = "m.room.member";
 
 /// The owner-API snapshot of `read` for `repo` in `room_id`; rules without
 /// a text count as none.
@@ -74,9 +86,14 @@ pub async fn can_edit(room: &Room) -> bool {
     room.power_levels().await.is_ok_and(|levels| levels.user_can_send_state(&user, StateEventType::from(MERGE_RULES_STATE_TYPE)))
 }
 
-/// `room`'s rules, read from the homeserver now.
+/// `room`'s rules, read from the homeserver now (rules and membership in one
+/// response). This account must be joined, or nothing counts.
 pub async fn read(room: &Room) -> Result<RoomRead, String> {
-    let events = crate::home::room_memory::server_state::events_of_type(&room.client(), room.room_id(), MERGE_RULES_STATE_TYPE).await?;
+    let events = crate::home::room_memory::server_state::events_of_types(&room.client(), room.room_id(), &[MERGE_RULES_STATE_TYPE, MEMBER_EVENT]).await?;
+    let me = room.client().user_id().map(|u| u.to_string()).unwrap_or_default();
+    if room.state() != matrix_sdk::RoomState::Joined || !joined(&events, &me) {
+        return Err(crate::i18n::tr("this desktop has not joined the watch's room").to_owned());
+    }
     // Unreadable power levels: nobody's rules count (fail closed).
     let levels = room.power_levels().await.ok();
     let may_send = |sender: &str| {
@@ -97,7 +114,8 @@ pub async fn save(room: &Room, policy: &MergePolicy) -> Result<(), String> {
 pub(crate) fn watched_rooms(saved: &Value) -> Vec<(String, String)> {
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).unwrap_or_default();
     let work: Vec<OwnerRules> = serde_json::from_value(saved["work"].clone()).unwrap_or_default();
-    watch_entries(&watch, &work).into_iter().filter(|e| !e.room_id.is_empty()).map(|e| (e.repo, e.room_id)).collect()
+    // A paused watch supplies no rules (GPT review).
+    watch_entries(&watch, &work).into_iter().filter(|e| e.active && !e.room_id.is_empty()).map(|e| (e.repo, e.room_id)).collect()
 }
 
 /// Records the current rules of every room this Agent's watches report to;

@@ -71,6 +71,22 @@ async fn only_the_watch_rooms_rules_count() {
 }
 
 #[tokio::test]
+async fn a_paused_watch_supplies_no_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
+    set_room_rules(&mut ledger, SANDBOX, Some(SANDBOX_RULES));
+    // The fixer's own watch of the sandbox is paused and points at a generous room.
+    let paused = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Trusted, repo: SANDBOX.into(), room_id: "!paused:x".into(), ..Default::default() };
+    ledger.set_issue_watch(OWNER, "fixer", paused, 1).unwrap();
+    ledger.end_watch_trial(OWNER, "fixer", SANDBOX).unwrap();
+    ledger.set_room_merge_rules(OWNER, &RoomRulesSnapshot { room_id: "!paused:x".into(), ..snapshot(Some("low_risk_paths: [\"**\"]\nrequire_ci: false\n")) }, unix_now()).unwrap();
+    let off = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Off, repo: SANDBOX.into(), room_id: "!paused:x".into(), ..Default::default() };
+    ledger.set_issue_watch(OWNER, "fixer", off, 2).unwrap();
+    assert_eq!(ledger.watch_room("fixer", SANDBOX).unwrap().as_deref(), Some(ROOM), "the active watch's room, not the paused one");
+    assert_eq!(approved_merge(&mut ledger, temp.path(), &Fake::new(vec![file("src/main.rs", 1)])).await, None, "the paused room's generous rules do not count");
+}
+
+#[tokio::test]
 async fn a_repository_policy_file_and_protected_paths_change_nothing() {
     // The gate reads no file at all (PrSource has no policy read); a pull
     // request adding one is protected and asks a person.
@@ -92,10 +108,13 @@ fn only_the_owner_records_rules_and_bad_snapshots_are_refused() {
         RoomRulesSnapshot { room_id: "r:x".into(), ..snapshot(Some(SANDBOX_RULES)) },
         RoomRulesSnapshot { event_id: None, ..snapshot(Some(SANDBOX_RULES)) },
         RoomRulesSnapshot { sender: Some("admin".into()), ..snapshot(Some(SANDBOX_RULES)) },
-        RoomRulesSnapshot { policy: Some("x".repeat(MAX_POLICY_BYTES + 1)), ..snapshot(None) },
     ] {
         assert!(ledger.set_room_merge_rules(OWNER, &bad, 1).is_err(), "{bad:?}");
     }
+    // Oversized rules replace the old ones and count as invalid (GPT review).
+    ledger.set_room_merge_rules(OWNER, &snapshot(Some(SANDBOX_RULES)), 7).unwrap();
+    ledger.set_room_merge_rules(OWNER, &snapshot(Some(&format!("{SANDBOX_RULES}#{}", "x".repeat(MAX_POLICY_BYTES)))), 8).unwrap();
+    assert_eq!(ledger.room_merge_rules(SANDBOX, ROOM, 8).unwrap(), RoomRules::Missing(INVALID_ROOM_RULES));
     ledger.set_room_merge_rules(OWNER, &snapshot(Some(SANDBOX_RULES)), 7).unwrap();
     let (event, sender, _, at) = ledger.room_merge_rules_record("CSheargm/Hagency-Demo-Sandbox", ROOM).unwrap().unwrap();
     assert_eq!((event.as_str(), sender.as_str(), at), ("$e1", "@admin:example.org", 7), "the event id is recorded per repo and room");

@@ -26,6 +26,8 @@ pub const POLICY_FIELD: &str = "policy";
 pub const ROOM_RULES_TTL_SECS: i64 = 300;
 /// The longest rules text accepted.
 const MAX_POLICY_BYTES: usize = 8 * 1024;
+/// What oversized rules are stored as: text [`parse_policy`] refuses.
+const OVERSIZED: &str = "oversized: true";
 /// The gate's reason (and the room notice) when a room has no rules.
 pub const NO_ROOM_RULES: &str = "no merge rules in this room — a room admin can set them in Room info → Status";
 pub const STALE_ROOM_RULES: &str = "the room's merge rules were not re-read in the last 5 minutes (the owner's Hagency desktop re-reads them while it runs)";
@@ -136,11 +138,13 @@ fn check(snapshot: &RoomRulesSnapshot) -> Result<()> {
     if !valid_repo(&snapshot.repo) || !valid_room_id(&snapshot.room_id) {
         return Err(Error::Invalid("room rules need a repository owner/name and a room ID"));
     }
-    let Some(text) = &snapshot.policy else { return Ok(()) };
+    if snapshot.policy.is_none() {
+        return Ok(());
+    }
     let id_ok = snapshot.event_id.as_deref().is_some_and(|e| e.starts_with('$') && e.len() <= 255);
     let sender_ok = snapshot.sender.as_deref().is_some_and(|s| s.starts_with('@') && s.contains(':') && s.len() <= 255);
-    if !id_ok || !sender_ok || text.len() > MAX_POLICY_BYTES {
-        return Err(Error::Invalid("room rules need their event ID, sender and a bounded text"));
+    if !id_ok || !sender_ok {
+        return Err(Error::Invalid("room rules need their event ID and sender"));
     }
     Ok(())
 }
@@ -152,10 +156,12 @@ impl Ledger {
         self.owner(owner)?;
         check(snapshot)?;
         let (event, sender) = (snapshot.event_id.as_deref().unwrap_or(""), snapshot.sender.as_deref().unwrap_or(""));
-        let event = if snapshot.policy.is_some() { event } else { "" };
+        let (event, sender) = if snapshot.policy.is_some() { (event, sender) } else { ("", "") };
+        // Oversized rules replace the old ones as invalid, never leave them in force (GPT review).
+        let policy = snapshot.policy.as_deref().map(|t| if t.len() > MAX_POLICY_BYTES { OVERSIZED } else { t });
         self.db.execute(
             "INSERT OR REPLACE INTO room_merge_rules VALUES (?,?,?,?,?,?)",
-            (snapshot.repo.to_ascii_lowercase(), &snapshot.room_id, event, if snapshot.policy.is_some() { sender } else { "" }, &snapshot.policy, now),
+            (snapshot.repo.to_ascii_lowercase(), &snapshot.room_id, event, sender, policy, now),
         )?;
         Ok(())
     }
@@ -182,11 +188,13 @@ impl Ledger {
         })
     }
     /// The room whose rules judge a merge of `repo` by `agent`: the room its
-    /// own watch of `repo` reports to, else the one room every other watch of
-    /// `repo` on this device reports to. Several rooms and no own watch: none.
+    /// own active watch of `repo` reports to, else the one room every other
+    /// active watch of `repo` on this device reports to. Several rooms and no
+    /// own watch: none.
     pub fn watch_room(&self, agent: &str, repo: &str) -> Result<Option<String>> {
         let room_of = |a: &str| -> Result<Option<String>> {
-            Ok(self.watch_entries(a)?.into_iter().find(|e| e.repo.eq_ignore_ascii_case(repo) && !e.room_id.is_empty()).map(|e| e.room_id))
+            // A paused watch supplies no merge authority (GPT review).
+            Ok(self.watch_entries(a)?.into_iter().find(|e| e.active && e.repo.eq_ignore_ascii_case(repo) && !e.room_id.is_empty()).map(|e| e.room_id))
         };
         if let Some(room) = room_of(agent)? {
             return Ok(Some(room));

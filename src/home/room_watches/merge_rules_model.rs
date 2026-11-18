@@ -71,7 +71,7 @@ fn rule_lines(policy: &MergePolicy) -> Vec<String> {
     vec![
         format("Low-risk paths: {paths}", &[("paths", scope)]),
         format("Up to {n} changed lines", &[("n", policy.max_changed_lines.to_string())]),
-        format("{n} approval(s) from another Agent", &[("n", policy.required_agent_approvals.max(MIN_AGENT_APPROVALS).to_string())]),
+        format("{n} approval(s): another Agent's, or under an owner's maintainer rules the maintainer's review of an outside author's PR or a trusted GitHub reviewer's", &[("n", policy.required_agent_approvals.max(MIN_AGENT_APPROVALS).to_string())]),
         tr(if policy.require_ci { "CI required" } else { "CI not required" }).to_owned(),
         format("Always a person: {paths}", &[("paths", always)]),
     ]
