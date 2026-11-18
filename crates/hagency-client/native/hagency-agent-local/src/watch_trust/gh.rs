@@ -104,11 +104,13 @@ impl<'a> PrCommand<'a> {
 
 /// The pinned line for checked `words` (`gh pr <verb> ...`): rebuilt from
 /// them, each quoted, so the shell cannot expand anything the check did not
-/// see (`"$?"`, zsh's `=cmd`; GPT review, Nov 18). `gh` stays bare for
-/// [`super::step_env::runs_gh`].
+/// see (`"$?"`, zsh's `=cmd`), on github.com whatever gh's default host is
+/// (GPT reviews, Nov 18). `gh` stays bare for [`super::step_env::runs_gh`].
+// TODO(GPT P2, Nov 18): a body file is checked, then opened later by gh;
+// pass its checked bytes on stdin instead to close the swap window.
 pub(crate) fn pinned_command(words: &[&str]) -> String {
     let rest: Vec<String> = words.iter().skip(1).map(|w| super::quote(w)).collect();
-    super::pin_env(&format!("gh {}", rest.join(" ")))
+    super::pin_env(&format!("GH_HOST='github.com' gh {}", rest.join(" ")))
 }
 
 /// A body file push trust may publish: see [`PrCommand::allowed`].

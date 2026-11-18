@@ -30,7 +30,7 @@ fn the_pinned_pr_command_passes_the_checked_words_verbatim() {
     let temp = tempfile::tempdir().unwrap();
     let line = format!("gh pr create --repo {REPO} --head fix/x-69 --title =ls --body \"ok $? \\`x\\`\"");
     let Some(TrustedStep::Command(pinned)) = pinned_line(&line, temp.path(), REPO) else { panic!("pinned") };
-    assert!(pinned.ends_with("gh 'pr' 'create' '--repo' 'csheargm/hagency-demo-sandbox' '--head' 'fix/x-69' '--title' '=ls' '--body' 'ok $? `x`'"), "{pinned}");
+    assert!(pinned.ends_with("GH_HOST='github.com' gh 'pr' 'create' '--repo' 'csheargm/hagency-demo-sandbox' '--head' 'fix/x-69' '--title' '=ls' '--body' 'ok $? `x`'"), "{pinned}");
     assert!(crate::watch_trust::step_env::runs_gh(&pinned));
 }
 

@@ -60,7 +60,7 @@ fn the_push_is_run_by_the_host_to_the_checked_destination() {
     let push = host_git::HostStep::Push { dir, remote: "origin".into(), branch: "docs/faq".into(), repo: REPO.into(), upstream: true };
     assert_eq!(pinned_line(PUSH, &root, REPO), Some(TrustedStep::Host(push)));
     let gh = "gh pr ready 28 --repo acme/app";
-    assert_eq!(pinned_line(gh, &root, REPO), Some(TrustedStep::Command(format!("{} gh 'pr' 'ready' '28' '--repo' 'acme/app'", env_prefix()))), "gh runs git with hooks and fsmonitor off");
+    assert_eq!(pinned_line(gh, &root, REPO), Some(TrustedStep::Command(format!("{} GH_HOST='github.com' gh 'pr' 'ready' '28' '--repo' 'acme/app'", env_prefix()))), "gh runs git with hooks and fsmonitor off");
 }
 
 /// GPT review P1s: branch switches before the push, the shell's persistent
