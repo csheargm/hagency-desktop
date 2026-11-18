@@ -110,6 +110,8 @@ fn recovery_error_code(code: &str) -> &'static str {
         "codex_strict_quota_unavailable" => "codex_strict_quota_unavailable",
         "provider_profile_mismatch" => "provider_profile_mismatch",
         "provider_authorization_lost" => "provider_authorization_lost",
+        "claude_login_required" => "claude_login_required",
+        "codex_login_required" => "codex_login_required",
         "provider_unavailable" => "provider_unavailable",
         "local_state_unavailable" => "local_state_unavailable",
         "device_transport_unavailable" => "device_transport_unavailable",

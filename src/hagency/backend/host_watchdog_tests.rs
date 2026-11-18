@@ -80,3 +80,44 @@ async fn a_signed_out_window_runs_no_recovery() {
     })).await.expect("watchdog ends when the account is gone");
     assert_eq!(passes.load(Ordering::SeqCst), 0);
 }
+
+static SIGNED_OUT_DELAYS: StdMutex<Vec<u32>> = StdMutex::new(Vec::new());
+fn recorded(failures: u32) -> Duration {
+    SIGNED_OUT_DELAYS.lock().unwrap().push(failures);
+    Duration::from_millis(1)
+}
+
+/// Regression for the 2026-11-17 Claude CLI auto-update: the provider login
+/// check failed at host start-up for minutes. The watchdog must keep retrying
+/// with its backoff (never give up), keep the sign-in code for the status,
+/// and start the host on the first pass after the login is back.
+#[tokio::test]
+async fn a_signed_out_provider_is_retried_with_backoff_until_its_login_is_back() {
+    const SIGNED_OUT_PASSES: usize = 6;
+    let control = Arc::new(Control::default());
+    let passes = Arc::new(AtomicUsize::new(0));
+    let (c, p) = (control.clone(), passes.clone());
+    let task = tokio::spawn(watch(control.clone(), || true, recorded, move || {
+        let (c, p) = (c.clone(), p.clone());
+        async move {
+            let n = p.fetch_add(1, Ordering::SeqCst);
+            Ok(if n < SIGNED_OUT_PASSES {
+                // A fake provider whose login check fails, then succeeds.
+                json!({"recoveries":[{"agentId":"a","restored":false,"error":"claude_login_required"}]})
+            } else if n == SIGNED_OUT_PASSES {
+                json!({"recoveries":[{"agentId":"a","restored":true}]})
+            } else {
+                c.retired.store(true, Ordering::Release);
+                json!({"recoveries":[]})
+            })
+        }
+    }));
+    tokio::time::timeout(Duration::from_secs(5), task).await.expect("watchdog keeps going").unwrap();
+    assert_eq!(passes.load(Ordering::SeqCst), SIGNED_OUT_PASSES + 2, "no manual Start: the next pass restarts it");
+    let delays = SIGNED_OUT_DELAYS.lock().unwrap().clone();
+    let expected: Vec<u32> = (0..=SIGNED_OUT_PASSES as u32).chain([0]).collect();
+    assert_eq!(delays, expected, "each signed-out pass counts toward the backoff (capped at MAX_BACKOFF from the second); a restart resets it");
+    assert!(delays.iter().all(|&f| next_delay(f) <= MAX_BACKOFF) && next_delay(SIGNED_OUT_PASSES as u32) == MAX_BACKOFF);
+    let pass = read_pass(&json!({"recoveries":[{"agentId":"a","restored":false,"error":"claude_login_required"}]}));
+    assert_eq!(pass.failed, vec![("a".into(), "claude_login_required".into())], "the sign-in code is kept as an engine code, not mapped to unrecognized");
+}
