@@ -91,7 +91,10 @@ async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<Pick> {
     let mine: Vec<&str> = worker.peers.iter().chain([worker.agent]).filter_map(|p| p["puppetMxid"].as_str()).collect();
     match crate::profile::agent_facts::room_roster_with(worker.service, room.as_str()).await {
         Ok(rows) => {
-            for (puppet, row) in rows.into_iter().filter(|(p, r)| !mine.contains(&p.as_str()) && r.binding_state == "active") {
+            // Sorted: the same fallback every check (GPT review).
+            let mut rows: Vec<_> = rows.into_iter().filter(|(p, r)| !mine.contains(&p.as_str()) && r.binding_state == "active").collect();
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            for (puppet, row) in rows {
                 let Some(name) = joined_name(&joined, &puppet).await else { continue };
                 candidates.push(Candidate { puppet, name, runtime: row.runtime, own: false });
             }
@@ -100,9 +103,9 @@ async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<Pick> {
         Err(code) => makepad_widgets::log!("WARN issue_track_roster_unavailable room={room}: {code}"),
     }
     let prefer = super::room_review::prefers_different_model(&joined).await.unwrap_or_else(|error| {
-        // The room's own default applies when its setting cannot be read.
+        // The last value read for the room, else its default (GPT review).
         makepad_widgets::log!("WARN issue_track_review_setting_unreadable room={room}: {error}");
-        reviewer_pick::different_model(None)
+        super::room_review::last_read(room).unwrap_or_else(|| reviewer_pick::different_model(None))
     });
     let author = crate::profile::agent_facts::runtime_kind(worker.service, me).await;
     reviewer_pick::pick(author, &candidates, prefer)

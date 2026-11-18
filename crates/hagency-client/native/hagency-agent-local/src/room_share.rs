@@ -63,6 +63,10 @@ impl Ledger {
         self.owner(owner)?;
         key(agent)?;
         key(room)?;
+        // A Matrix room ID, never a free-form key (GPT review).
+        if !room.starts_with('!') || !room.contains(':') {
+            return Err(crate::Error::Invalid("room"));
+        }
         self.db.execute(
             "INSERT INTO room_share VALUES (?,?,?,?,?) ON CONFLICT(agent,room) DO UPDATE SET answer=excluded.answer, review=excluded.review, fix=excluded.fix",
             (agent, room, share.answer as i64, share.review as i64, share.fix as i64),

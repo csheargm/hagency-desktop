@@ -105,28 +105,33 @@ pub fn hint(shown: &Shown) -> String {
 
 /// Read the switch for `room` (and whether this account may change it).
 pub fn refresh(room: &RoomId) {
-    let (account, room) = (account(), room.to_owned());
-    crate::sliding_sync::spawn_async_task(async move {
-        let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(&room)) else {
-            return set(account, &room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
-        };
-        let shown = match room_review::prefers_different_model(&joined).await {
-            Ok(on) => Shown::Ready { on, editable: room_review::can_change(&joined).await },
-            Err(error) => Shown::Failed(error),
-        };
-        set(account, &room, shown);
-    });
+    let account = account();
+    // This account's room, taken now: an account switch meanwhile never reads or writes as another one (GPT review).
+    let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
+        return set(account, room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
+    };
+    crate::sliding_sync::spawn_async_task(async move { read_into(account, joined).await });
+}
+
+async fn read_into(account: String, joined: matrix_sdk::Room) {
+    let shown = match room_review::prefers_different_model(&joined).await {
+        Ok(on) => Shown::Ready { on, editable: room_review::can_change(&joined).await },
+        Err(error) => Shown::Failed(error),
+    };
+    set(account, joined.room_id(), shown);
 }
 
 /// Save `on` for `room`, then read it back.
 pub fn save(room: &RoomId, on: bool) {
-    let (account, room) = (account(), room.to_owned());
-    set(account.clone(), &room, Shown::Loading);
+    let account = account();
+    let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
+        return set(account, room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
+    };
+    set(account.clone(), room, Shown::Loading);
     crate::sliding_sync::spawn_async_task(async move {
-        let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(&room)) else { return };
         match room_review::set_different_model(&joined, on).await {
-            Ok(()) => refresh(&room),
-            Err(error) => set(account, &room, Shown::Failed(error)),
+            Ok(()) => read_into(account, joined).await,
+            Err(error) => set(account, joined.room_id(), Shown::Failed(error)),
         }
     });
 }

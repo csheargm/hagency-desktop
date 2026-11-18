@@ -110,3 +110,30 @@ person.
   its GitHub login is a trusted reviewer in the owner's rules.
 - Should "Review PRs" respect a saved high-risk Deny instead of overriding
   it like the read-only queries? Default now: it overrides (as ADR 0019).
+
+## GPT review (2026-11-17)
+Adopted: the host's last check right before a room member's push rereads the
+owner's "fix" choice (turning it off stops a push already authorized); the
+auto-merge gate also skips the card for a member's review only while
+"review PRs" is on in that room (the owner's own review loop is unchanged);
+a review's PR number is 1..=i32::MAX (gh reads a larger one as a branch
+name); a saved room share names a Matrix room ID; roster fallbacks are
+sorted so every check picks the same one; an unreadable room setting uses the
+value last read for the room before the default; the Watches switch takes
+this account's room handle before it reads or writes.
+Rejected or left open:
+- "answer off" is enforced where the runtime decides whether to call the
+  model (`request_disposition` before the request card), not by a
+  dispatch-scoped approval record at admission. That is the only path that
+  starts a model call; a switch saved after that check applies from the next
+  request (residual).
+- A room share may be saved for a room the Agent has not joined yet: the
+  owner's own choice through the owner API, kept across leave and rejoin.
+- The fallback notice is said when the tracker first records the review as
+  asked; a reviewer that changes between two checks before that, or a review
+  answered before the first record (CI wait, hold), can leave the line
+  missing or naming the new pick (residual; the review request itself names
+  the reviewer).
+- The pre-existing withdrawal of an Agent's approvals on a request-changes
+  proposal (before it runs) is unchanged here.
+- Cross-owner runtimes stay unknown until the roster publishes them (open).

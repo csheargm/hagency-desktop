@@ -39,9 +39,8 @@ impl ReviewPost {
         }
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         let ["gh", "pr", "review", number, rest @ ..] = words.as_slice() else { return None };
-        if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+        // 1..=i32::MAX: gh reads a larger number as a branch name (GPT review).
+        let number: u64 = number.parse().ok().filter(|n| (1..=i32::MAX as u64).contains(n) && number.bytes().all(|b| b.is_ascii_digit()))?;
         let (mut mode, mut body, mut repo) = (None, None, None);
         let mut words = rest.iter();
         while let Some(word) = words.next() {
@@ -73,7 +72,7 @@ impl ReviewPost {
         }
         let body = body.filter(|b| b.starts_with(VERDICT_PREFIX) && b.chars().count() <= MAX_BODY_CHARS)?;
         let repo = crate::merge_policy::gate::repo_name(repo?)?;
-        Some(Self { number: number.parse().ok()?, repo: repo.to_owned(), mode: mode?, body: body.to_owned() })
+        Some(Self { number, repo: repo.to_owned(), mode: mode?, body: body.to_owned() })
     }
 
     /// Whether it reviews one of `repos`.
@@ -121,6 +120,9 @@ mod tests {
             "gh pr review 7 -R csheargm/hagency-demo-sandbox -a -e",
             "gh pr review -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
             "gh pr review x7 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
+            "gh pr review 0 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
+            "gh pr review +7 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
+            "gh pr review 2147483648 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
             "gh pr review https://github.com/o/r/pull/7 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
             "gh pr review 7 -R github.example.com/csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'",
             "gh pr review 7 -R csheargm/hagency-demo-sandbox -a -b 'Hagency verdict: x'; gh pr merge 7",

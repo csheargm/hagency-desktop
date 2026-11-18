@@ -83,3 +83,31 @@ fn a_room_members_fix_follows_the_owners_rules_until_the_owner_lets_it_fix() {
     ledger.set_issue_watch(owner, "bird", off, 1).unwrap();
     assert_eq!(pinned(&ledger.db, &status, owner).unwrap(), None, "push freely off: asks");
 }
+
+/// GPT review: the host's check right before a member's push rereads the
+/// owner's "fix" choice, so turning it off stops a push already authorized.
+#[test]
+fn turning_fix_off_stops_a_members_push_at_the_last_check() {
+    let r = run_under(ToolPolicy::AskOwner);
+    let owner = fix_flow_tests::OWNER;
+    let mut ledger = r.ledger;
+    ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare { fix: true, ..RoomShare::default() }).unwrap();
+    let mut push = fix_flow_tests::proposal(&r.root, fix_flow_tests::ROOM, "claude.Bash", json!({"command": "git -C app push origin fix/x"}));
+    push.scope.requester = "@anna:example.org".into();
+    let still = ledger.push_trust_recheck(&push, fix_flow_tests::REPO);
+    assert!(still(), "on: the push goes ahead");
+    ledger.set_room_share(owner, "bird", fix_flow_tests::ROOM, RoomShare::default()).unwrap();
+    assert!(!still(), "off: refused right before it publishes");
+    let mut own = push.clone();
+    own.scope.requester = owner.into();
+    assert!(ledger.push_trust_recheck(&own, fix_flow_tests::REPO)(), "the owner's own push is unchanged");
+}
+
+#[test]
+fn a_room_share_names_a_matrix_room() {
+    let db = tempfile::tempdir().unwrap();
+    let mut ledger = dev_room(db.path());
+    for bad in ["dev", "!nodomain", "#alias:example.org"] {
+        assert!(ledger.set_room_share(OWNER, "bird", bad, RoomShare::default()).is_err(), "{bad}");
+    }
+}

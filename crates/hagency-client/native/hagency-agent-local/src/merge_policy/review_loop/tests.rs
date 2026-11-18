@@ -282,3 +282,25 @@ async fn anyone_may_be_reviewed_but_an_untrusted_author_is_never_merged() {
     ledger.settle_agent_review("rm", true).unwrap();
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mm", 11, &mallory).await, None);
 }
+
+/// GPT review (ADR 0024): a room member's review skips the card through the
+/// auto-merge gate too only while the owner lets the Agent review PRs there.
+#[tokio::test]
+async fn a_members_review_skips_the_card_only_while_reviews_are_on_in_the_room() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
+    let mut member = bash(&line("review", A), temp.path(), "anna");
+    member.scope.requester = "@mallory:example.org".into();
+    member.dispatch = "d-member".into();
+    ledger.register_binding(OWNER, &member.scope).unwrap();
+    let ask = crate::Policy { budget: crate::Budget { limit: crate::Limit::Tokens(1000), period: crate::Period::Lifetime }, requests: crate::RequestPolicy::Allow, high_risk: crate::ToolPolicy::AskOwner };
+    ledger.set_policy(OWNER, &member.scope, crate::Layer::Requester, 0, &ask).unwrap();
+    ledger.reserve(&member.scope, "call-member", "d-member", 10, 10).unwrap();
+    member.policy_revision = ledger.policy_snapshot(&member.scope).unwrap().map(|v| v.revision);
+    let src = Src::new(vec![file("src/main.rs", 120)]);
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &member, "rv1", 11, &src).await, Some(true), "default: reviews on");
+    ledger.set_room_share(OWNER, "anna", ROOM, crate::room_share::RoomShare { review: false, ..Default::default() }).unwrap();
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &member, "rv2", 11, &src).await, None, "off: the card asks");
+    let own = bash(&line("review", A), temp.path(), "anna");
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &own, "rv3", 11, &src).await, Some(true), "the owner's own review loop is unchanged");
+}
