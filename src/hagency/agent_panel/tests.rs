@@ -184,15 +184,18 @@ fn message_after_leaving_the_private_chat_reopens_it() {
     assert!(panel.view.button(&mut cx, ids!(message)).borrow().unwrap().enabled(), "Message stays usable after Leave");
     // Ensure invited and joined the owner (here: into a replacement Room).
     panel.busy = true;
-    let ensured = Ok(json!({"ownerDirectRoomId": "!direct2:s", "ownerDirect": {"roomId": "!direct2:s", "state": "pending", "phase": "pending"}}));
+    let ensured = Ok(json!({"ownerDirectRoomId": "!direct2:s", "ownerDirect": {"roomId": "!direct2:s", "state": "joining", "phase": "pending"}}));
     let actions = cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &ensured));
     assert!(!panel.busy);
     assert_eq!(navigated(&actions), vec!["!direct2:s".to_owned()], "the private chat opens");
     assert!(actions.iter().any(|a| matches!(a.downcast_ref::<crate::home::main_desktop_ui::MainDesktopUiAction>(), Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))));
     // Still setting up, or refused: say so, open nothing.
-    let pending = Ok(json!({"ownerDirect": {"roomId": null, "state": "pending"}, "ownerDirectRoomId": null}));
-    assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &pending))).is_empty());
-    assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "The private chat is still being set up. Click Message again in a moment.");
+    // A failed join leaves the journal's Room in a pending reply: not opened (GPT review).
+    for room in [json!(null), json!("!direct2:s")] {
+        let pending = Ok(json!({"ownerDirect": {"roomId": room, "state": "pending"}, "ownerDirectRoomId": room}));
+        assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &pending))).is_empty(), "{room}");
+        assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "The private chat is still being set up. Click Message again in a moment.");
+    }
     assert!(navigated(&cx.capture_actions(|cx| panel.apply(cx, Load::Chat, true, &Err("owner_scope_required".into())))).is_empty());
     assert_eq!(panel.view.label(&mut cx, ids!(status)).text(), "Could not open the private chat: owner_scope_required");
 }

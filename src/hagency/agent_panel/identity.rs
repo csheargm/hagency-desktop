@@ -36,8 +36,11 @@ impl AgentPanel {
     }
     /// The reply to `EnsureAgentOwnerDirect`: opens the private chat it names.
     pub(super) fn open_chat(&mut self, cx: &mut Cx, result: &Result<serde_json::Value, String>) {
+        // A `pending` reply names the journal's Room before the owner joined
+        // or its state was validated: opening it would show a join prompt.
         let room = result.as_ref().ok()
-            .and_then(|v| v["ownerDirect"]["roomId"].as_str().or(v["ownerDirectRoomId"].as_str()))
+            .filter(|v| v["ownerDirect"].is_object() && v["ownerDirect"]["state"] != "pending")
+            .and_then(|v| v["ownerDirect"]["roomId"].as_str())
             .and_then(|room| matrix_sdk::ruma::OwnedRoomId::try_from(room).ok());
         match (room, result) {
             (Some(room_id), _) => {

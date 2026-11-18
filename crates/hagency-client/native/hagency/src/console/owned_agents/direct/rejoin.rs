@@ -20,7 +20,7 @@ pub(super) async fn rejoin(
     let reply = match api(req, depot, OwnerOperation::OwnerDirectRecover { agent: record.agent.clone() }).await {
         Ok(reply) => reply,
         // Servers before owner-direct-recovery-v1 refuse the unknown route.
-        Err(e) if e.code == "unsupported_operation" || e.status == 404 => {
+        Err(e) if e.status == 400 && e.code == "unsupported_operation" => {
             recheck(depot).map_err(|_| error(401, "sign_in_required"))?;
             return Ok(());
         }
