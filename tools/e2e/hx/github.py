@@ -79,7 +79,8 @@ def close_issue(number: int, comment: str):
     data = issue(number)
     _require_test_title(data["title"])
     if data["state"] == "OPEN":
-        gh("issue", "close", str(number), "-R", config.SANDBOX_REPO, "--comment", comment, parse=False)
+        gh("issue", "close", str(number), "-R", config.SANDBOX_REPO, "--comment", comment,
+           "--reason", "not planned", parse=False)
 
 
 def close_pr_if_unmerged(number: int, comment: str) -> str:
