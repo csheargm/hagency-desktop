@@ -1013,22 +1013,43 @@ impl Console {
         &self,
         operation: DeviceOperation,
     ) -> Result<DeviceResponse, DeviceError> {
-        self.execution_api_inner(operation, None).await
+        self.execution_api_inner(operation, None, false).await
     }
     pub(super) async fn execution_api_pinned(
         &self,
         operation: DeviceOperation,
         expected: &DeviceIdentity,
     ) -> Result<DeviceResponse, DeviceError> {
-        self.execution_api_inner(operation, Some(expected)).await
+        self.execution_api_inner(operation, Some(expected), false).await
     }
+    /// As `execution_api_pinned`, with a proof that is still valid instead of
+    /// one renewed first: the Agent lease heartbeat must not queue behind a
+    /// slow owner renewal (Nov 18, load ~46: the queued renewal outlived the
+    /// lease). A lapsed proof still renews first.
+    pub(super) async fn execution_api_live_pinned(
+        &self,
+        operation: DeviceOperation,
+        expected: &DeviceIdentity,
+    ) -> Result<DeviceResponse, DeviceError> {
+        self.execution_api_inner(operation, Some(expected), true).await
+    }
+    async fn request_device(&self, live: bool) -> Result<AuthorizedDevice, super::Error> {
+        if live {
+            self.0.server_login.live_device().await
+        } else {
+            self.authorized_device().await
+        }
+    }
+    // TODO(R4): device_execution.rs is over budget; split the HTTP send path
+    // (execution_api_inner) from the response parsing into its own module.
     async fn execution_api_inner(
         &self,
         operation: DeviceOperation,
         expected: Option<&DeviceIdentity>,
+        live: bool,
     ) -> Result<DeviceResponse, DeviceError> {
         let (path, body) = operation.request()?;
-        let device = self.authorized_device().await.map_err(|e| {
+        let device = self.request_device(live).await.map_err(|e| {
             if matches!(e, super::Error::Unavailable) {
                 error(503, "server_unavailable")
             } else {
@@ -1068,12 +1089,18 @@ impl Console {
             }
             raw.extend_from_slice(&chunk);
         }
+        // A refusal grants nothing: report it as is, before the recheck below
+        // can turn it into a retryable "unavailable" (GPT review, Nov 18).
+        if matches!(status, 401 | 403 | 409) {
+            let value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+            return Err(error(status, &refusal_code(&value)));
+        }
         // A response from an already-started request cannot resurrect local
         // authorization revoked while that request was in flight.
         device
             .bearer()
             .map_err(|_| error(401, "device_authorization_required"))?;
-        let current = self.authorized_device().await.map_err(|e| {
+        let current = self.request_device(live).await.map_err(|e| {
             if matches!(e, super::Error::Unavailable) {
                 error(503, "server_unavailable")
             } else {
@@ -1089,19 +1116,23 @@ impl Console {
         let value: Value =
             serde_json::from_slice(&raw).map_err(|_| error(502, "invalid_execution_response"))?;
         if !(200..300).contains(&status) {
-            let code = value["code"]
-                .as_str()
-                .filter(|s| {
-                    !s.is_empty()
-                        && s.len() <= 80
-                        && s.bytes()
-                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                })
-                .unwrap_or("execution_request_failed");
-            return Err(error(status, code));
+            return Err(error(status, &refusal_code(&value)));
         }
         parse_response(&operation, value, &device)
     }
+}
+/// The server's error code from a failed execution response, if well formed.
+fn refusal_code(value: &Value) -> String {
+    value["code"]
+        .as_str()
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 80
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+        .unwrap_or("execution_request_failed")
+        .to_owned()
 }
 
 #[cfg(test)]
