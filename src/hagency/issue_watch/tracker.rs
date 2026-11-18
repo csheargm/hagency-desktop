@@ -208,7 +208,7 @@ async fn announce(io: &impl TrackIo, repo: &str, track: &Track) -> Result<(), St
     // as completed without it is "closed" (integration GPT review).
     let state = if merged.is_some() { "merged" } else { "closed" };
     // The owner's own merge of exactly this pull request is what a new
-    // watch's trial counts (ADR 0028, GPT review).
+    // watch's trial counts (ADR 0027, GPT review).
     let pr = merged.map_or(Value::Null, Value::from);
     io.record(change_of(repo, n, json!({"state": state, "notified": true, "pr": pr, "ownerMerged": by_owner}))).await
 }

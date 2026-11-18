@@ -28,7 +28,7 @@ struct Change {
     /// The issue loop's follow-through record of one issue (ADR 0020).
     #[serde(default)]
     track: Option<hagency_agent_local::issue_track::TrackChange>,
-    /// The owner ends the trial of the watch of this repository early (ADR 0028).
+    /// The owner ends the trial of the watch of this repository early (ADR 0027).
     #[serde(default)]
     end_trial: Option<String>,
 }
@@ -133,7 +133,7 @@ fn apply(root: &Path, reply: &OwnerReply, agent: &str, change: Option<Change>, r
     Ok(json!({"plan": plan, "agentId": agent, "issueWatch": watch, "issueSeen": seen, "work": work, "workSeen": work_seen, "review": review, "plans": plans, "track": track, "trials": trials}))
 }
 
-/// The watches still in their trial: `[{repo, merged, required}]` (ADR 0028).
+/// The watches still in their trial: `[{repo, merged, required}]` (ADR 0027).
 fn trials(ledger: &Ledger, agent: &str) -> hagency_agent_local::Result<Value> {
     let mut out = Vec::new();
     for entry in ledger.watch_entries(agent)? {
@@ -156,7 +156,7 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     }
     if let Some(track) = change.track {
         ledger.track_issue(agent, &track, now())?;
-        // A pull request GitHub reported merged by the owner's own login counts toward the watch's trial (ADR 0028).
+        // A pull request GitHub reported merged by the owner's own login counts toward the watch's trial (ADR 0027).
         ledger.count_trial_merge(owner, agent, &track)?;
     }
     if let Some(repo) = change.end_trial {

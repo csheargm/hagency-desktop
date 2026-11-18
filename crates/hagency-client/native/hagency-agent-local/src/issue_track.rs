@@ -209,7 +209,7 @@ pub struct TrackChange {
     #[serde(default)]
     pub rehanded: Option<u32>,
     /// With `state: merged`: GitHub says the owner's own login merged the
-    /// pull request, the evidence a watch's trial counts (ADR 0028). Not stored.
+    /// pull request, the evidence a watch's trial counts (ADR 0027). Not stored.
     #[serde(default)]
     pub owner_merged: Option<bool>,
 }

@@ -63,7 +63,7 @@ fn write_transport(error: reqwest::Error) -> FetchError {
 /// The one GitHub token rule, shared with the Agent runtime (create, poller, run time).
 pub use hagency_agent_local::demo_env::{TOKEN_VARIABLES, resolve as resolve_github_token};
 
-/// The owner's work list types (ADR 0016) and a new watch's trial (ADR 0028), for the desktop's Work block and poller.
+/// The owner's work list types (ADR 0016) and a new watch's trial (ADR 0027), for the desktop's Work block and poller.
 pub use hagency_agent_local::merge_policy::review_loop::HOLD_STEP;
 pub use hagency_agent_local::merge_policy::trial::{TRIAL_PRS, trial_counts, trial_reason};
 pub use hagency_agent_local::merge_policy::work::{CAN_MERGE, IssueFilter, MAX_WORK_LIMIT, OwnerRules, Role};

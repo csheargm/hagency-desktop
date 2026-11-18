@@ -158,7 +158,7 @@ impl OwnerRules {
 
 impl Ledger {
     /// Store (or with `None`, remove) the owner's rules for `repo`; a new
-    /// watch starts its trial (ADR 0028).
+    /// watch starts its trial (ADR 0027).
     pub fn set_owner_rules(&mut self, owner: &str, agent: &str, repo: &str, rules: Option<OwnerRules>) -> Result<()> {
         let before = self.work_repos(agent)?;
         self.store_owner_rules(owner, agent, repo, rules)?;

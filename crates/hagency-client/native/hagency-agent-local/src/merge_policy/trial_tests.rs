@@ -1,4 +1,4 @@
-//! Trial mode (ADR 0028), end to end through the gate: a new watch's first
+//! Trial mode (ADR 0027), end to end through the gate: a new watch's first
 //! merges go to the owner, the owner's merges end the trial, and nothing an
 //! Agent or room member does can end it.
 use super::*;

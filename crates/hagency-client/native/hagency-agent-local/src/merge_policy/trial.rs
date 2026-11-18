@@ -1,4 +1,4 @@
-//! Trial mode for a new watch (ADR 0028): the first [`TRIAL_PRS`] pull
+//! Trial mode for a new watch (ADR 0027): the first [`TRIAL_PRS`] pull
 //! requests of a newly created watch need the owner to merge, even where the
 //! merge policy would let an Agent merge them. The Agent still opens and
 //! reviews them; the gate holds only the merge ([`hold`]), with a reason the
