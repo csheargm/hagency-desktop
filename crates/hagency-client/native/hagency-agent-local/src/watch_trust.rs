@@ -19,7 +19,8 @@
 //! - `git [-C <checkout>] fetch [-q] [<remote>]` from the watched repository,
 //!   also run by the host, and `git [-C <checkout>] checkout -b <new>
 //!   <remote>/<default>`, pinned (the fix steps of an issue, see [`git`]);
-//! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]);
+//! - `gh pr create|ready|edit` naming the watched repository (see [`gh`]),
+//!   and the cannot-fix comment on a handed issue (see [`cannot_fix`]);
 //! - the local fix steps in the watched repository's own checkout (`status`,
 //!   `diff`, `log`, `show`, `branch`, `add`, `commit`, `restore`, pinned, see
 //!   [`local_git`]), `pull` and a `clone` of it into the workspace (host-run,
@@ -33,6 +34,7 @@ use crate::{ToolProposal, outside::shell};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
+pub(crate) mod cannot_fix;
 pub mod codex_step;
 pub(crate) mod gh;
 pub mod git;
@@ -210,7 +212,12 @@ pub(crate) fn pinned(db: &Connection, proposal: &ToolProposal, owner: &str) -> c
         return Ok(edit_in_own_checkout(args.get("file_path"), path, edit, root, &repos).then_some(TrustedStep::Allow));
     }
     let Some(line) = proposal.arguments["command"].as_str() else { return Ok(None) };
-    Ok(trusted_repos(db, proposal)?.iter().find_map(|repo| pinned_line(line, root, repo)))
+    let repos = trusted_repos(db, proposal)?;
+    // TODO(R4): watch_trust.rs is over budget; split `pinned` (edit/read/patch vs shell steps) into its own module.
+    if let Some(step) = cannot_fix::step(db, &proposal.scope.agent, line, &repos)? {
+        return Ok(Some(step));
+    }
+    Ok(repos.iter().find_map(|repo| pinned_line(line, root, repo)))
 }
 
 /// Whether `path` (an edit's `file_path` value when `edit`, else a read's
