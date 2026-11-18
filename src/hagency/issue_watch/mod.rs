@@ -8,9 +8,12 @@
 //! check is a status line under the setting (`section`).
 pub(crate) mod choices;
 mod digest;
+mod digest_gate;
 mod digest_live;
 #[cfg(test)]
 mod digest_tests;
+#[cfg(test)]
+mod digest_window_tests;
 mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;

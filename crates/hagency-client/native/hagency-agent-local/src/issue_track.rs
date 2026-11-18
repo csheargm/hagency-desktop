@@ -207,8 +207,9 @@ impl Ledger {
     pub fn track_issue(&mut self, agent: &str, change: &TrackChange, now: i64) -> Result<()> {
         key(agent)?;
         let current = self.issue_track(agent, &change.repo, change.number)?;
-        let track = apply_change(current, change, now)?;
-        self.save_track(agent, &track)
+        let track = apply_change(current.clone(), change, now)?;
+        self.save_track(agent, &track)?;
+        digest::record_step(&self.db, agent, current.as_ref(), &track, now)
     }
 
     fn save_track(&mut self, agent: &str, track: &Track) -> Result<()> {

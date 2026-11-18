@@ -126,7 +126,9 @@ impl Ledger {
     /// hand-offs; any other request is left alone.
     pub fn note_unanswered_approval(&mut self, dispatch: &str) -> Result<()> {
         self.db.execute("INSERT OR IGNORE INTO handoff_unanswered SELECT dispatch FROM handoff_issues WHERE dispatch=?", [dispatch])?;
-        Ok(())
+        // Timed now, when the card went unanswered, for the daily digest.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        crate::issue_track::digest::note_card(&self.db, dispatch, now)
     }
 
     /// Whether `agent`'s own token budget for the period of `now` is used
