@@ -25,6 +25,9 @@ enum Decision {
     /// Push freely authorized it (ADR 0022, "Codex"); checked again, as
     /// this workspace-rooted proposal, right before the answer is sent.
     Trusted(Box<ToolProposal>),
+    /// The auto-merge gate answered (and, when allowing, authorized) it,
+    /// exactly as it answers a Claude `Bash` call.
+    Gate(bool),
     Owner(bool),
     Deny,
 }
@@ -82,6 +85,11 @@ impl Approvals {
         let wait: Wait = Box::pin(std::future::ready(Decision::Trusted(Box::new(rooted))));
         self.0.insert(request.id.to_string(), Pending { request, wait });
     }
+    /// A request the auto-merge gate answered: sent as soon as it is polled.
+    pub fn offer_gated(&mut self, request: Request, allowed: bool) {
+        let wait: Wait = Box::pin(std::future::ready(Decision::Gate(allowed)));
+        self.0.insert(request.id.to_string(), Pending { request, wait });
+    }
     pub async fn next(&mut self) -> Answer {
         let (id, decision) = poll_fn(|cx| {
             for (id, pending) in &mut self.0 {
@@ -137,6 +145,7 @@ impl Answer {
                 ledger.trusted_publish(owner, &rooted, super::now()),
                 Ok(Some(crate::watch_trust::TrustedStep::Allow))
             ),
+            Decision::Gate(allowed) => allowed,
             Decision::Owner(false) | Decision::Deny => false,
         };
         let result = if let Some(native) = request.native {

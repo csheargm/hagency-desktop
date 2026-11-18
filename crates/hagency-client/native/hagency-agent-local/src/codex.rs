@@ -1885,6 +1885,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     self.items.insert(key, item.clone());
                     tools.item(item, method == "item/completed");
+                    if method == "item/completed" {
+                        // A review the gate held under this command counts only now.
+                        crate::merge_policy::codex_review::settle(ledger, event_thread, event_turn, item)?;
+                    }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).
                     if event_scope.root
                         && method == "item/started"
@@ -2079,12 +2083,20 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             native: native_request,
             proposal,
         };
+        // Opt-in agent auto-merge (ADR 0016): the same gate as a Claude Bash
+        // call, so a Codex reviewer's approval of the exact head is recorded
+        // (held under this item, counted once it completes with exit 0).
+        let owner = ledger.owner.clone();
+        let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+        if let Some(allowed) = crate::merge_policy::codex_review::auto_answer(ledger, &owner, method, &request.proposal, (thread, turn), now(), &github).await {
+            approvals.offer_gated(request, allowed);
+            return Ok(());
+        }
         // Push freely (ADR 0022, "Codex"): a file change inside the watched
         // repository's own checkout, checked against the Room workspace.
         // TODO(R4): codex.rs is over budget; move approval routing into codex/approvals.rs.
         if self.native_sandbox() == NativeSandbox::RoomFolder && request.proposal.tool == "codex.file_change" {
             let rooted = crate::watch_trust::for_workspace(&request.proposal, std::path::Path::new(cwd));
-            let owner = ledger.owner.clone();
             if matches!(ledger.trusted_publish(&owner, &rooted, now()), Ok(Some(crate::watch_trust::TrustedStep::Allow))) {
                 approvals.offer_trusted(request, rooted);
                 return Ok(());
