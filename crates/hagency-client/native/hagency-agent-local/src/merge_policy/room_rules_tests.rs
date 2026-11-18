@@ -9,7 +9,7 @@ const OWNER: &str = "@owner:example.org";
 const SANDBOX_RULES: &str = "low_risk_paths: [\"**/*.md\", \"docs/**\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: false\n";
 
 fn snapshot(policy: Option<&str>) -> RoomRulesSnapshot {
-    RoomRulesSnapshot { repo: SANDBOX.into(), room_id: ROOM.into(), event_id: Some("$e1".into()), sender: Some("@admin:example.org".into()), policy: policy.map(str::to_owned) }
+    RoomRulesSnapshot { repo: SANDBOX.into(), room_id: ROOM.into(), event_id: Some("$e1".into()), sender: Some("@admin:example.org".into()), policy: policy.map(str::to_owned), unread: false }
 }
 
 /// The fixer asks to merge after the reviewer Agent approved: the gate's answer.
@@ -119,6 +119,23 @@ fn only_the_owner_records_rules_and_bad_snapshots_are_refused() {
     let (event, sender, _, at) = ledger.room_merge_rules_record("CSheargm/Hagency-Demo-Sandbox", ROOM).unwrap().unwrap();
     assert_eq!((event.as_str(), sender.as_str(), at), ("$e1", "@admin:example.org", 7), "the event id is recorded per repo and room");
     assert!(serde_json::from_value::<RoomRulesSnapshot>(serde_json::json!({"repo": SANDBOX, "roomId": ROOM, "trusted": true})).is_err(), "unknown fields are refused");
+}
+
+/// GPT integration review: an admin tightens the rules and the desktop's next
+/// read fails; the old snapshot stops counting at once, not after the TTL.
+#[test]
+fn an_unread_room_withdraws_the_last_rules_at_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["fixer"]);
+    ledger.set_room_merge_rules(OWNER, &snapshot(Some(SANDBOX_RULES)), 7).unwrap();
+    assert!(ledger.room_merge_rules(SANDBOX, ROOM, 8).unwrap().policy().is_some());
+    let unread = RoomRulesSnapshot { event_id: None, sender: None, policy: None, unread: true, ..snapshot(None) };
+    ledger.set_room_merge_rules(OWNER, &unread, 8).unwrap();
+    assert_eq!(ledger.room_merge_rules(SANDBOX, ROOM, 9).unwrap(), RoomRules::Missing(UNREAD_ROOM_RULES));
+    let contradictory = RoomRulesSnapshot { unread: true, ..snapshot(Some(SANDBOX_RULES)) };
+    assert!(ledger.set_room_merge_rules(OWNER, &contradictory, 9).is_err(), "unread carries no rules");
+    let wire = serde_json::json!({"repo": SANDBOX, "roomId": ROOM, "unread": true});
+    assert!(serde_json::from_value::<RoomRulesSnapshot>(wire).unwrap().unread, "the owner API takes the flag");
 }
 
 #[test]

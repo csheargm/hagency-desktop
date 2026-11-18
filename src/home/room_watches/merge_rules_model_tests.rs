@@ -85,3 +85,58 @@ fn moderators_get_read_only_rules_once_the_admin_entry_is_set() {
     let unpatched = typed(room);
     assert!(editor_shown(&shown(&unpatched, moderator)), "the check follows the room's actual level");
 }
+
+const TRUSTED: &str = "low_risk_paths: [\"**/*.md\"]\nmax_changed_lines: 50\nrequired_agent_approvals: 1\nrequire_ci: true\ntier: trusted\npaths: [\"docs/**\"]\nmax_lines: 200\n";
+
+/// GPT integration review: the trusted tier is judged by its own `paths:` and
+/// `max_lines:`, so the lines and the editor show and edit those.
+#[test]
+fn the_trusted_tier_shows_and_edits_its_own_paths_and_limit() {
+    let shown = Shown::Ready { read: rules(TRUSTED), editable: true };
+    let out = lines(&shown);
+    assert_eq!(&out[..2], ["Low-risk paths: docs/** (trusted tier)", "Up to 200 changed lines"]);
+    assert!(hint(&shown).contains("trusted tier's own"));
+    let draft = draft_of(&rules(TRUSTED));
+    assert_eq!((draft.paths.as_str(), draft.max_lines.as_str()), ("docs/**", "200"));
+    let edited = Draft { paths: "docs/**, guides/**".into(), max_lines: "80".into(), ..draft.clone() };
+    let policy = policy_of(&edited, &rules(TRUSTED)).unwrap();
+    assert_eq!((policy.trusted_paths.clone(), policy.trusted_max_lines), (vec!["docs/**".to_owned(), "guides/**".to_owned()], Some(80)));
+    assert_eq!(policy.low_risk_paths, ["**/*.md"], "the default tier's paths are kept");
+    let text = ::hagency::issue_watch::safeguards::render_policy(&policy).unwrap();
+    assert_eq!(parse_policy(&text), Some(policy), "saved as the gate reads it");
+    let open = policy_of(&Draft { paths: String::new(), max_lines: String::new(), ..draft.clone() }, &rules(TRUSTED)).unwrap();
+    assert_eq!((open.trusted_paths.len(), open.trusted_max_lines), (0, None), "empty: any path, no line limit");
+    let any = Shown::Ready { read: rules(&::hagency::issue_watch::safeguards::render_policy(&open).unwrap()), editable: false };
+    assert_eq!(&lines(&any)[..2], ["Low-risk paths: any path (trusted tier)", "No line limit (trusted tier)"]);
+    assert!(policy_of(&Draft { require_ci: false, ..draft }, &rules(TRUSTED)).is_err_and(|e| e.contains("always requires CI")));
+}
+
+/// GPT integration review: rules over the gate's size limit are refused in the editor.
+#[test]
+fn rules_too_long_to_store_are_refused_in_the_editor() {
+    let paths: Vec<String> = (0..1500).map(|i| format!("docs/{i}/**")).collect();
+    let draft = Draft { paths: paths.join(", "), ..draft_of(&RoomRead::None) };
+    assert!(policy_of(&draft, &RoomRead::None).is_err_and(|e| e.contains("too long")));
+}
+
+/// GPT integration review: admin A's open editor must not erase admin B's newer rules.
+#[test]
+fn a_stale_editor_is_refused_when_the_rules_changed_since_it_opened() {
+    let opened = rules(SANDBOX);
+    assert!(unchanged_since(&opened, &opened.clone(), true).is_ok());
+    let newer = RoomRead::Rules { event_id: "$e2".into(), sender: "@other-admin:x".into(), content: content_of(&format!("{SANDBOX}always_human: [\"src/**\"]\n")) };
+    assert!(unchanged_since(&opened, &newer, true).is_err_and(|e| e.contains("changed since you opened")));
+    assert!(unchanged_since(&opened, &RoomRead::None, true).is_err(), "removed meanwhile");
+    assert!(unchanged_since(&opened, &opened.clone(), false).is_err(), "demoted meanwhile");
+}
+
+/// GPT review: a glob holding a comma (block-list text) is never re-split,
+/// which would widen it, when an admin only changes another field.
+#[test]
+fn an_untouched_path_list_is_never_re_split_into_wider_globs() {
+    let block = "require_ci: true\ntier: trusted\nmax_lines: 200\npaths:\n  - \"docs/a, **\"\n";
+    let read = rules(block);
+    assert!(matches!(read.state(), RoomRulesState::Read(ref p) if p.trusted_paths == ["docs/a, **"]), "the parser takes it as one glob");
+    let draft = Draft { max_lines: "100".into(), ..draft_of(&read) };
+    assert!(policy_of(&draft, &read).is_err(), "refused, never saved as docs/a and **");
+}

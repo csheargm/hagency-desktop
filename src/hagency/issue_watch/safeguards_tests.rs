@@ -200,3 +200,16 @@ fn sandbox_card_text() {
     let group = |title: &str, lines: &[String]| format!("{title}\n{}", super::safeguards_card::bullets(lines));
     println!("Safeguards\n{}\n{}\n{}\n{}", group("May do alone", &shown.alone), group("Needs you", &shown.needs_you), group("Limits", &shown.limits), shown.protection);
 }
+
+/// GPT integration review: an admin's edit of the watch room's merge rules
+/// (MergeRulesChanged) reloads the card; another room's edit does not.
+#[test]
+fn a_merge_rules_edit_in_the_watch_room_reloads_the_card() {
+    use super::safeguards_card::{Shown, shows_rules_of};
+    let card = Shown::Card(sandbox_watch(), read(SANDBOX_POLICY, Some(true)));
+    let dev = matrix_sdk::ruma::RoomId::parse(DEV_ROOM).unwrap();
+    let other = matrix_sdk::ruma::RoomId::parse("!other:localhost").unwrap();
+    assert!(shows_rules_of(&card, &dev));
+    assert!(!shows_rules_of(&card, &other), "another room's rules leave the card alone");
+    assert!(!shows_rules_of(&Shown::Hidden, &dev), "a hidden card reads nothing");
+}

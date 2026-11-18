@@ -3801,8 +3801,6 @@
   "this desktop has not joined the watch's room": "此桌面端尚未加入该监视所在的房间",
   "A path holds a character the merge rules cannot store": "某个路径包含合并规则无法保存的字符",
   "Could not save the merge rules: {error}": "无法保存合并规则：{error}",
-  "Merge rules could not be read: {error}": "无法读取合并规则：{error}",
-  "Merge rules could not be read: this desktop has not joined the watch's room": "无法读取合并规则：此桌面端尚未加入该监视所在的房间",
   "Merge rules could not be recorded: {error}": "无法记录合并规则：{error}",
   "set by someone who may not set them now": "设置者目前无权设置",
   "set by an Agent or a Hagency service account": "由 Agent 或 Hagency 服务账号设置",
@@ -3828,5 +3826,15 @@
   "Save merge rules": "保存合并规则",
   "{n} approval(s): another Agent's, or under an owner's maintainer rules the maintainer's review of an outside author's PR or a trusted GitHub reviewer's": "需要 {n} 个批准：来自另一个 Agent；或在所有者的维护者规则下，维护者对外部作者 PR 的审查或受信任 GitHub 审查者的批准",
   "set by someone who is no longer in the room": "设置者已不在房间中",
-  "Room state is unavailable right now: {reason}": "房间状态暂时不可用：{reason}"
+  "Room state is unavailable right now: {reason}": "房间状态暂时不可用：{reason}",
+  "The merge rules are too long to store (at most {n} KiB): remove some paths": "合并规则过长，无法保存（最多 {n} KiB）：请删除一些路径",
+  "Merge rules could not be read, so merges need a person until they are: {error}": "无法读取合并规则，在重新读取之前每次合并都需要人工处理：{error}",
+  "The trusted tier always requires CI": "受信任层级始终要求 CI",
+  "The merge rules changed since you opened them. The editor now shows the newer rules: make your change again and save.": "自你打开以来合并规则已被更改。编辑器现在显示较新的规则：请重新修改后再保存。",
+  "{paths} (trusted tier)": "{paths}（受信任层级）",
+  "No line limit (trusted tier)": "无行数限制（受信任层级）",
+  "These rules use the trusted tier: the paths and line limit below are the trusted tier's own; leave them empty for any path and no line limit.": "这些规则使用受信任层级：下面的路径和行数限制属于受信任层级；留空表示任意路径且不限行数。",
+  "Linked. A room admin still needs to link it too, to let members share issue status and to make the merge rules admin-only.": "已关联。仍需一位房间管理员也关联一次，才能让成员共享问题状态，并使合并规则仅限管理员修改。",
+  "Linked. A room admin still needs to link it too, to let members share issue status.": "已关联。仍需一位房间管理员也关联一次，才能让成员共享问题状态。",
+  "Linked. A room admin still needs to link it too, to make the merge rules admin-only (until then moderators can change them).": "已关联。仍需一位房间管理员也关联一次，才能使合并规则仅限管理员修改（在此之前版主仍可更改）。"
 }

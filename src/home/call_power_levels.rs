@@ -112,22 +112,22 @@ async fn server_levels(room: &Room) -> anyhow::Result<Value> {
 }
 
 /// Adds the missing Hagency entries this account may add to an existing room;
-/// `Ok(false)` when nothing was missing or it may add none (nothing sent).
-/// Matrix has no conditional state write: a power-level change another admin
-/// makes between this read and write would be lost, so this runs only on an
-/// admin's explicit link, never in the background (GPT review).
-pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<bool> {
+/// returns the missing ones it may not add, for the link to name (empty: none).
+/// Matrix has no conditional state write: a power-level change landing between
+/// this read (the last step before the write) and the write is lost, so this
+/// runs only on an admin's explicit link, never in the background (GPT review).
+pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<Vec<&'static str>> {
     let me = room.client().user_id().ok_or_else(|| anyhow::anyhow!("signed out"))?.to_owned();
     let send = async {
-        // From the server, not the sync store (GPT review: a stale store could skip
-        // the entry or misjudge this account); the PUT replaces the whole content,
-        // so it is built from this newest copy too.
+        // From the server, not the sync store (GPT review), as the base of the full-content PUT.
         let current = server_levels(room).await?;
         let typed = typed_levels(room, current.clone()).ok_or_else(|| anyhow::anyhow!("the room's power levels are unreadable"))?;
         let addable = addable_member_state(&typed, &me);
-        let Some(updated) = add_missing_member_state(current, &addable)? else { return Ok(false) };
-        room.send_state_event_raw("m.room.power_levels", "", updated).await?;
-        anyhow::Ok(true)
+        let left = missing_member_state(&typed).into_iter().filter(|key| !addable.contains(key)).collect();
+        if let Some(updated) = add_missing_member_state(current, &addable)? {
+            room.send_state_event_raw("m.room.power_levels", "", updated).await?;
+        }
+        anyhow::Ok(left)
     };
     tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))?
 }
@@ -163,8 +163,7 @@ pub async fn allow_call_membership(room: &Room, open_calls: bool) -> anyhow::Res
 /// Creation flows call this once a (non-space) room exists. A failure is
 /// deliberately not a creation failure (GPT review, not adopted): the room
 /// has only its creator, so no moderator exists until that admin promotes
-/// one, and reporting an error would invite a duplicate room; so
-/// reporting an error would invite a duplicate; the room then behaves as
+/// one, and reporting an error would invite a duplicate room; the room then behaves as
 /// before this fix (calls need a moderator, merge rules follow
 /// `state_default`) until an admin links a repository, which retries the
 /// merge-rules entry ([`allow_member_state_in`]); the warning records why.

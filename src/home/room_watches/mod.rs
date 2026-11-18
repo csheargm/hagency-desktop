@@ -128,7 +128,7 @@ async fn load(room: &str) -> Loaded {
     Ok(Watches { rows: watches.into_iter().map(|(_, w)| w).collect(), status })
 }
 
-/// The newest link or unlink failure per room, shown above the list.
+/// The newest link or unlink failure, or a note on a link, per room, shown above the list.
 static LINK_ERRORS: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
 pub fn link_error(room: &RoomId) -> Option<String> {
     LINK_ERRORS.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned()
@@ -147,8 +147,8 @@ pub fn set_link(room: &RoomId, repo: String, link: bool) {
         };
         let mut errors = LINK_ERRORS.lock().unwrap_or_else(|p| p.into_inner());
         match outcome {
-            Ok(()) => errors.remove(&key),
-            Err(error) => errors.insert(key.clone(), error),
+            Ok(None) => errors.remove(&key),
+            Ok(Some(message)) | Err(message) => errors.insert(key.clone(), message),
         };
         drop(errors);
         refresh(&key.1);

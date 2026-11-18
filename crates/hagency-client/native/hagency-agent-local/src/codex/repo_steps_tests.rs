@@ -87,7 +87,7 @@ async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate()
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
     // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
-    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()), unread: false };
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
@@ -117,7 +117,7 @@ async fn a_repo_step_review_of_a_stale_head_is_never_recorded() {
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
     // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
-    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()), unread: false };
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
@@ -142,7 +142,7 @@ async fn only_a_verdict_reaches_the_gate_and_a_members_needs_the_rooms_review_gr
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.set_auto_merge(OWNER, "bird", true).unwrap();
     // The watch room's merge rules, as the owner's desktop records them (ADR 0029).
-    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()) };
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()), unread: false };
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();

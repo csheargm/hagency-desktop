@@ -24,14 +24,18 @@ pub const MERGE_RULES_STATE_TYPE: &str = "io.hagency.merge_rules";
 pub const POLICY_FIELD: &str = "policy";
 /// How long a snapshot counts: the desktop re-reads every minute while it runs.
 pub const ROOM_RULES_TTL_SECS: i64 = 300;
-/// The longest rules text accepted.
-const MAX_POLICY_BYTES: usize = 8 * 1024;
+/// The longest rules text accepted (the desktop editor refuses longer rules before saving).
+pub const MAX_POLICY_BYTES: usize = 8 * 1024;
 /// What oversized rules are stored as: text [`parse_policy`] refuses.
 const OVERSIZED: &str = "oversized: true";
+/// What a snapshot the desktop could not read is stored as: it replaces the
+/// last rules, so an admin's tightening is never merged past (GPT review).
+const UNREAD: &str = "unread: true";
 /// The gate's reason (and the room notice) when a room has no rules.
 pub const NO_ROOM_RULES: &str = "no merge rules in this room — a room admin can set them in Room info → Status";
 pub const STALE_ROOM_RULES: &str = "the room's merge rules were not re-read in the last 5 minutes (the owner's Hagency desktop re-reads them while it runs)";
 pub const INVALID_ROOM_RULES: &str = "the room's merge rules are not valid — a room admin can fix them in Room info → Status";
+pub const UNREAD_ROOM_RULES: &str = "the owner's Hagency desktop could not read the room's merge rules on its last check, so every merge needs a person until it reads them again";
 pub const NO_WATCH_ROOM: &str = "no watch reports this repository to a room, so no room merge rules apply";
 
 /// The editor's suggested low-risk paths: Markdown, docs, plain-text files
@@ -55,6 +59,9 @@ pub struct RoomRulesSnapshot {
     pub sender: Option<String>,
     #[serde(default)]
     pub policy: Option<String>,
+    /// The desktop could not read the room's rules: the last ones stop counting.
+    #[serde(default)]
+    pub unread: bool,
 }
 
 /// The rules a merge is judged by, or why there are none (a person merges).
@@ -138,6 +145,9 @@ fn check(snapshot: &RoomRulesSnapshot) -> Result<()> {
     if !valid_repo(&snapshot.repo) || !valid_room_id(&snapshot.room_id) {
         return Err(Error::Invalid("room rules need a repository owner/name and a room ID"));
     }
+    if snapshot.unread && snapshot.policy.is_some() {
+        return Err(Error::Invalid("unread room rules carry no rules"));
+    }
     if snapshot.policy.is_none() {
         return Ok(());
     }
@@ -159,6 +169,7 @@ impl Ledger {
         let (event, sender) = if snapshot.policy.is_some() { (event, sender) } else { ("", "") };
         // Oversized rules replace the old ones as invalid, never leave them in force (GPT review).
         let policy = snapshot.policy.as_deref().map(|t| if t.len() > MAX_POLICY_BYTES { OVERSIZED } else { t });
+        let policy = if snapshot.unread { Some(UNREAD) } else { policy };
         self.db.execute(
             "INSERT OR REPLACE INTO room_merge_rules VALUES (?,?,?,?,?,?)",
             (snapshot.repo.to_ascii_lowercase(), &snapshot.room_id, event, sender, policy, now),
@@ -180,6 +191,9 @@ impl Ledger {
         let Some((_, _, text, read_at)) = self.room_merge_rules_record(repo, room)? else { return Ok(RoomRules::Missing(NO_ROOM_RULES)) };
         if now.saturating_sub(read_at) > ROOM_RULES_TTL_SECS || read_at > now.saturating_add(ROOM_RULES_TTL_SECS) {
             return Ok(RoomRules::Missing(STALE_ROOM_RULES));
+        }
+        if text.as_deref() == Some(UNREAD) {
+            return Ok(RoomRules::Missing(UNREAD_ROOM_RULES));
         }
         Ok(match text.as_deref().map(parse_policy) {
             None => RoomRules::Missing(NO_ROOM_RULES),

@@ -9,6 +9,7 @@
 use super::safeguards::{self, Enforced, Repo, Watch};
 use super::live;
 use crate::hagency::backend::Service;
+use crate::home::room_watches::merge_rules::MergeRulesChanged;
 use makepad_widgets::*;
 use std::sync::Mutex;
 
@@ -85,8 +86,11 @@ impl Widget for SafeguardsCard {
                 self.apply(cx, loaded);
             }
         }
-        // A saved (or re-read) watch may have changed the repository or push-freely.
-        if !self.agent_id.is_empty() && actions.iter().any(|a| a.downcast_ref::<super::section::IssueWatchReplyReady>().is_some()) {
+        // A saved (or re-read) watch may have changed the repository or push-freely;
+        // an admin's edit of the watch room's merge rules changes its lines (GPT integration review).
+        let watch_changed = actions.iter().any(|a| a.downcast_ref::<super::section::IssueWatchReplyReady>().is_some());
+        let rules_changed = actions.iter().filter_map(|a| a.downcast_ref::<MergeRulesChanged>()).any(|c| shows_rules_of(&self.shown, &c.room_id));
+        if !self.agent_id.is_empty() && (watch_changed || rules_changed) {
             self.load();
         }
     }
@@ -160,6 +164,11 @@ impl SafeguardsCard {
         self.view.label(cx, ids!(protection)).set_text(cx, &card.protection);
         self.view.redraw(cx);
     }
+}
+
+/// Whether `room` is the room whose merge rules the shown card states.
+pub(crate) fn shows_rules_of(shown: &Shown, room: &matrix_sdk::ruma::RoomId) -> bool {
+    matches!(shown, Shown::Card(watch, _) if watch.room_id == room.as_str())
 }
 
 /// Keeps `loaded` for the next draw and tells the card it is ready.
