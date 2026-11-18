@@ -25,6 +25,7 @@ pub mod github;
 pub mod work;
 pub mod review_loop;
 pub mod codex_review;
+pub mod codex_observed;
 pub mod pending;
 
 /// Where the policy lives in a repository.

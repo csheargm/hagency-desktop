@@ -1506,8 +1506,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         self.items.clear();
         self.server_ids.clear();
         let text = crate::attribution::turn_context(owner, scope, input);
-        // Full trust: Codex asks no approvals, so the gate sees no review.
-        let mut unasked = false;
         let mut turn_start = value!({"threadId":thread,"input":[{"type":"text","text":text,"text_elements":[]}],"cwd":cwd,"model":self.model,"effort":self.effort,"approvalPolicy":"untrusted","approvalsReviewer":"user"});
         self.native_sandbox().apply_to_turn(&mut turn_start, cwd);
         // The owner's full trust lifts the Room folder's sandbox and its
@@ -1515,7 +1513,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // next one is confined as soon as the owner takes the trust back.
         if self.native_sandbox() == NativeSandbox::RoomFolder && ledger.fully_trusts(scope, dispatch) {
             turn_start["approvalPolicy"] = "never".into();
-            unasked = true;
             turn_start["sandboxPolicy"] = value!({"type":"dangerFullAccess"});
         }
         let reply=self.rpc("turn/start",turn_start).await?;
@@ -1553,8 +1550,8 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut answer: Option<questions::Answer> = None;
         let mut approvals = approvals::Approvals::default();
         let mut approval_answer: Option<approvals::Answer> = None;
-        // Gate-allowed commands whose accept was sent: only these settle a review.
-        let mut gated_sent = std::collections::HashSet::new();
+        // Review evidence of this turn: gate accepts sent, owner/rule decisions, starts, completions.
+        let mut reviews = crate::merge_policy::codex_observed::TurnReviews::default();
         let mut file_calls = host_files::Calls::default();
         let mut file_answer: Option<host_files::Answer> = None;
         let mut controls = controls::Controls::default();
@@ -1564,6 +1561,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         // event bound well before it is a runaway. The turn's time limit is
         // the real bound; this one only stops an endless stream.
         for _ in 0..16 * hagency_runtime::codex::session::MAX_EVENTS {
+            repo_running.settle(ledger)?;
             controls.expire();
             if controls.can_receive()
                 && let Some(pending) = stream
@@ -1583,6 +1581,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 room_turn.take();
                 // Running repo steps stop with the turn's callbacks, and no
                 // queued one starts after (GPT review).
+                repo_running.settle(ledger)?;
                 repo_running = repo_steps::Running::default();
                 repo_open = false;
                 callbacks_stopped = true;
@@ -1693,9 +1692,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                             }
                         } else if let Some(approved) = approval_answer.take() {
                             if approved.active(&tree) {
-                                let gated = approved.gated_call();
-                                self.write(approved.response(ledger, owner)).await?;
-                                gated_sent.extend(gated);
+                                let (gated, decided) = (approved.gated_call(), approved.decided_call());
+                                let response = approved.response(ledger, owner);
+                                let accepted = response["result"]["decision"] == "accept";
+                                self.write(response).await?;
+                                reviews.sent.extend(gated);
+                                if let (true, Some((key, proposal))) = (accepted, decided) {
+                                    reviews.decided(key, proposal);
+                                }
                             }
                         } else if let Some(answer) = answer.take()
                             && tree.is_active(answer.request.thread_id(), answer.request.turn_id()) {
@@ -1731,7 +1735,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     call = repo_calls.recv(), if repo_open && !controls.holds_answers() => {
                         match call {
-                            Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running),
+                            Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running).await,
                             None => repo_open = false,
                         }
                         continue;
@@ -1910,13 +1914,15 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     }
                     self.items.insert(key, item.clone());
                     tools.item(item, method == "item/completed");
-                    if method == "item/completed" {
-                        // A review the gate held under this command counts only now.
-                        let gated = crate::merge_policy::codex_review::settle(ledger, (event_thread, event_turn), item, &mut gated_sent)?;
-                        if !gated && unasked && event_scope.root {
-                            // Ran without asking (full trust): record a qualifying review it posted.
-                            let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
-                            crate::merge_policy::codex_review::record_observed(ledger, scope, dispatch, cwd, item, now(), &github).await;
+                    if method == "item/started" {
+                        reviews.started((event_thread, event_turn), item, now());
+                    } else {
+                        // A review the gate held counts only now; one it never answered is recorded from evidence.
+                        let github = crate::merge_policy::github::GhCli { token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+                        // Read before the await: the approvals are not shared across threads.
+                        let by_gate = item["id"].as_str().is_some_and(|id| approvals.answered_by_gate(&crate::merge_policy::codex_review::call_key(event_thread, event_turn, id)));
+                        if let Some(observed) = reviews.completed(ledger, scope, dispatch, (event_thread, event_turn), item, (event_scope.root, by_gate), now(), &github).await? {
+                            hagency_runtime::codex::approval::review_observed(observed.err());
                         }
                     }
                     // TODO(R4): split item handling out of codex.rs (live steps, messages).

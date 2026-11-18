@@ -179,4 +179,6 @@ async fn the_rendered_codex_review_command_reaches_the_gate_only_without_a_login
     fin(&mut ledger, (THREAD, TURN), (THREAD, TURN), &done("call_bash", "completed", json!(0)));
     assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["bird-codex"]);
     assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("shell \"/bin/bash\" and login false"));
+    assert!(hagency_runtime::AGENT_MERGE_NOTE.contains("gh pr review command, its review verdict included, as the command of its watched_repo_step tool, never through exec_command"));
+    assert!(hagency_runtime::REVIEW_STEPS.contains("use --comment in place of --approve from the start"));
 }

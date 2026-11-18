@@ -29,7 +29,7 @@ impl Src {
 impl PrSource for Src {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = PrFacts { open: true, files: self.files.clone(), checks: self.checks.clone() };
-        Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), facts })
+        Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, facts })
     }
     async fn policy(&self, _: &GhPr, _: &str, _: &str) -> Option<String> {
         self.policy.clone().flatten()
@@ -114,7 +114,7 @@ async fn the_maintainers_own_pull_request_still_needs_another_agent() {
     // Another local Agent's approval does not count either: any of them may have written it.
     let temp = tempfile::tempdir().unwrap();
     let mut both = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
-    both.record_agent_review("https://github.com/csheargm/hagency-demo-sandbox/pull/7", HEAD, "other").unwrap();
+    both.record_agent_review("https://github.com/csheargm/hagency-demo-sandbox/pull/7", HEAD, "other", ROOM).unwrap();
     assert_eq!(gate::auto_answer(&mut both, OWNER, &bash(&line("merge", A), temp.path(), "anna"), "mg2", 11, &own).await, None);
 }
 

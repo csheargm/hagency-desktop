@@ -54,10 +54,33 @@ const PARALLEL: usize = 2;
 pub(super) struct Running {
     guards: Vec<CancelOnDrop>,
     slots: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Finished steps the merge gate held something under: (key, succeeded).
+    outcomes: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+    /// Makes this turn's gate keys unique, across turns and restarts.
+    nonce: String,
+    next: u64,
 }
 impl Default for Running {
     fn default() -> Self {
-        Self { guards: Vec::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)) }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos().to_string()).unwrap_or_default();
+        Self { guards: Vec::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)), outcomes: std::sync::Arc::default(), nonce, next: 0 }
+    }
+}
+impl Running {
+    /// Settle what the gate held under each finished step: a review counts,
+    /// a request for changes withdraws, a merge claim is kept, only on success.
+    pub(super) fn settle(&self, ledger: &mut Ledger) -> crate::Result<()> {
+        let finished = std::mem::take(&mut *self.outcomes.lock().map_err(|_| crate::Error::Invalid("repo step outcomes"))?);
+        for (key, succeeded) in finished {
+            ledger.settle_withdrawal(&key, succeeded)?;
+            ledger.settle_agent_review(&key, succeeded)?;
+        }
+        Ok(())
+    }
+    /// A fresh gate key for one step (a Codex key: no Claude call id settles it).
+    fn key(&mut self, dispatch: &str) -> String {
+        self.next += 1;
+        format!("{}step:{}", crate::merge_policy::codex_review::KEY_PREFIX, json!([dispatch, self.nonce, self.next]))
     }
 }
 
@@ -73,8 +96,16 @@ pub(super) struct Turn<'a> {
     pub enabled: bool,
 }
 
-/// Answer `call`: refused at once unless push trust covers it, else started.
-pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &mut Running) {
+/// Answer `call`: a PR review verdict goes through the merge gate first,
+/// exactly as a Claude `Bash` call does (recorded on the exact head once it
+/// ran); otherwise refused at once unless push trust covers it, else started.
+pub(super) async fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &mut Running) {
+    let github = crate::merge_policy::github::GhCli { token: turn.token.clone() };
+    start_with(ledger, turn, call, running, &github).await
+}
+
+/// [`start`] reading GitHub through `source` (tests give a stand-in).
+pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &mut Running, source: &impl crate::merge_policy::github::PrSource) {
     let refuse = |call: Call, why: &str| {
         let text = json!({"error": "not_card_free", "reason": why, "next": "run it as a normal command; it asks your owner"}).to_string();
         let _ = call.reply.send((text, true));
@@ -89,11 +120,23 @@ pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &
     }
     let Ok(slot) = running.slots.clone().try_acquire_owned() else { return refuse(call, "another step is still running; wait for it") };
     let Some(proposal) = proposal(ledger, turn, &call.command) else { return refuse(call, "this run cannot be checked") };
-    let step = match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
-        Ok(Some(step)) if step != TrustedStep::Allow => step,
-        // Not a card-free step, or the ledger could not say: nothing runs.
-        _ => return refuse(call, "outside what push freely covers here"),
+    let key = running.key(turn.dispatch);
+    let step = match gated_review(ledger, turn, &proposal, &call.command, &key, source).await {
+        Some(step) => step,
+        None => match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
+            Ok(Some(step)) if step != TrustedStep::Allow => step,
+            // Not a card-free step, or the ledger could not say: nothing runs.
+            _ => return refuse(call, "outside what push freely covers here"),
+        },
     };
+    // Given up while the gate read GitHub: nothing starts, and what the gate held goes back.
+    if call.reply.is_closed() {
+        if let Ok(mut finished) = running.outcomes.lock() {
+            finished.push((key, false));
+        }
+        return;
+    }
+    let outcomes = running.outcomes.clone();
     let repo = match &step { TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
     let mut ctx = HostCtx::new(turn.token.clone(), std::sync::Arc::default(), ledger.push_trust_recheck(&proposal, &repo));
     ctx.timeout = codex_step::STEP_TIMEOUT;
@@ -110,10 +153,18 @@ pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &
             // expired): the step is stopped, its slot freed once it is.
             () = reply.closed() => {
                 cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = job.await;
+                // Stopped or not, what it held settles with what actually happened (GPT review).
+                let ran = job.await.is_ok_and(|result| result.is_ok());
+                if let Ok(mut finished) = outcomes.lock() {
+                    finished.push((key, ran));
+                }
                 return;
             }
         };
+        // Whatever the gate held under this step settles with its outcome.
+        if let Ok(mut finished) = outcomes.lock() {
+            finished.push((key, result.is_ok()));
+        }
         let answer = match result {
             Ok(out) => (bounded(out), false),
             Err(why) => (bounded(format!("Hagency could not run this step: {why}")), true),
@@ -121,6 +172,23 @@ pub(super) fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &
         // The call may have gone just now: nobody to tell.
         let _ = reply.send(answer);
     });
+}
+
+/// The merge gate's answer to a review verdict sent as this step: the
+/// pinned review to run, held under `key`, or `None` to leave the step to
+/// push trust and the normal rules (GPT review of 2a7b1ed9): only a verdict
+/// `ReviewPost` reads ever reaches the gate here (never a merge or ready),
+/// a room member's needs the room's own review grant (its repository set
+/// included) as well, and a gate refusal falls back to push trust.
+async fn gated_review(ledger: &mut Ledger, turn: &Turn<'_>, proposal: &ToolProposal, command: &str, key: &str, source: &impl crate::merge_policy::github::PrSource) -> Option<TrustedStep> {
+    let post = crate::watch_trust::review_post::ReviewPost::parse(command)?;
+    let granted = |ledger: &mut Ledger| turn.scope.requester == turn.owner || matches!(ledger.trusted_publish(turn.owner, proposal, super::now()), Ok(Some(TrustedStep::Command(_))));
+    if !granted(ledger) {
+        return None;
+    }
+    let allowed = crate::merge_policy::gate::auto_answer(ledger, turn.owner, proposal, key, super::now(), source).await?;
+    // The grant is read again after the GitHub reads (GPT review): a revoked one runs nothing here.
+    (allowed && granted(ledger)).then(|| TrustedStep::Command(post.command()))
 }
 
 /// The proposal push trust checks: the call as `codex_step::TOOL`, rooted

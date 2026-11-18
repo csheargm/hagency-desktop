@@ -302,6 +302,14 @@ pub fn declined_unseen(method: &str, cause: &'static str) {
         "A Codex approval request was declined without being shown to the owner"
     );
 }
+/// Log line for a Codex `gh pr review` the host saw run outside the gate:
+/// recorded (`None`) or skipped with a fixed reason word. No content is logged.
+pub fn review_observed(skipped: Option<&'static str>) {
+    match skipped {
+        None => tracing::info!(code = "codex_review_observed", outcome = "recorded", "codex_review_observed recorded"),
+        Some(reason) => tracing::info!(code = "codex_review_observed", outcome = "skipped", reason, "codex_review_observed skipped reason={reason}"),
+    }
+}
 fn required_text(value: &Value, key: &str, limit: usize) -> Result<(), Error> {
     value
         .get(key)

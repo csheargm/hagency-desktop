@@ -39,8 +39,8 @@ impl Ledger {
 /// approved its head, plus `github:<login>` for each trusted reviewer whose
 /// latest decisive GitHub review approves exactly that head (never the
 /// pull request's own author). `None` when something cannot be read.
-pub(crate) async fn approvers(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, trusted: &[String], (own_login, count_local): (Option<&str>, bool), source: &impl PrSource) -> Option<Vec<String>> {
-    let mut all = if count_local { ledger.agent_reviewers(&view.url, &view.head_sha).ok()? } else { Vec::new() };
+pub(crate) async fn approvers(command: &GhPr, repo: &str, view: &PrView, trusted: &[String], (own_login, local): (Option<&str>, Option<Vec<String>>), source: &impl PrSource) -> Option<Vec<String>> {
+    let mut all = local.unwrap_or_default();
     if trusted.is_empty() {
         return Some(all);
     }
@@ -61,26 +61,49 @@ pub(crate) async fn approvers(ledger: &mut Ledger, command: &GhPr, repo: &str, v
 pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, merger: &str, source: &impl PrSource) -> Option<(PrView, Decision)> {
     let view = source.pull_request(command).await?;
     let repo = repo_of_url(&view.url, command.number)?.to_owned();
-    let decision = judge(ledger, command, &repo, &view, merger, source).await?;
+    let decision = judge(ledger, command, &repo, &view, (merger, None), source).await?;
     Some((view, decision))
+}
+
+/// This device's Agents that approved `view`'s head, counted for a merge from
+/// `room` (any room for an advisory readiness check, `None`), never one
+/// that wrote the pull request: the Agent the issue tracker handed it to, or
+/// the one its body names as "Opened by agent <name>" (GPT review: a shared
+/// login lets the author post a marker comment).
+fn local_approvers(ledger: &Ledger, repo: &str, number: u64, view: &PrView, room: Option<&str>) -> Result<Vec<String>> {
+    let mut authors = ledger.pr_author_agents(repo, number)?;
+    authors.extend(view.opened_by.clone());
+    let all = ledger.agent_reviewers_in(&view.url, &view.head_sha, room)?;
+    Ok(all.into_iter().filter(|reviewer| !authors.iter().any(|a| a.eq_ignore_ascii_case(reviewer))).collect())
+}
+
+impl Ledger {
+    /// The Agents the issue tracker handed issues to whose pull request is `number` in `repo`.
+    pub(crate) fn pr_author_agents(&self, repo: &str, number: u64) -> Result<Vec<String>> {
+        let mut statement = self.db.prepare("SELECT DISTINCT agent FROM issue_track WHERE lower(repo)=lower(?) AND pr=?")?;
+        let rows = statement.query_map((repo, number as i64), |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 /// The merge decision for `view` under every policy that applies (the
 /// owner's rules and the repository's file; each can only tighten).
-pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, merger: &str, source: &impl PrSource) -> Option<Decision> {
+/// `room` is the merge's room: only approvals given there count.
+pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, Option<&str>), source: &impl PrSource) -> Option<Decision> {
     let judged = super::work::judged(ledger, merger, command, repo, view, source).await?;
     if let Some(reason) = judged.author_reason {
         return Some(Decision::NeedsHuman(reason));
     }
+    let local = local_approvers(ledger, repo, command.number, view, room).ok()?;
     // The file keeps its own rule: another Agent than the merger, local only.
-    if let Some(file) = &judged.file {
-        let local = ledger.agent_reviewers(&view.url, &view.head_sha).ok()?;
-        if let decision @ Decision::NeedsHuman(_) = evaluate(file, &view.facts, &local, merger) {
-            return Some(decision);
-        }
+    if let Some(file) = &judged.file
+        && let decision @ Decision::NeedsHuman(_) = evaluate(file, &view.facts, &local, merger)
+    {
+        return Some(decision);
     }
     if let Some(rules) = &judged.rules {
-        let approvers = approvers(ledger, command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), judged.count_local), source).await?;
+        let counted = judged.count_local.then(|| local.clone());
+        let approvers = approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?;
         if let decision @ Decision::NeedsHuman(_) = evaluate(rules, &view.facts, &approvers, &judged.excluded) {
             return Some(decision);
         }

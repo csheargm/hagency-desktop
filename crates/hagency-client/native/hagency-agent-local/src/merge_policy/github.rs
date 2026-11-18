@@ -13,7 +13,7 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// GitHub's compare API lists at most this many files; a full page may be truncated.
 const COMPARE_FILE_LIMIT: usize = 300;
-const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author";
+const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author,body";
 const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
 
 /// One pull request as the gate judges it.
@@ -24,6 +24,8 @@ pub struct PrView {
     pub head_sha: String,
     /// The GitHub login that opened the pull request ("" when not reported).
     pub author: String,
+    /// The Agent its body names: "Opened by agent <name> (" (Hagency's attribution line).
+    pub opened_by: Option<String>,
     pub facts: PrFacts,
 }
 
@@ -31,6 +33,15 @@ pub struct PrView {
 pub fn commit_sha(text: &str) -> Option<&str> {
     (text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then_some(text)
 }
+
+/// The Agent a pull request body names in Hagency's attribution line
+/// (`Opened by agent <name> (<mxid>) on request from …`).
+pub fn opened_by(body: &str) -> Option<String> {
+    let rest = &body[body.find(OPENED_BY)? + OPENED_BY.len()..];
+    let name = rest.split(" (").next()?.trim();
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| name.to_owned())
+}
+const OPENED_BY: &str = "Opened by agent ";
 
 /// The view of `gh pr view --json VIEW_FIELDS` plus the compare API's files.
 pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
@@ -45,7 +56,8 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
     // Missing or unreadable CI evidence is "still running", never "no checks" (GPT review P2).
     let checks = view["statusCheckRollup"].as_array().map_or_else(|| vec![Check::Pending], |all| all.iter().map(check_state).collect());
     let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
-    Some(PrView { url, base_sha, head_sha, author, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+    let opened_by = view["body"].as_str().and_then(opened_by);
+    Some(PrView { url, base_sha, head_sha, author, opened_by, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }
 
 fn changed_file(file: &Value) -> Option<ChangedFile> {
@@ -111,6 +123,12 @@ pub trait PrSource {
     fn reviews(&self, _command: &GhPr, _repo: &str) -> impl std::future::Future<Output = Option<Vec<(String, String, String)>>> {
         async { None }
     }
+    /// When (Unix seconds) GitHub received each review of the pull request
+    /// that it attached to commit `head` and whose body holds
+    /// `<APPROVE_MARKER> <head>`; `None` (the default) when unreadable.
+    fn approvals_on(&self, _command: &GhPr, _repo: &str, _head: &str) -> impl std::future::Future<Output = Option<Vec<i64>>> {
+        async { None }
+    }
 }
 
 /// Whether some GitHub user's latest decisive review (APPROVED, UNBOUND,
@@ -164,6 +182,13 @@ impl PrSource for GhCli {
     async fn viewer_login(&self, command: &GhPr) -> Option<String> {
         let login = gh(&command.dir, &["api", "user", "--jq", ".login"], self.token()).await?;
         Some(login.trim().to_owned()).filter(|l| !l.is_empty())
+    }
+    async fn approvals_on(&self, command: &GhPr, repo: &str, head: &str) -> Option<Vec<i64>> {
+        // `head` is a checked 40-hex commit and the marker a constant: neither can break the filter.
+        let head = commit_sha(head)?;
+        let path = format!("repos/{repo}/pulls/{}/reviews?per_page=100", command.number);
+        let filter = format!(".[] | select(.commit_id == \"{head}\" and ((.body // \"\") | contains(\"{} {head}\"))) | .submitted_at | fromdateiso8601", super::gate::APPROVE_MARKER);
+        gh(&command.dir, &["api", &path, "--paginate", "--jq", &filter], self.token()).await?.lines().map(|line| line.trim().parse().ok()).collect()
     }
     async fn reviews(&self, command: &GhPr, repo: &str) -> Option<Vec<(String, String, String)>> {
         let path = format!("repos/{repo}/pulls/{}/reviews?per_page=100", command.number);
