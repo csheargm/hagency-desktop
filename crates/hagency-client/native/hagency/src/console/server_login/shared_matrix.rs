@@ -219,6 +219,8 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     include!("sdk_resume_tests.rs");
+    // TODO(R4): shared_matrix.rs is over budget; move this test module (Source, fixtures) into server_login/shared_matrix_tests.rs.
+    include!("approvals_contention_tests.rs");
     struct Source {
         token: std::sync::Mutex<String>,
         current: Arc<AtomicBool>,

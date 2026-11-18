@@ -11,7 +11,7 @@ fn local(agent_id: &str, action: LocalAction) -> Command {
 pub(super) async fn load(service: Service, agent_id: String) -> Result<Value, String> {
     let activity = service.execute(local(&agent_id, LocalAction::RecentActivity)).await?;
     // A stopped runtime has no waiting approvals to show; the requests still load.
-    let approvals = service.execute(local(&agent_id, LocalAction::Approvals)).await
+    let approvals = service.local_approvals(agent_id.clone()).await
         .map(|v| v["approvals"].clone()).unwrap_or(Value::Null);
     let mut requests = activity["requests"].as_array().cloned().unwrap_or_default();
     for request in &mut requests {

@@ -126,7 +126,7 @@ struct ToolDecision {
 fn default_effort() -> String {
     "medium".into()
 }
-fn runtime_error(e: super::owned_runtime::RuntimeError) -> OwnerError {
+pub(super) fn runtime_error(e: super::owned_runtime::RuntimeError) -> OwnerError {
     use super::owned_runtime::RuntimeError::*;
     match e {
         Approval => error(409, "invalid_tool_approval"),

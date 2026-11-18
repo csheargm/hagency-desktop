@@ -53,6 +53,39 @@ impl Service {
         }
     }
 
+    /// One of this app's Agents' waiting requests (`{"approvals": [...]}`).
+    /// In process, this reads the queue beside the owner command line
+    /// (`NativeOwner::local_approvals`): a slow listing, decision or renewal
+    /// held during the Agent's own turn hid the cards that turn waited on
+    /// (Nov 18). Only local account checks run around it; the owner's live
+    /// server proof bounds it (a `whoami` here waited up to 8 s, GPT review).
+    /// Without a usable proof, or through the owner daemon, it is an ordinary
+    /// command, which keeps that path's owner recovery.
+    pub(crate) async fn local_approvals(&self, agent_id: String) -> Result<Value, String> {
+        let command = Command::Local { agent_id: agent_id.clone(), action: LocalAction::Approvals, input: None, binding_id: None, requester: None };
+        if self.remote_client().await?.is_some() || !self.sdk_account_is_owner() {
+            return self.execute(command).await;
+        }
+        self.check()?;
+        let answer = self.native_owner().await?.local_approvals(&agent_id).await;
+        // An owner retired or switched meanwhile answers nothing.
+        self.check()?;
+        if !self.sdk_account_is_owner() {
+            return Err("matrix_account_mismatch".into());
+        }
+        match answer {
+            Ok(value) => Ok(value),
+            Err(_) => self.execute(command).await,
+        }
+    }
+
+    /// The SDK's signed-in account is this owner (local, no network).
+    fn sdk_account_is_owner(&self) -> bool {
+        crate::sliding_sync::get_client()
+            .and_then(|client| client.user_id().map(|id| id.as_str() == self.0.owner))
+            .unwrap_or(false)
+    }
+
     /// Drops `failed` only if it is still the cached owner: a concurrent
     /// caller may already have replaced it, and that owner must keep running.
     async fn drop_stale_native_owner(&self, failed: &NativeOwner) -> Result<(), String> {

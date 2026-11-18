@@ -282,7 +282,7 @@ fn record_read_error(identity: &str, code: &str) -> bool {
     changed
 }
 /// `unreadable` rows that `local_approvals::with_local` adds to an answer.
-fn unreadable_agents(value: &Value) -> Vec<(String, String)> {
+pub(crate) fn unreadable_agents(value: &Value) -> Vec<(String, String)> {
     value[super::local_approvals::UNREADABLE].as_array().into_iter().flatten()
         .map(|u| (u["agent"].as_str().unwrap_or("Agent").to_owned(), u["code"].as_str().unwrap_or_default().to_owned()))
         .collect()
