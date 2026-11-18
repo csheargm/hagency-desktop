@@ -16,7 +16,7 @@ def n(nid, path, name="", actions="", bounds=(0, 0, 100, 20), role="button"):
             "bounds": list(bounds), "role": role, "window": "1:0"}
 
 
-ROOM_ROW = n("r1", "rooms_list.list.FullPreview.top.room_name", "e2e room", role="static_text")
+ROOM_ROW = n("r1", "dock.rooms_list.list.FullPreview.top.room_name", "e2e room", role="static_text")
 
 
 class FakeBridge:
@@ -25,7 +25,7 @@ class FakeBridge:
     def __init__(self, screen):
         self.owner, self.screen, self.done = "betty", screen, []
 
-    def nodes(self, query):
+    def snapshot(self):
         return list(self.screen)
 
     def press(self, node, settle=1.0):
@@ -57,7 +57,21 @@ class Matching(unittest.TestCase):
                 n("b", "prompt.buttons.bring", "Bring", "press")]
         elsewhere = [n("p2", "prompt2.body.text", "Bring bird-codex into dev room?"),
                      n("b2", "prompt2.buttons.bring", "Bring", "press"), ROOM_ROW]
-        self.assertEqual([x["id"] for x in owner_ui.prompt_buttons(mine + elsewhere)], ["b"])
+        self.assertEqual([b["id"] for b, _ in owner_ui.prompt_buttons(mine + elsewhere)], ["b"])
+
+    def test_room_row_must_be_unique_and_in_the_room_list(self):
+        header = n("h", "room_screen.header.room_name", "e2e room", role="static_text")
+        self.assertEqual([x["id"] for x in owner_ui.room_rows([ROOM_ROW, header], "e2e room")], ["r1"])
+        fake = FakeBridge([ROOM_ROW, dict(ROOM_ROW, id="r2")])
+        with mock.patch("time.sleep"), self.assertRaisesRegex(bridge.StepNotFound, "2 candidates"):
+            owner_ui.open_room(fake, "e2e room")
+
+    def test_private_allow_needs_agent_and_room(self):
+        other_room = [n("t", "modal.body.text", "bird-codex is private ... add it to dev room?"),
+                      n("a", "modal.buttons.allow", "Allow in group rooms", "press")]
+        ours = [n("t2", "modal2.body.text", "bird-codex is private ... add it to e2e room?"),
+                n("a2", "modal2.buttons.allow", "Allow in group rooms", "press")]
+        self.assertEqual([x["id"] for x in owner_ui.private_allow(other_room + ours, "bird-codex")], ["a2"])
 
     def test_there_is_no_approve_path(self):
         src = Path(owner_ui.__file__).read_text()
@@ -94,7 +108,7 @@ class Flows(unittest.TestCase):
     def test_missing_join_button_is_named(self):
         self.statuses = [{"owner:betty": "invite"}]
         fake = FakeBridge([ROOM_ROW])
-        with mock.patch.object(owner_ui, "wait_nodes", side_effect=[[ROOM_ROW], None]):
+        with mock.patch.object(owner_ui, "wait_step", side_effect=[[ROOM_ROW], None]):
             with self.assertRaisesRegex(bridge.StepNotFound, "Join Room"):
                 owner_ui.join_room(fake, "!r", [])
 
@@ -109,6 +123,12 @@ class Flows(unittest.TestCase):
             owner_ui.add_agent(fake, "!r", "bird-codex", [])
         self.assertEqual(fake.done, [("click", "r1"), ("click", "plus"), ("press", "add"), ("click", "pp"),
                                      ("press", "ok")])
+
+    def test_pending_invite_is_not_resent(self):
+        self.statuses = [{"agent:bird-codex": "invite"}] * 2 + [{"agent:bird-codex": "join"}]
+        fake = FakeBridge([])
+        owner_ui.add_agent(fake, "!r", "bird-codex", [])
+        self.assertEqual(fake.done, [])
 
     def test_add_agent_skips_present_agent(self):
         self.statuses = [{"agent:bird-codex": "join"}]

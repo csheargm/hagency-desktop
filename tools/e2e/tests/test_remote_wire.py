@@ -104,34 +104,87 @@ class BridgeGuards(unittest.TestCase):
     def test_destructive_words_refused(self):
         b = bridge.Bridge.__new__(bridge.Bridge)
         b.owner, b.session = "betty", mock.Mock()
-        for words in ("quit", "close", "gq", "input replay", "window"):
+        for words in ("quit", "close", "gq", "input replay", "window", "ui act"):
             with self.assertRaises(ValueError):
                 b.cmd(words)
         b.session.request.assert_not_called()
 
-    def test_acts_carry_the_persons_input_counter(self):
+    def _bridge(self):
         b = bridge.Bridge.__new__(bridge.Bridge)
-        b.owner, b.session = "betty", mock.Mock()
-        b.session.request.side_effect = [[{"activity": {"user_active": False, "user_seq": 5}}], []]
+        b.owner, b.session, b.seq = "betty", mock.Mock(), None
+        return b
+
+    def test_acts_carry_the_counter_read_before_the_snapshot(self):
+        b = self._bridge()
+        tree = {"trees": [{"window": "1:0", "nodes": [{"id": "d45", "path": "x.deny", "actions": "press",
+                                                        "bounds": [0, 0, 9, 9], "role": "button"}]}]}
+        b.session.request.side_effect = [[{"activity": {"user_active": False, "user_seq": 5}}], [tree], []]
+        nodes = b.snapshot()
         with mock.patch("time.sleep"):
-            b.press({"id": "d45", "actions": "focus,press"})
-        sent = json.loads(b.session.request.call_args_list[1].args[0])
+            b.press(nodes[0])
+        first = json.loads(b.session.request.call_args_list[0].args[0])
+        sent = json.loads(b.session.request.call_args_list[2].args[0])
+        self.assertEqual(first["cmd"], "status")
         self.assertEqual((sent["cmd"], sent["node"], sent["if_user_seq"]), ("ui act press", "d45", 5))
 
-    def test_person_using_the_window_stops_the_act(self):
-        b = bridge.Bridge.__new__(bridge.Bridge)
-        b.owner, b.session = "betty", mock.Mock()
+    def test_no_act_without_a_snapshot(self):
+        b = self._bridge()
+        with self.assertRaisesRegex(bridge.StepNotFound, "without a snapshot"):
+            b.press({"id": "d45", "actions": "press"})
+        b.session.request.assert_not_called()
+
+    def test_buttons_are_never_clicked_by_coordinate(self):
+        b = self._bridge()
+        b.seq = 1
+        with self.assertRaises(bridge.StepNotFound):
+            b.click_at({"id": "x", "role": "button", "bounds": [0, 0, 9, 9]})
+        with self.assertRaises(bridge.StepNotFound):
+            b.press({"id": "x", "role": "button", "actions": ""})
+        b.session.request.assert_not_called()
+
+    def test_person_using_the_window_stops_the_step(self):
+        b = self._bridge()
         b.session.request.return_value = [{"activity": {"user_active": True, "user_seq": 9}}]
         with self.assertRaises(bridge.StepNotFound):
-            b.press({"id": "d45", "actions": "press"})
+            b.snapshot()
         self.assertEqual(b.session.request.call_count, 1)
+
+    def test_only_allowlisted_commands(self):
+        b = self._bridge()
+        for words in ("ui find", "ui act", "key", "text"):
+            with self.assertRaises(ValueError):
+                b.cmd(words)
+        with self.assertRaises(ValueError):
+            b.cmd("status", cmd="quit")
+        b.session.request.assert_not_called()
+
+    def test_truncated_reply_is_refused(self):
+        a, b = socket.socketpair()
+        answer = [{"nodes": []}, {"end": "ui", "ms": 1, "truncated": True}]
+        threading.Thread(target=fake_endpoint, args=(b, [answer], []), daemon=True).start()
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            path, srv = private_socket_path(tmp)
+            s = rw.Session(path, connect=lambda _p: a)
+            with self.assertRaisesRegex(rw.WireError, "truncated"):
+                s.request("ui")
+            srv.close()
+
+    def test_line_separator_inside_text_is_not_a_delimiter(self):
+        a, b = socket.socketpair()
+        answer = [{"name": "a\u2028b"}, {"end": "ui", "ms": 1}]
+        threading.Thread(target=fake_endpoint, args=(b, [answer], []), daemon=True).start()
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            path, srv = private_socket_path(tmp)
+            s = rw.Session(path, connect=lambda _p: a)
+            self.assertEqual(s.request("ui"), [{"name": "a\u2028b"}])
+            srv.close()
 
     def test_wire_failure_becomes_bridge_down(self):
         b = bridge.Bridge.__new__(bridge.Bridge)
         b.owner, b.session = "betty", mock.Mock()
         b.session.request.side_effect = rw.WireError("endpoint closed the connection")
         with self.assertRaises(bridge.BridgeDown):
-            b.nodes("x")
+            b.snapshot()
 
 
 if __name__ == "__main__":

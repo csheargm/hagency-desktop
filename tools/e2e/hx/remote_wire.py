@@ -21,6 +21,7 @@ OP_HELLO, OP_HELLO_OK, OP_GOODBYE = 1, 2, 4
 FLAG_MORE = 1
 MAX_FRAME = 1 << 20
 TIMEOUT_S = 20
+MAX_REQUEST = 64 << 10  # one frame, well inside the endpoint's initial 256 KiB credit
 
 
 class WireError(RuntimeError):
@@ -101,7 +102,10 @@ class Session:
     def request(self, line: str) -> list:
         """Send one command line; return its JSON lines (without the end line).
         A reply line {"err": ...} raises."""
-        self.sock.sendall(encode(self.chan, DATA, line.encode() + b"\n"))
+        body = line.encode() + b"\n"
+        if len(body) > MAX_REQUEST:
+            raise WireError(f"request of {len(body)} bytes is above the {MAX_REQUEST}-byte limit")
+        self.sock.sendall(encode(self.chan, DATA, body))
         rows, pending = [], b""
         while True:
             _, kind, flags, payload = self._next(self.chan)
@@ -111,11 +115,14 @@ class Session:
             pending += payload
             if flags & FLAG_MORE:
                 continue
-            for raw in pending.decode(errors="replace").splitlines():
+            for raw in pending.split(b"\n"):  # the wire's delimiter; U+2028 in text stays text
+                raw = raw.decode(errors="replace")
                 if not raw.strip():
                     continue
                 row = json.loads(raw) if raw.lstrip().startswith("{") else {"text": raw}
                 if "end" in row:
+                    if row.get("truncated"):
+                        raise WireError(f"{line[:40]}: reply truncated; refusing a partial view")
                     return rows
                 if "measured" in row:
                     continue
