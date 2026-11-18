@@ -43,6 +43,7 @@ pub(crate) mod local_git;
 pub mod read_only;
 pub mod review_post;
 pub mod room_scope;
+pub(crate) mod step_env;
 
 /// How push trust answers a tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
