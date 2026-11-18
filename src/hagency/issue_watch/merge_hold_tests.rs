@@ -69,7 +69,7 @@ fn merge(auto_merge: bool) -> Value {
 }
 fn check(fake: &Fake, permission: Option<&str>, settled: bool) -> Gate {
     let agent = fixer();
-    let ctx = LoopCtx { agent: &agent, maintainer: true, permission };
+    let ctx = LoopCtx { agent: &agent, name: "bird-claude", maintainer: true, permission };
     let readiness = fake.readiness.borrow().clone();
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow_gate(fake, &target(HEAD), &readiness, &ctx, settled)).unwrap()
 }
@@ -202,7 +202,7 @@ fn each_fixed_blocker_lets_the_next_through_until_the_agent_is_told_to_merge() {
 #[test]
 fn held_notices_never_share_a_transaction_id_with_the_merge_or_each_other() {
     let held = |step: &str| LoopNotice::Held { target: target(HEAD), step: step.into(), missing: vec![] };
-    let approved = LoopNotice::Approved { target: target(HEAD), fixer: fixer() };
+    let approved = LoopNotice::Approved { target: target(HEAD), fixer: fixer(), name: "bird-claude".into() };
     let ids: HashSet<_> = [held("hold-approvals"), held("hold-merges-off"), approved].iter().map(|n| n.txn_id("agt")).collect();
     assert_eq!(ids.len(), 3);
 }
@@ -240,7 +240,7 @@ fn the_merge_is_told_from_the_same_answer_that_judged_it() {
     }
     let flip = Flip(Fake::new(merge(true)));
     let agent = fixer();
-    let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
+    let ctx = LoopCtx { agent: &agent, name: "bird-claude", maintainer: true, permission: Some("admin") };
     let gate = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow_gate(&flip, &target(HEAD), &merge(true), &ctx, true)).unwrap();
     assert_eq!(gate, Gate::Merge);
     assert!(matches!(&flip.0.posted.borrow()[..], [LoopNotice::Approved { .. }]));

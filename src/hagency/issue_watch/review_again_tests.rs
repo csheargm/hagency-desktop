@@ -146,3 +146,14 @@ fn pr_104_the_ready_request_is_posted_once_per_head_with_the_exact_command() {
     assert!(body.contains("bird-claude (@_hagency_agt_bird_claude:beta) if the fix is done, run exactly `gh pr ready 104 --repo csheargm/hagency-demo-sandbox`"), "{body}");
     assert_eq!(posted[0].0.mention(), Some(&claude()), "the fixer is dispatched");
 }
+
+#[test]
+fn the_merge_line_names_the_agent_and_the_room_rules() {
+    let approved = LoopNotice::Approved { target: target(105), fixer: claude(), name: "bird-claude".into() };
+    let body = approved.body();
+    assert!(body.contains("merging under the room rules: bird-claude (@_hagency_agt_bird_claude:beta) run exactly `gh pr merge 105 --squash --match-head-commit"), "{body}");
+    assert!(!body.contains("repo rules"), "{body}");
+    assert_eq!(approved.mention(), Some(&claude()), "the mention the Agent needs stays");
+    let unnamed = LoopNotice::Approved { target: target(105), fixer: claude(), name: String::new() }.body();
+    assert!(unnamed.contains("room rules: @_hagency_agt_bird_claude:beta run exactly"), "{unnamed}");
+}

@@ -35,6 +35,8 @@ pub(crate) fn readiness_ask(io: &impl LoopIo, repo: &str, number: u64) -> Value 
 pub(crate) struct LoopCtx<'a> {
     /// This device's own Agent: it reviews, and (maintainer) merges.
     pub agent: &'a OwnedUserId,
+    /// Its display name, for the room to read ("" when unknown).
+    pub name: &'a str,
     /// Maintainer role: carry an approved head on to the merge.
     pub maintainer: bool,
     /// This owner's own GitHub permission on the repository, when read.
@@ -104,7 +106,7 @@ pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>
     match readiness["decision"].as_str() {
         // The gate never answers a merge with the switch off (or unknown): say so instead (GPT review).
         Some("merge") if readiness["autoMerge"] != true => Some(super::merge_hold::merges_off(&target)),
-        Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone() }),
+        Some("merge") if can_merge(ctx.permission) => Some(LoopNotice::Approved { target, fixer: ctx.agent.clone(), name: ctx.name.to_owned() }),
         Some("merge") => Some(LoopNotice::NeedsMaintainer { target, step: Missing::Permission.step() }),
         Some("wait") => None,
         _ if readiness["approvers"].as_u64() == Some(0) => None,

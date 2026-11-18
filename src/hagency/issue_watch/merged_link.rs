@@ -6,13 +6,10 @@
 //! or a branch naming the issue, opened by this Agent's GitHub login.
 //! Only one opened during the current hand-off counts: a reopened issue's
 //! earlier fix is never announced (or counted) again (GPT review).
-use super::tracker::links_issue;
+use super::tracker::{CLOCK_SLACK_SECS, links_issue};
 use super::work::Worker;
 use ::hagency::issue_watch::issue_track::Track;
 use ::hagency::issue_watch::{GITHUB_API, PullRequest, fetch_merged_pulls};
-
-/// GitHub's and this device's clocks may differ by this much.
-const CLOCK_SLACK_SECS: i64 = 120;
 
 /// The newest of `pulls` that `login` opened, during `track`'s current hand-off, linking its issue in `repo`.
 pub(super) fn pick(pulls: &[PullRequest], (repo, login): (&str, &str), track: &Track) -> Option<u64> {

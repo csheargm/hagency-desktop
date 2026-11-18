@@ -56,7 +56,7 @@ fn anna() -> OwnedUserId {
 }
 async fn run(fake: &Fake, maintainer: bool, permission: Option<&str>) -> Result<(), String> {
     let agent = anna();
-    advance(fake, &target(), &LoopCtx { agent: &agent, maintainer, permission }).await
+    advance(fake, &target(), &LoopCtx { agent: &agent, name: "bird-claude", maintainer, permission }).await
 }
 
 #[tokio::test]
@@ -154,7 +154,7 @@ fn notices_carry_no_pull_request_text_and_fixed_transaction_ids() {
 #[tokio::test]
 async fn the_owners_own_pull_request_skips_self_review_and_still_passes_the_gate() {
     let agent = anna();
-    let ctx = LoopCtx { agent: &agent, maintainer: true, permission: Some("admin") };
+    let ctx = LoopCtx { agent: &agent, name: "bird-claude", maintainer: true, permission: Some("admin") };
     let ready = Fake::new(json!({"decision": "merge", "head": HEAD, "approvers": 1, "autoMerge": true}));
     for _ in 0..2 {
         super::review_loop::advance_merge(&ready, &target(), &ctx).await.unwrap();

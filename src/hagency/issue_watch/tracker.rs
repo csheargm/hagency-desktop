@@ -14,6 +14,10 @@ use ::hagency::issue_watch::{Issue, PullRequest};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+/// GitHub's and this device's clocks may differ by this much (a cannot-fix
+/// comment or pull request this much older than the hand-off still counts).
+pub(super) const CLOCK_SLACK_SECS: i64 = 120;
+
 /// What following a pull request led to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Followed {

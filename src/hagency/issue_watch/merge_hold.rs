@@ -206,7 +206,7 @@ async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice)
 pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, ctx: &LoopCtx<'_>, settled: bool) -> Result<Gate, String> {
     let gate = gate_of(target, readiness, ctx.permission, settled);
     match &gate {
-        Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone() }).await?,
+        Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone(), name: ctx.name.to_owned() }).await?,
         Gate::Hold(missing) => {
             let step = hold_step(missing);
             let lines = missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect();

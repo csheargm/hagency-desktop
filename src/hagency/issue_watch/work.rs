@@ -201,14 +201,15 @@ async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<
     let permission = fetch_permission(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.ok();
     let can_merge = review_loop::can_merge(permission.as_deref());
     let agent = puppet(worker.agent)?;
+    let name = worker.agent["displayName"].as_str().unwrap_or_default().to_owned();
     let io = LiveLoop::new(worker, &entry.room_id)?;
     for pr in picks {
         // Anyone's pull request is reviewed; only a trusted author's goes on to a merge.
-        let ctx = LoopCtx { agent: &agent, maintainer: can_merge && trusted(&pr.author), permission: permission.as_deref() };
+        let ctx = LoopCtx { agent: &agent, name: &name, maintainer: can_merge && trusted(&pr.author), permission: permission.as_deref() };
         review_loop::advance(&io, &review_loop::target_of(&entry.repo, pr), &ctx).await?;
     }
     if can_merge {
-        merge_own(worker, entry, &own, &io, &LoopCtx { agent: &agent, maintainer: true, permission: permission.as_deref() }).await?;
+        merge_own(worker, entry, &own, &io, &LoopCtx { agent: &agent, name: &name, maintainer: true, permission: permission.as_deref() }).await?;
     }
     Ok(())
 }

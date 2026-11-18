@@ -37,8 +37,8 @@ pub struct Target {
 pub enum LoopNotice {
     /// Ask `reviewer` (an Agent in the room) to review `Target`.
     ReviewRequested { target: Target, reviewer: OwnedUserId },
-    /// An approval qualifies the head: `fixer` runs the pinned merge.
-    Approved { target: Target, fixer: OwnedUserId },
+    /// An approval qualifies the head: `fixer` (display name `name`) runs the pinned merge.
+    Approved { target: Target, fixer: OwnedUserId, name: String },
     /// The loop's pull request is still a draft after the fixer's run ended:
     /// `fixer` is asked once per head to mark it ready (step [`DRAFT_STEP`]).
     MarkReady { target: Target, fixer: OwnedUserId, name: String },
@@ -92,9 +92,10 @@ impl LoopNotice {
                 let steps = ::hagency::REVIEW_STEPS.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo);
                 format!("{}{reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
             }
-            Self::Approved { fixer, .. } => format!(
-                "{lead}{short} — merging under the repo rules: {fixer} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
+            Self::Approved { fixer, name, .. } => format!(
+                "{lead}{short} — merging under the room rules: {who} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
                 lead = ::hagency::issue_watch::MERGE_NOTICE_LEAD,
+                who = named(name, fixer),
                 command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
             ),
             Self::MarkReady { fixer, name, .. } => format!(
