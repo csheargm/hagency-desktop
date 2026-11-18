@@ -80,10 +80,13 @@ pub fn run_end_of(requests: &Value, repo: &str, number: i64, handed_at: i64) -> 
 }
 
 /// The current hand-off's run of `track` in the owner API's Activity view
-/// (`{requests, budgetUsedUp}`), counting only `requester`'s hand-offs.
-pub fn run_end_in(activity: &Value, requester: &str, track: &Track) -> RunView {
+/// (`{requests, budgetUsedUp, budgetUsedUpRooms}`), counting only
+/// `requester`'s hand-offs; the budget is out when the Agent's is, or the
+/// watch `room`'s (integration GPT review: a used-up room budget burned attempts).
+pub fn run_end_in(activity: &Value, (requester, room): (&str, &str), track: &Track) -> RunView {
     let ours = requested_by(&activity["requests"], requester);
-    RunView { run: run_end_of(&ours, &track.repo, track.number, track.handed_at), budget_out: activity["budgetUsedUp"] == true }
+    let room_out = activity["budgetUsedUpRooms"].as_array().is_some_and(|rooms| rooms.iter().any(|r| r.as_str() == Some(room)));
+    RunView { run: run_end_of(&ours, &track.repo, track.number, track.handed_at), budget_out: activity["budgetUsedUp"] == true || room_out }
 }
 
 /// Only the requests `requester` sent: the hand-offs this device's account

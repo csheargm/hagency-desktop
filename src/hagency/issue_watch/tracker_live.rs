@@ -157,15 +157,12 @@ impl LiveTrack<'_> {
     fn agent_id(&self) -> &str {
         self.worker.agent["id"].as_str().unwrap_or_default()
     }
-}
-
-impl LiveTrack<'_> {
     /// The gate's answer for `pr` and the step it leads to; every GitHub read
     /// (the owner API's own, and the reviews) fails here, never silently.
     async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, fixer: &OwnedUserId) -> Result<Gate, String> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, maintainer: true, permission: Some(permission) };
-        let readiness = io.review(json!({"readiness": {"repo": self.repo, "number": pr.number}})).await?["readiness"].clone();
+        let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         let settled = readiness["kind"] == "approvals" && readiness["head"].is_string() && {
             let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
@@ -221,7 +218,7 @@ impl TrackIo for LiveTrack<'_> {
     async fn run_end(&self, track: &Track) -> Result<RunView, String> {
         let ask = crate::hagency::model::Command::Local { agent_id: self.agent_id().into(), action: crate::hagency::model::LocalAction::RecentActivity, input: None, binding_id: None, requester: None };
         let activity = self.worker.service.execute(ask).await?;
-        Ok(super::run_end::run_end_in(&activity, crate::sliding_sync::current_user_id().ok_or("Signed out")?.as_str(), track))
+        Ok(super::run_end::run_end_in(&activity, (crate::sliding_sync::current_user_id().ok_or("Signed out")?.as_str(), self.room.as_str()), track))
     }
     async fn pushed_branch(&self, number: i64) -> Result<Option<String>, String> {
         let branches = fetch_branches(self.worker.client, GITHUB_API, self.repo, self.worker.token).await.map_err(|e| e.to_string())?;
@@ -232,6 +229,9 @@ impl TrackIo for LiveTrack<'_> {
     }
     async fn pr_merged(&self, pr: u64) -> Result<Option<bool>, String> {
         Ok(fetch_pull_merged(self.worker.client, GITHUB_API, self.repo, pr, self.worker.token).await.map_err(|e| e.to_string())?.map(|by| by.eq_ignore_ascii_case(&self.login)))
+    }
+    async fn merged_linking_pr(&self, number: i64) -> Result<Option<u64>, String> {
+        super::merged_link::find(self.worker, (self.repo, &self.login), number).await
     }
     async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
         let (state, reason) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;

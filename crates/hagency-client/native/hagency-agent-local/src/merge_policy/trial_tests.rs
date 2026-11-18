@@ -67,7 +67,7 @@ async fn a_new_watch_holds_its_first_merges_for_the_owner_with_the_trial_reason(
     assert_eq!(ledger.trial_status("anna", A).unwrap(), Some((0, TRIAL_PRS)));
     let src = Src::new(vec![file("src/a.rs", 3)]);
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "the owner's card, not the gate");
-    let (_, decision) = merge_readiness(&mut ledger, &readiness_command(temp.path()), "anna", &src).await.unwrap();
+    let (_, decision) = merge_readiness(&mut ledger, &readiness_command(temp.path()), ("anna", "!r:x"), &src).await.unwrap();
     assert_eq!(decision, Decision::NeedsHuman(trial_reason(1, TRIAL_PRS)), "the room notice says PR 1 of 3");
     // Reviewing and readying still run without a card: only the merge waits.
     let ready = format!("gh pr ready 7 --repo {A}");
@@ -167,4 +167,31 @@ async fn another_agent_past_its_trial_cannot_merge_a_trial_watchs_pull_request()
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, None, "a trial of this repository holds every Agent's merge");
     ledger.end_watch_trial(OWNER, "bob", A).unwrap();
     assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg2").await, Some(true));
+}
+
+#[tokio::test]
+async fn a_removed_watchs_trial_no_longer_holds_merges_and_returns_with_it() {
+    // Integration GPT review: Bob's watch was removed, its trial row stayed
+    // (so re-adding it never resets the count) and held every Agent's merge.
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna", "bob"]);
+    ledger.set_auto_merge(OWNER, "anna", true).unwrap();
+    ledger.set_work(OWNER, "anna", vec![rules()]).unwrap();
+    crate::merge_policy::tests::set_room_rules(&mut ledger, A, Some(crate::merge_policy::review_loop::tests::ANY_PATH));
+    ledger.end_watch_trial(OWNER, "anna", A).unwrap();
+    ledger.set_work(OWNER, "bob", vec![rules()]).unwrap();
+    ledger.set_work(OWNER, "bob", vec![]).unwrap();
+    assert!(ledger.trial_status("bob", A).unwrap().is_some(), "the precondition: the row is kept");
+    let src = Src::new(vec![file("src/a.rs", 3)]);
+    assert_eq!(review_then_merge(&mut ledger, temp.path(), &src, "mg").await, Some(true), "no watch, no hold");
+    ledger.set_work(OWNER, "bob", vec![rules()]).unwrap();
+    let (_, decision) = merge_readiness(&mut ledger, &readiness_command(temp.path()), ("anna", "!r:x"), &src).await.unwrap();
+    assert_eq!(decision, Decision::NeedsHuman(trial_reason(1, TRIAL_PRS)), "re-added: its trial holds again");
+    // A legacy watch holds only while it is switched on.
+    ledger.set_work(OWNER, "bob", vec![]).unwrap();
+    let setting = |mode| WatchSetting { mode, label: String::new(), repo: A.into(), room_id: "!r:x".into(), push_trusted: false };
+    ledger.set_issue_watch(OWNER, "bob", setting(WatchMode::Trusted), 5).unwrap();
+    assert!(matches!(merge_readiness(&mut ledger, &readiness_command(temp.path()), ("anna", "!r:x"), &src).await.unwrap().1, Decision::NeedsHuman(_)));
+    ledger.set_issue_watch(OWNER, "bob", setting(WatchMode::Off), 6).unwrap();
+    assert_eq!(merge_readiness(&mut ledger, &readiness_command(temp.path()), ("anna", "!r:x"), &src).await.unwrap().1, Decision::Merge);
 }

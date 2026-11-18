@@ -263,4 +263,7 @@ impl LoopIo for LiveLoop<'_> {
         // Signed out: an empty requester, which the owner API refuses.
         crate::sliding_sync::current_user_id().map(|u| u.to_string()).unwrap_or_default()
     }
+    fn room(&self) -> String {
+        self.room_id.to_string()
+    }
 }

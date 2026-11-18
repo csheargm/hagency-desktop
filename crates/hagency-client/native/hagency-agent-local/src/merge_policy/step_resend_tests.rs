@@ -17,6 +17,8 @@ const MERGE: (&str, &str, &str) = ("merge", PR, HEAD);
 /// The merging Agent's Matrix ID, which the merge notice addresses.
 const BIRD: &str = "@bird:test";
 const CODEX: &str = "@codex:test";
+/// The room the loop's notices go to.
+const ROOM: &str = "!room:test";
 
 fn merge_body() -> String {
     format!("✅ Approved at {} — merging under the repo rules: @bird:test run exactly `{}` as its own command.", &HEAD[..12], merge_command(94, HEAD, REPO))
@@ -48,13 +50,16 @@ fn dispatch(id: &str, body: &str, requester: &str) -> Dispatch {
 }
 /// Receive `body` at `at` and end it as `state`; `version` is the settled call's accounting.
 fn receive(l: &mut Ledger, id: &str, body: &str, requester: &str, at: i64, end: Option<(&str, &str)>) {
-    let d = dispatch(id, body, requester);
+    receive_dispatch(l, dispatch(id, body, requester), at, end);
+}
+fn receive_dispatch(l: &mut Ledger, d: Dispatch, at: i64, end: Option<(&str, &str)>) {
+    let id = d.id.clone();
     l.receive_dispatch(OWNER, &d, Limits::default(), at).unwrap();
     let Some((state, version)) = end else { return };
     let execution = format!("exec-{id}");
-    l.db.execute("UPDATE local_inbox SET state=?,execution_id=? WHERE id=?", (state, &execution, id)).unwrap();
+    l.db.execute("UPDATE local_inbox SET state=?,execution_id=? WHERE id=?", (state, &execution, &id)).unwrap();
     let usage = format!(r#"{{"input":0,"output":0,"cached_input":0,"reasoning_output":0,"accounting_version":"{version}"}}"#);
-    l.db.execute("INSERT INTO calls VALUES (?,'bind',?,'d',0,'[]','settled',?)", (&execution, crate::json(&d.scope()).unwrap(), usage)).unwrap();
+    l.db.execute("INSERT INTO calls VALUES (?,?,?,'d',0,'[]','settled',?)", (&execution, &d.binding_id, crate::json(&d.scope()).unwrap(), usage)).unwrap();
 }
 const NO_RUN: Option<(&str, &str)> = Some(("replied", crate::inbox::NO_PROVIDER_CALL));
 const RAN: Option<(&str, &str)> = Some(("replied", "claude-reported-v1"));
@@ -64,7 +69,7 @@ fn say(why: Why, gave_up: bool, round: u32) -> Option<Say> {
     Some(Say { why, gave_up, round })
 }
 fn due(l: &mut Ledger, now: i64) -> StepDue {
-    l.step_due(AGENT, MERGE, (ME, BIRD), now).unwrap()
+    l.step_due(AGENT, MERGE, (ME, BIRD, ROOM), now).unwrap()
 }
 fn said(l: &mut Ledger, round: u32) {
     l.step_line_said(AGENT, MERGE, round).unwrap();
@@ -168,9 +173,9 @@ fn a_review_is_asked_again_only_after_the_zero_call_proof() {
     let review = ("review", PR, HEAD);
     receive(&mut l, "review-1", &review_body(), ME, T0, LOST);
     l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
-    assert!(l.step_due(AGENT, review, (ME, CODEX), T0 + 600).unwrap().taken, "a lost review may have posted its verdict");
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), T0 + 600).unwrap().taken, "a lost review may have posted its verdict");
     receive(&mut l, "review-2", &review_body(), ME, T0 + 700, NO_RUN);
-    let again = l.step_due(AGENT, review, (ME, CODEX), T0 + 900).unwrap();
+    let again = l.step_due(AGENT, review, (ME, CODEX, ROOM), T0 + 900).unwrap();
     assert_eq!((again.taken, again.again), (false, 1));
 }
 
@@ -191,7 +196,7 @@ fn a_merge_claimed_before_steps_were_tagged_is_sent_again_once_unless_it_merged(
     assert!(l.claim_loop_step(AGENT, "merge", PR, HEAD).unwrap());
     assert!(l.claim_loop_step(AGENT, "review", PR, HEAD).unwrap());
     assert_eq!(due(&mut l, T0), StepDue { taken: false, again: 1, say: say(Why::Unrecorded, false, 0) });
-    assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), (ME, CODEX), T0).unwrap(), StepDue { taken: true, again: 0, say: None }, "an old review is never asked again");
+    assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), (ME, CODEX, ROOM), T0).unwrap(), StepDue { taken: true, again: 0, say: None }, "an old review is never asked again");
     l.claim_dispatched_step(AGENT, "merge", PR, HEAD).unwrap();
     assert_eq!(due(&mut l, T0 + 3_600), StepDue { taken: true, again: 1, say: None }, "once: the re-post is tagged from now on");
     let (_temp, mut l) = ledger();
@@ -209,3 +214,6 @@ fn a_given_back_step_not_re_posted_yet_waits_while_the_budget_is_used_up_again()
     assert_eq!(due(&mut l, T0 + 300), StepDue { taken: true, again: 1, say: None }, "no re-post into a used-up budget");
     assert_eq!(due(&mut l, T0 + 86_400).taken, false, "the next day it goes out");
 }
+
+#[path = "step_resend_scope_tests.rs"]
+mod scope;

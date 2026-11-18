@@ -199,8 +199,14 @@ impl Ledger {
         .collect()
     }
 
+    /// The record of issue `number` of `repo`, whatever the case of its
+    /// spelling (a watch edited from "Owner/Repo" to "owner/repo" keeps its
+    /// records, integration GPT review): the exact spelling first, then an
+    /// open record, so a change is saved under the spelling it was stored with.
     fn issue_track(&self, agent: &str, repo: &str, number: i64) -> Result<Option<Track>> {
-        Ok(self.issue_tracks(agent)?.into_iter().find(|t| t.repo == repo && t.number == number))
+        let mut same: Vec<Track> = self.issue_tracks(agent)?.into_iter().filter(|t| t.repo.eq_ignore_ascii_case(repo) && t.number == number).collect();
+        same.sort_by_key(|t| (t.repo != repo, t.state.is_terminal()));
+        Ok(same.into_iter().next())
     }
 
     /// Apply one change (see [`apply_change`]) and store the result.

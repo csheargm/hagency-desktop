@@ -40,7 +40,7 @@ async fn no_stale_or_invalid_room_rules_need_a_person() {
         let src = Fake::new(vec![file("docs/a.md", 3)]);
         assert_eq!(approved_merge(&mut ledger, temp.path(), &src).await, None, "{name}: the card asks");
         let command = gate::parse_command(&bash(&merge_line(), temp.path(), "fixer")).unwrap();
-        let (_, decision) = crate::merge_policy::review_loop::merge_readiness(&mut ledger, &command, "fixer", &src).await.unwrap();
+        let (_, decision) = crate::merge_policy::review_loop::merge_readiness(&mut ledger, &command, ("fixer", "!r:x"), &src).await.unwrap();
         let Decision::NeedsHuman(reason) = decision else { panic!("{name}: no merge") };
         assert!([NO_ROOM_RULES, STALE_ROOM_RULES, INVALID_ROOM_RULES].contains(&reason.as_str()), "{name}: {reason}");
     }
@@ -52,7 +52,7 @@ async fn the_room_notice_reason_names_where_an_admin_sets_rules() {
     let mut ledger = ledger_with(temp.path(), &["fixer"]);
     set_room_rules(&mut ledger, SANDBOX, None);
     let command = gate::parse_command(&bash(&merge_line(), temp.path(), "fixer")).unwrap();
-    let (_, decision) = crate::merge_policy::review_loop::merge_readiness(&mut ledger, &command, "fixer", &Fake::new(vec![file("a.md", 1)])).await.unwrap();
+    let (_, decision) = crate::merge_policy::review_loop::merge_readiness(&mut ledger, &command, ("fixer", "!r:x"), &Fake::new(vec![file("a.md", 1)])).await.unwrap();
     assert_eq!(decision, Decision::NeedsHuman(NO_ROOM_RULES.into()));
     assert!(NO_ROOM_RULES.contains("Room info → Status"));
 }

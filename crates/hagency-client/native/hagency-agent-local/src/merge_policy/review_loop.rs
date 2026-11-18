@@ -14,8 +14,11 @@ use crate::{Ledger, Result};
 /// `loop_step_dispatches`: the step each received loop notice dispatches and the Agent it addresses;
 /// `review_loop_resends`: per dispatched step claimed, how often it was given
 /// back (`again`), when (`released_at`), to which Agent (`runner`), and the
-/// rounds whose room line was said (`said`), see [`super::step_resend`].
+/// rounds whose room line was said (`said`), see [`super::step_resend`];
+/// `review_loop_unseen`: when a claimed round was first found with no
+/// dispatch on this device (`first_at`, -1 once one was seen).
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_loop_sent (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT; \
+CREATE TABLE IF NOT EXISTS review_loop_unseen (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, first_at INTEGER NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT; \
 CREATE TABLE IF NOT EXISTS loop_step_dispatches (dispatch TEXT PRIMARY KEY, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, addressee TEXT NOT NULL) STRICT; \
 CREATE TABLE IF NOT EXISTS review_loop_resends (agent TEXT NOT NULL, step TEXT NOT NULL, pr TEXT NOT NULL, head TEXT NOT NULL, again INTEGER NOT NULL, released_at INTEGER NOT NULL, said INTEGER NOT NULL, runner TEXT NOT NULL, PRIMARY KEY(agent,step,pr,head)) STRICT;";
 
@@ -32,9 +35,9 @@ impl Ledger {
     pub fn claim_loop_step(&mut self, agent: &str, step: &str, pr: &str, head: &str) -> Result<bool> {
         Ok(self.db.execute("INSERT OR IGNORE INTO review_loop_sent VALUES (?,?,?,?)", (agent, step, pr, head))? == 1)
     }
-    /// How many of this device's Agents approved `pr` at `head` (unverified).
-    pub fn agent_reviewers_count(&self, pr: &str, head: &str) -> Result<usize> {
-        Ok(self.agent_reviewers(pr, head)?.len())
+    /// How many of this device's Agents approved `pr` at `head` in `room` (unverified).
+    pub fn agent_reviewers_count(&self, pr: &str, head: &str, room: &str) -> Result<usize> {
+        Ok(self.agent_reviewers_in(pr, head, Some(room))?.len())
     }
     pub fn loop_step_taken(&self, agent: &str, step: &str, pr: &str, head: &str) -> Result<bool> {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?)", (agent, step, pr, head), |r| r.get(0))?)
@@ -61,18 +64,20 @@ pub(crate) async fn approvers(command: &GhPr, repo: &str, view: &PrView, trusted
     Some(all)
 }
 
-/// What a merge of `command`'s pull request by `merger` would get now,
-/// without taking the one automatic merge. `None` when GitHub or a policy
-/// cannot be read (the loop then waits and the owner decides).
-pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, merger: &str, source: &impl PrSource) -> Option<(PrView, Decision)> {
+/// What a merge of `command`'s pull request by `merger` from `room` would
+/// get now, without taking the one automatic merge: only approvals given in
+/// `room` count, as for the gate's own answer (integration GPT review: an
+/// approval from another room passed here, then the gate refused the merge).
+/// `None` when GitHub or a policy cannot be read (the loop then waits and the owner decides).
+pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(PrView, Decision)> {
     let view = source.pull_request(command).await?;
     let repo = repo_of_url(&view.url, command.number)?.to_owned();
-    let decision = judge(ledger, command, &repo, &view, (merger, None), source).await?;
+    let decision = judge(ledger, command, &repo, &view, (merger, Some(room)), source).await?;
     Some((view, decision))
 }
 
 /// This device's Agents that approved `view`'s head, counted for a merge from
-/// `room` (any room for an advisory readiness check, `None`), never one
+/// `room` (any room, `None`), never one
 /// that wrote the pull request: the Agent the issue tracker handed it to, or
 /// the one its body names as "Opened by agent <name>" (GPT review: a shared
 /// login lets the author post a marker comment).

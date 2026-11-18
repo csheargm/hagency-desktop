@@ -32,6 +32,8 @@ impl LoopIo for Fake {
         if let Some(step) = change.get("claimStep") {
             return Ok(json!({"claimed": self.steps.borrow_mut().insert(step["step"].as_str().unwrap().to_owned())}));
         }
+        // Judged for the watch room, as the gate judges the merge (integration GPT review).
+        assert_eq!(change["readiness"]["room"], "!watch:alpha", "{change}");
         Ok(json!({"readiness": self.readiness}))
     }
     fn paused(&self) -> bool {
@@ -39,6 +41,9 @@ impl LoopIo for Fake {
     }
     fn requester(&self) -> String {
         "@owner:alpha".into()
+    }
+    fn room(&self) -> String {
+        "!watch:alpha".into()
     }
 }
 

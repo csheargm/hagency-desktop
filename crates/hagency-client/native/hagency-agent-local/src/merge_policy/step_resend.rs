@@ -10,7 +10,11 @@
 //! [`MAX_RESENDS`] times per head. A step that ran is never sent again, and
 //! a merge whose one automatic merge was taken never is either. A review is
 //! sent again only after the zero-call proof (a lost review may have posted
-//! its verdict); only the notice addressed to the step's Agent counts.
+//! its verdict); only the notice addressed to the step's Agent in the step's
+//! room counts. A claimed step whose notice never reached an Agent of this
+//! device (its binding inactive, or a reviewer on another device that
+//! refused it there) is given back once after [`UNSEEN_AFTER_SECS`]; a merge
+//! stays guarded by the one automatic merge per head.
 use crate::activity::Outcome;
 use crate::merge_policy::github::commit_sha;
 use crate::{Ledger, Result};
@@ -22,6 +26,10 @@ pub const DISPATCHED_STEPS: [&str; 2] = ["review", "merge"];
 pub const RESEND_AFTER_SECS: i64 = 60;
 /// Re-sends of one step per head before the loop gives up and says so.
 pub const MAX_RESENDS: u32 = 3;
+/// How long a claimed step may show no dispatch on this device before it is given back.
+pub const UNSEEN_AFTER_SECS: i64 = 30 * 60;
+/// Give-backs of a step whose notice never showed a dispatch here (counted in its rounds).
+pub const MAX_UNSEEN_RESENDS: u32 = 1;
 
 /// How a merge notice starts; only a message that starts so is a loop notice.
 pub const MERGE_NOTICE_LEAD: &str = "✅ Approved at ";
@@ -93,6 +101,8 @@ pub enum Why {
     Lost,
     /// Claimed before steps were tagged, and its merge never happened.
     Unrecorded,
+    /// No dispatch of its notice reached this device within [`UNSEEN_AFTER_SECS`].
+    Unseen,
 }
 impl Why {
     pub fn word(self) -> &'static str {
@@ -101,7 +111,12 @@ impl Why {
             Self::NoRun => "noRun",
             Self::Lost => "lost",
             Self::Unrecorded => "unrecorded",
+            Self::Unseen => "unseen",
         }
+    }
+    /// The rounds a step is given back for this reason before the loop gives up.
+    fn cap(self) -> u32 {
+        if self == Self::Unseen { MAX_UNSEEN_RESENDS } else { MAX_RESENDS }
     }
 }
 
@@ -125,6 +140,8 @@ pub struct StepDue {
 
 /// The newest dispatch of one step's notice: id, the Agent it went to, receipt time.
 type Sent = (String, String, i64);
+/// Who sent a step's notice, the Matrix ID it addresses, and the room it went to.
+pub type Sender<'a> = (&'a str, &'a str, &'a str);
 
 #[derive(Clone, Default)]
 struct Round {
@@ -149,30 +166,32 @@ impl Ledger {
 
     /// Whether `agent`'s `step` of `pr` at `head` stays taken at `now`, giving
     /// the claim back when the newest notice `requester` sent `to` the step's
-    /// Agent never ran (see the module documentation). A line said while the
-    /// step is held is offered every check until [`Ledger::step_line_said`].
-    pub fn step_due(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), now: i64) -> Result<StepDue> {
+    /// Agent in `room` never ran (see the module documentation). A line said
+    /// while the step is held is offered every check until [`Ledger::step_line_said`].
+    pub fn step_due(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to, room): Sender<'_>, now: i64) -> Result<StepDue> {
         let round = self.round(agent, step, pr, head)?;
         let kept = StepDue { taken: true, again: round.again, say: None };
+        // Every budget a run in this room would be refused for (integration GPT review).
+        let out = |ledger: &Self, runner: &str| -> Result<bool> { Ok(!runner.is_empty() && ledger.room_budget_used_up(&ledger.owner, runner, room, requester, now)?) };
         if !self.loop_step_taken(agent, step, pr, head)? {
             // A given-back step not re-posted yet waits while its Agent's budget is used up (GPT review).
-            let pending = round.again > 0 && !round.runner.is_empty();
-            let held = pending && self.agent_budget_used_up(&self.owner, &round.runner, now)?;
+            let held = round.again > 0 && out(self, &round.runner)?;
             return Ok(StepDue { taken: held, ..kept });
         }
         if !DISPATCHED_STEPS.contains(&step) || (step == "merge" && self.head_used(pr, head)?) {
             return Ok(kept);
         }
-        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to), &round)? else { return Ok(kept) };
-        let why = if self.agent_budget_used_up(&self.owner, &runner, now)? { Why::Budget } else { why };
-        let say = (round.said <= round.again).then_some(Say { why, gave_up: round.again >= MAX_RESENDS, round: round.again });
-        if round.again >= MAX_RESENDS || why == Why::Budget || now - at < RESEND_AFTER_SECS {
+        let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to, room), (&round, now))? else { return Ok(kept) };
+        let why = if out(self, &runner)? { Why::Budget } else { why };
+        let say = (round.said <= round.again).then_some(Say { why, gave_up: round.again >= why.cap(), round: round.again });
+        if round.again >= why.cap() || why == Why::Budget || now - at < RESEND_AFTER_SECS {
             return Ok(StepDue { say, ..kept });
         }
         // Given back: the re-post itself shows the retry, so its line counts as said.
         let said = round.again + 1;
         self.atomically(|ledger| {
             ledger.db.execute("DELETE FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
+            ledger.db.execute("DELETE FROM review_loop_unseen WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
             ledger.set_round(agent, (step, pr, head), &Round { known: true, again: said, released_at: now, said, runner })
         })?;
         Ok(StepDue { taken: false, again: said, say })
@@ -187,11 +206,16 @@ impl Ledger {
 
     /// Why the step's newest dispatch did not run, the Agent it went to and
     /// when; `None` while it runs, after it ran, or when nothing is known.
-    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), round: &Round) -> Result<Option<(Why, String, i64)>> {
-        let Some((dispatch, runner, at)) = self.newest_sent((step, pr, head), (requester, to), round.released_at)? else {
+    fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), sender: Sender<'_>, (round, now): (&Round, i64)) -> Result<Option<(Why, String, i64)>> {
+        let Some((dispatch, runner, at)) = self.newest_sent((step, pr, head), sender, round.released_at)? else {
             // Claimed before tagging (no round row): only a merge that never happened.
-            return Ok((!round.known && step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
+            if !round.known {
+                return Ok((step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
+            }
+            return self.unseen(agent, (step, pr, head), now);
         };
+        // Seen once: a dispatch pruned from the inbox later never reads as unseen.
+        self.db.execute("INSERT OR REPLACE INTO review_loop_unseen VALUES (?,?,?,?,-1)", (agent, step, pr, head))?;
         let Some(row) = self.dispatch_activity(&runner, &dispatch)? else { return Ok(None) };
         let why = match row.outcome {
             Outcome::Answered if row.no_run => Why::NoRun,
@@ -202,11 +226,28 @@ impl Ledger {
         Ok(Some((why, runner, at)))
     }
 
-    fn newest_sent(&self, (step, pr, head): (&str, &str, &str), (requester, to): (&str, &str), since: i64) -> Result<Option<Sent>> {
+    /// The claimed round shows no dispatch here: [`Why::Unseen`] once
+    /// [`UNSEEN_AFTER_SECS`] passed since that was first found. A review is
+    /// never asked again once it is known done here (an approval of the head
+    /// recorded, or its merge step taken).
+    fn unseen(&self, agent: &str, (step, pr, head): (&str, &str, &str), now: i64) -> Result<Option<(Why, String, i64)>> {
+        self.db.execute("INSERT OR IGNORE INTO review_loop_unseen VALUES (?,?,?,?,?)", (agent, step, pr, head, now))?;
+        let first: i64 = self.db.query_row("SELECT first_at FROM review_loop_unseen WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head), |r| r.get(0))?;
+        if first < 0 || now - first < UNSEEN_AFTER_SECS {
+            return Ok(None);
+        }
+        if step == "review" && (!self.agent_reviewers(pr, head)?.is_empty() || self.loop_step_taken(agent, "merge", pr, head)?) {
+            return Ok(None);
+        }
+        // No runner is known: the re-post is never held for a budget.
+        Ok(Some((Why::Unseen, String::new(), first)))
+    }
+
+    fn newest_sent(&self, (step, pr, head): (&str, &str, &str), (requester, to, room): Sender<'_>, since: i64) -> Result<Option<Sent>> {
         const NEWEST: &str = "SELECT t.dispatch,b.agent,i.received_at FROM loop_step_dispatches t JOIN local_inbox i ON i.id=t.dispatch \
 JOIN bindings b ON b.id=i.binding WHERE t.step=? AND lower(t.pr)=lower(?) AND t.head=? AND json_extract(i.envelope,'$.requesterMxid')=? \
-AND t.addressee=? AND i.received_at>=? ORDER BY i.received_at DESC,i.id DESC LIMIT 1";
-        Ok(self.db.query_row(NEWEST, (step, pr, head, requester, to, since), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?)
+AND t.addressee=? AND b.room=? AND i.received_at>=? ORDER BY i.received_at DESC,i.id DESC LIMIT 1";
+        Ok(self.db.query_row(NEWEST, (step, pr, head, requester, to, room, since), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?)
     }
 
     fn head_used(&self, pr: &str, head: &str) -> Result<bool> {

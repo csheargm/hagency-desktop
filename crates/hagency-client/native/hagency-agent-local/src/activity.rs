@@ -131,7 +131,8 @@ impl Ledger {
 
     /// Whether `agent`'s own token budget for the period of `now` is used
     /// up, so `begin_postpaid` refuses every new task with `Error::Budget`
-    /// until the period turns or the owner raises it (Nov 18, #90-#92).
+    /// until the period turns or the owner raises it (Nov 18, #90-#92). A
+    /// room's or requester's budget is [`Ledger::room_budget_used_up`]'s.
     pub fn agent_budget_used_up(&self, owner: &str, agent: &str, now: i64) -> Result<bool> {
         let budget = self.agent_policy(owner, agent)?.policy.budget;
         let crate::Limit::Tokens(limit) = budget.limit else { return Ok(false) };
@@ -194,5 +195,6 @@ impl Ledger {
     }
 }
 
+mod budget_scope;
 #[cfg(test)]
 mod tests;

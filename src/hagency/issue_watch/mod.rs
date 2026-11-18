@@ -15,6 +15,7 @@ mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;
 mod merge_hold;
+mod merged_link;
 #[cfg(test)]
 mod merge_hold_tests;
 mod review_loop;
@@ -52,6 +53,8 @@ mod notice_tests;
 mod review_loop_tests;
 #[cfg(test)]
 mod step_resend_tests;
+#[cfg(test)]
+mod merged_link_tests;
 
 use crate::hagency::{backend::Service, model::Command};
 use ::hagency::github_access::{Token, TokenStore};

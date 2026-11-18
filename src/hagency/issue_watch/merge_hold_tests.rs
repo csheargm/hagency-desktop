@@ -50,6 +50,9 @@ impl LoopIo for Fake {
     fn requester(&self) -> String {
         "@owner:alpha".into()
     }
+    fn room(&self) -> String {
+        "!watch:alpha".into()
+    }
 }
 
 fn target(head: &str) -> Target {
@@ -228,6 +231,9 @@ fn the_merge_is_told_from_the_same_answer_that_judged_it() {
         }
         fn requester(&self) -> String {
             self.0.requester()
+        }
+        fn room(&self) -> String {
+            self.0.room()
         }
     }
     let flip = Flip(Fake::new(merge(true)));
