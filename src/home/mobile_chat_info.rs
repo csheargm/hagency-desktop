@@ -592,7 +592,7 @@ impl MobileChatInfo {
         if let Some(data)=self.data.as_mut() {group_members(&mut data.members,&self.member_owners);}
         let ownership_owner=owner.clone();let ownership_origin=origin.clone();let ownership_room=room_id.clone();
         spawn_async_task(async move {
-            let result=tokio::time::timeout(std::time::Duration::from_secs(30),fetch_member_owners(ownership_room.as_str(),&ownership_owner)).await.unwrap_or_else(|_|Err("room_discovery_unavailable".into()));
+            let result=tokio::time::timeout(std::time::Duration::from_secs(30),crate::profile::agent_profile_owner::member_owners(&ownership_room,&ownership_owner)).await.unwrap_or_else(|_|Err("room_discovery_unavailable".into()));
             Cx::post_action(MemberOwnershipLoaded {owner:ownership_owner,origin:ownership_origin,epoch,room_id:ownership_room,request,result});
         });
         self.status = crate::i18n::tr("Loading chat information…").into();
@@ -1339,6 +1339,19 @@ mod information_target_tests {
     use super::*;
     fn member(id: &str, name: &str) -> UserProfile {
         UserProfile {user_id:OwnedUserId::try_from(id).unwrap(),username:Some(name.into()),avatar_state:AvatarState::Known(None)}
+    }
+    /// Nov 18: in alpha's dev room, Bird's federated bird-claude sat in
+    /// alphabetical order; its published owner now groups it under Bird.
+    #[test]
+    fn a_federated_agent_is_grouped_under_the_owner_its_profile_names() {
+        let mut members=vec![member("@anna:alpha","Anna"),member("@_hagency_agt_b:beta","bird-claude"),member("@zed:alpha","Zed"),member("@bird:beta","Bird")];
+        let mut owners=HashMap::new();
+        crate::profile::agent_profile_owner::add_owners(&mut owners,[(OwnedUserId::try_from("@_hagency_agt_b:beta").unwrap(),OwnedUserId::try_from("@bird:beta").unwrap())]);
+        let indented=group_members(&mut members,&owners);
+        let ids:Vec<_>=members.iter().map(|p|p.user_id.as_str()).collect();
+        assert_eq!(ids,vec!["@anna:alpha","@bird:beta","@_hagency_agt_b:beta","@zed:alpha"]);
+        assert!(indented.contains(&OwnedUserId::try_from("@_hagency_agt_b:beta").unwrap()));
+        assert_eq!(agent_badge_text(&members,&owners,matrix_sdk::ruma::user_id!("@_hagency_agt_b:beta")),Some(member_rows::agent_badge(Some("Bird"))));
     }
     #[test]
     fn agents_follow_only_their_present_human_owner_without_losing_members() {

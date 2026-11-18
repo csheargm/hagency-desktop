@@ -6,9 +6,10 @@
 //!   runtime from its saved model when it runs on this computer.
 //! - Another owner's Agent: the Room's Agent roster (`Command::RoomRoster`)
 //!   names its owner and whether it is paused in that Room. Another server's
-//!   Agent has no roster row: its own run cards in the Room name its owner and
-//!   runtime instead ([`super::agent_room_cards`]), and the Room's Status
-//!   list what it does now ("idle", "working on #12").
+//!   Agent has no roster row: its own profile names its owner
+//!   ([`super::agent_profile_owner`]), else its run cards in the Room do, and
+//!   name its runtime ([`super::agent_room_cards`]); the Room's Status lists
+//!   what it does now ("idle", "working on #12").
 //!
 //! Reads never block drawing: a lookup returns what is cached and starts at
 //! most one fetch, whose reply posts [`AgentFactsChanged`].
@@ -164,7 +165,9 @@ pub fn facts(agent: &UserId, room: &RoomId) -> AgentFacts {
         cache.rosters.get(room).map(|(at, rows)| (at.elapsed() > ROSTER_TTL, rows.get(agent).cloned()))
     };
     if roster.as_ref().is_none_or(|(stale, _)| *stale) { load_roster(&account, room.to_owned()); }
-    let mut facts = others_facts(roster.and_then(|(_, row)| row), super::agent_room_cards::in_room(room, agent));
+    let mut cards = super::agent_room_cards::in_room(room, agent);
+    cards.owner = super::agent_profile_owner::owner_of(agent).or(cards.owner);
+    let mut facts = others_facts(roster.and_then(|(_, row)| row), cards);
     facts.activity = facts.status.is_none().then(|| {
         crate::home::room_watches::activity(room, agent.as_str(), facts.owner.as_ref().map(|o| o.as_str()))
     }).flatten();

@@ -33,6 +33,7 @@ pub(in crate::console) use placement::placed_reply_content;
 // TODO(R4): this file is over budget; split the Agent device (send, history, files, memory) into e2ee/ modules in a refactor session.
 mod memory;
 mod issue_status;
+mod owner_claim;
 pub(in crate::console) use documents::RoomFile;
 pub(in crate::console) use history::HistoryBatch;
 #[cfg(test)]
@@ -128,6 +129,7 @@ pub(super) async fn device<T: Transport>(
     if let Some(device) = devices.get(&key)
         && !device.revoked.load(Ordering::Acquire)
     {
+        claim_owner(transport, device);
         super::run_controls::device_ready(device.clone());
         return Ok(device.clone());
     }
@@ -143,10 +145,18 @@ pub(super) async fn device<T: Transport>(
         return Err(RuntimeError::Transport);
     };
     let device = Arc::new(AgentDevice::open(grant, &directory, &config.agent_id).await?);
+    claim_owner(transport, &device);
     super::questions::device_ready(device.clone());
     super::run_controls::device_ready(device.clone());
     devices.insert(key, device.clone());
     Ok(device)
+}
+
+/// The signed-in owner's console runs this Agent: it publishes that owner.
+fn claim_owner<T: Transport>(transport: &T, device: &AgentDevice) {
+    if let Some(host) = transport.approval_host() {
+        device.claim_owner(&host.pin.owner);
+    }
 }
 
 fn namespace<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
