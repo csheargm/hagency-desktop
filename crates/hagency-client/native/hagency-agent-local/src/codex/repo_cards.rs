@@ -104,8 +104,9 @@ pub(super) async fn decided_with(ledger: &mut Ledger, turn: &Turn<'_>, answer: D
     }
     // An approval posts only while the head is the commit its verdict names,
     // as the merge gate's own (GPT batch review P2-3): a push during the
-    // card's wait must not land it on code nobody reviewed. Residual, as
-    // the gate's: a push between this read and the post.
+    // card's wait must not land it on code nobody reviewed. A push between
+    // this read and the post cannot move it: the post is pinned to the
+    // commit its body names ([`ReviewPost::command`], round-2 GPT review P2-3).
     if let Err(why) = head_still_reviewed(&post, turn, source).await {
         return refuse(call, why);
     }

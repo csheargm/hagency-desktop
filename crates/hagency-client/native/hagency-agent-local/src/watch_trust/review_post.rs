@@ -10,6 +10,7 @@
 //! runs is rebuilt from the parsed words (every value single-quoted, pinned
 //! to github.com with git's helpers off), never the model's own text, so the
 //! posted body is exactly the verdict that was checked.
+use crate::merge_policy::gate::APPROVE_MARKER;
 use crate::outside::shell;
 
 /// Every verdict body starts with this (the merge gate's approval marker
@@ -80,14 +81,29 @@ impl ReviewPost {
         repos.iter().any(|r| r.eq_ignore_ascii_case(&self.repo))
     }
 
-    /// The command that runs in place of the model's text.
-    // TODO(GPT P2, Nov 18): `gh pr review` cannot name a commit, so a push between the
-    // head check and this post still lands it on the new head; post through
-    // `POST repos/{repo}/pulls/{n}/reviews` with `commit_id` to bind it.
+    /// The command that runs in place of the model's text: the review is
+    /// posted through GitHub's reviews API, so a verdict naming a commit
+    /// after [`APPROVE_MARKER`] is pinned to it with `commit_id` (round-2
+    /// GPT review P2-3): a push between the head check and this post leaves
+    /// the approval on the commit it judged, never on the new head.
     pub(crate) fn command(&self) -> String {
         let q = super::quote;
-        let line = format!("GH_HOST='github.com' gh pr review {} {} -R {} -b {}", self.number, self.mode, q(&self.repo), q(&self.body));
+        let event = match self.mode {
+            "--approve" => "APPROVE",
+            "--request-changes" => "REQUEST_CHANGES",
+            _ => "COMMENT",
+        };
+        let path = format!("repos/{}/pulls/{}/reviews", self.repo, self.number);
+        let commit = self.named_commit().map(|sha| format!(" -f {}", q(&format!("commit_id={sha}")))).unwrap_or_default();
+        let line = format!("GH_HOST='github.com' gh api -X POST {}{commit} -f {} -f {}", q(&path), q(&format!("event={event}")), q(&format!("body={}", self.body)));
         super::pin_env(&line)
+    }
+
+    /// The full commit SHA right after the approval marker, if the body names one.
+    fn named_commit(&self) -> Option<&str> {
+        let rest = self.body.strip_prefix(APPROVE_MARKER)?.trim_start();
+        let sha = rest.split(|c: char| !c.is_ascii_hexdigit()).next()?;
+        (sha.len() == 40).then_some(sha)
     }
 }
 
@@ -150,12 +166,27 @@ mod tests {
         let command = post.command();
         assert!(command.starts_with("GIT_CONFIG_COUNT="), "{command}");
         assert!(
-            command.ends_with("GH_HOST='github.com' gh pr review 7 --comment -R 'csheargm/hagency-demo-sandbox' -b 'Hagency verdict: it'\\''s fine; rm -rf / | sh'"),
+            command.ends_with("GH_HOST='github.com' gh api -X POST 'repos/csheargm/hagency-demo-sandbox/pulls/7/reviews' -f 'event=COMMENT' -f 'body=Hagency verdict: it'\\''s fine; rm -rf / | sh'"),
             "{command}"
         );
         // A real shell reads the body back as one literal word.
         let echoed = std::process::Command::new("sh").arg("-c").arg(format!("printf %s {}", super::super::quote(&post.body))).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&echoed.stdout), post.body);
+    }
+
+    /// Round-2 GPT review P2-3: an approval naming its commit is pinned to it.
+    #[test]
+    fn a_verdict_naming_its_commit_is_pinned_to_it() {
+        let sha = "0aed2bbbefa935ed6b91ed2a657b60776c57e107";
+        let approve = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -a -b 'Hagency verdict: APPROVE {sha} - ok'")).unwrap();
+        assert!(approve.command().contains(&format!("gh api -X POST 'repos/{REPO}/pulls/7/reviews' -f 'commit_id={sha}' -f 'event=APPROVE' -f ")), "{}", approve.command());
+        let own = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -c -b 'Hagency verdict: APPROVE {sha}'")).unwrap();
+        assert!(own.command().contains(&format!("-f 'commit_id={sha}' -f 'event=COMMENT'")), "the own-login approval comment too");
+        for body in ["Hagency verdict: APPROVE abc - ok", "Hagency verdict: CHANGES 0aed2bbbefa935ed6b91ed2a657b60776c57e107"] {
+            let post = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -r -b '{body}'")).unwrap();
+            assert!(!post.command().contains("commit_id"), "{body}");
+        }
+        assert!(ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -r -b 'x'")).is_none());
     }
 
     #[test]

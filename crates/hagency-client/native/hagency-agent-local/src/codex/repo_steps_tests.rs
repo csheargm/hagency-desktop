@@ -96,13 +96,13 @@ async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate()
     let source = Pr50 { opened_by: None };
     // (Author Agents never counting at merge time: merge_policy::codex_observed tests.)
     let url = format!("https://github.com/{REPO}/pull/50");
-    for (mode, ran) in [("--approve", false), ("--comment", true)] {
+    for (mode, ran, event) in [("--approve", false, "APPROVE"), ("--comment", true, "COMMENT")] {
         let command = review(mode, H50);
         let step_proposal = super::proposal(&r.ledger, &turn, &command).unwrap();
         let key = running.key(turn.dispatch);
         let step = gated_review(&mut r.ledger, &turn, &step_proposal, &command, &key, &source).await;
         let Some(TrustedStep::Command(pinned)) = step else { panic!("{mode}: {step:?}") };
-        assert!(pinned.contains(&format!("gh pr review 50 {mode} -R")), "the pinned verdict runs: {pinned}");
+        assert!(pinned.contains(&format!("gh api -X POST 'repos/{REPO}/pulls/50/reviews' -f 'commit_id={H50}' -f 'event={event}'")), "the pinned verdict runs: {pinned}");
         assert!(r.ledger.agent_reviewers(&url, H50).unwrap().is_empty(), "nothing counts before it ran");
         running.outcomes.lock().unwrap().push((key, ran));
         running.settle(&mut r.ledger).unwrap();
@@ -212,7 +212,7 @@ mod room_repo_reads {
         ledger.set_room_autonomy(OWNER, &assist, crate::merge_policy::room_rules::unix_now()).unwrap();
         let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
         let Some(TrustedStep::Command(pinned)) = step else { panic!("{verdict}: {step:?}") };
-        assert!(pinned.contains("gh pr review 70 --comment -R"), "{pinned}");
+        assert!(pinned.contains(&format!("gh api -X POST 'repos/{REPO}/pulls/70/reviews' -f 'commit_id={H50}' -f 'event=COMMENT'")), "{pinned}");
     }
 
     #[tokio::test]
