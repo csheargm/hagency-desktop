@@ -51,6 +51,23 @@ pub(super) fn allow_then_bind(agent: AgentPick, room_id: String, room: String) {
     });
 }
 
+/// Create agent with rooms ticked: the ticks are the owner's choice, so the
+/// new Agent is allowed in group rooms first and then bound, with no second
+/// "Allow in group rooms?" prompt. Nothing is allowed when no room is ticked.
+pub(crate) fn allow_then_bind_into_rooms(agent_id: String, agent: String, puppet: String, rooms: Vec<(String, String)>) {
+    if rooms.is_empty() { return; }
+    crate::account_session::spawn(async move {
+        let allowed = match Service::for_current() {
+            Ok(service) => service.execute(Command::Agent { agent_id, action: AgentAction::AllowGroupRooms }).await.map(|_| ()),
+            Err(code) => Err(code),
+        };
+        // Not silent: a failed allow leaves the Agent private, so each bind
+        // below is refused and the owner sees the consent prompt instead.
+        if let Err(code) = allowed { warning!("Create agent: allow in group rooms failed: {code}"); }
+        super::bind_into_rooms(agent, puppet, rooms);
+    });
+}
+
 /// As [`allow_then_bind`] for a picker that shows the outcome itself: the
 /// result goes to `done` (off the UI thread) instead of a popup.
 pub(crate) fn allow_then(puppet: String, room_id: String, done: impl FnOnce(Result<bool, String>) + Send + 'static) {

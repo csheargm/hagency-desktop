@@ -88,11 +88,18 @@ impl CreateAgentDialog {
         self.view.redraw(cx);
     }
 
-    /// After creation: bind the new Agent into every ticked room.
+    /// After creation: the ticked rooms are the owner's choice, so the new
+    /// Agent is allowed in group rooms and bound into each, asking nothing more.
     pub(super) fn bind_ticked(&self, created: &Value) {
-        let Some(puppet) = created["creation"]["agent"]["puppetMxid"].as_str() else { return };
-        bring_agent::bind_into_rooms(self.state.name.trim().to_owned(), puppet.to_owned(), ticked_rooms(&self.state.rooms));
+        let Some((id, puppet)) = created_agent(created) else { return };
+        bring_agent::allow_then_bind_into_rooms(id, self.state.name.trim().to_owned(), puppet, ticked_rooms(&self.state.rooms));
     }
+}
+
+/// The new Agent's id and puppet from the creation reply.
+fn created_agent(created: &Value) -> Option<(String, String)> {
+    let agent = &created["creation"]["agent"];
+    Some((agent["id"].as_str()?.to_owned(), agent["puppetMxid"].as_str()?.to_owned()))
 }
 
 
@@ -218,5 +225,16 @@ mod tests {
         assert!(dialog.view.widget(&mut cx, ids!(room_7)).visible());
         assert!(ticked_rooms(&dialog.state.rooms).is_empty(), "no open room, nothing pre-ticked");
         assert_eq!(dialog.view.label(&mut cx, ids!(rooms_hint)).text(), "Add it to other rooms later with Add agent in each room.");
+    }
+
+    /// Regression (Nov 18 screen pass): ticking "dev room" then Create asked a
+    /// second time ("test-helper is private … Allow in group rooms?"). The
+    /// ticked rooms are the owner's choice: the reply's agent id is what the
+    /// allow is recorded for, before the bind, so no prompt follows.
+    #[test]
+    fn a_ticked_room_allows_the_new_agent_by_its_id_before_binding() {
+        let reply = serde_json::json!({"creation":{"agent":{"id":"agt_9","puppetMxid":"@test-helper:s"}}});
+        assert_eq!(created_agent(&reply), Some(("agt_9".to_owned(), "@test-helper:s".to_owned())));
+        assert_eq!(created_agent(&serde_json::json!({"creation":{"agent":{"puppetMxid":"@x:s"}}})), None, "no id: nothing to allow or bind");
     }
 }
