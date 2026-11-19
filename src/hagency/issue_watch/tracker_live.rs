@@ -6,7 +6,7 @@
 use super::merge_hold::{self, Gate};
 use super::review_loop::{self, LoopCtx, LoopIo};
 use super::reviewer_pick::{self, Candidate, Pick};
-use super::tracker::{self, Followed, Followups, Inputs, TrackIo};
+use super::tracker::{self, CLOCK_SLACK_SECS, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
 use super::run_end::RunView;
 use ::hagency::issue_watch::issue_track::{IssueFact, Track, says_cannot_fix};
@@ -18,9 +18,6 @@ use std::collections::HashSet;
 
 /// The content field that marks a tracker line.
 pub const MARKER: &str = "io.hagency.issue_track";
-/// GitHub's and this device's clocks may differ; a cannot-fix comment this
-/// much older than the hand-off still counts for it.
-const CLOCK_SLACK_SECS: i64 = 120;
 
 /// One watched repository as the check sees it.
 pub(crate) struct Watched<'a> {
@@ -161,31 +158,22 @@ impl LiveTrack<'_> {
     /// (the owner API's own, and the reviews) fails here, never silently.
     async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, fixer: &OwnedUserId) -> Result<Gate, String> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
-        let ctx = &LoopCtx { agent: fixer, maintainer: true, permission: Some(permission) };
+        let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
-        let settled = readiness["kind"] == "approvals" && readiness["head"].is_string() && {
-            let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
-            let now = chrono::Utc::now().timestamp();
-            let seen_at = lock_clock().seen_at(&pr.url, &pr.head_sha, now);
-            merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now)
-        };
+        if readiness["kind"] != "approvals" || !readiness["head"].is_string() {
+            return merge_hold::follow_gate(io, target, &readiness, ctx, false).await;
+        }
+        let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp();
+        // A verdict on GitHub the gate never recorded: ask the reviewer again before holding (PR #105).
+        if let Some(peer) = &self.peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
+            return Ok(Gate::WaitReview);
+        }
+        let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
+        let settled = merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now);
         merge_hold::follow_gate(io, target, &readiness, ctx, settled).await
     }
-}
-
-/// When each pull request's head was first seen, for the per-head review wait.
-fn lock_clock() -> std::sync::MutexGuard<'static, merge_hold::HeadClock> {
-    static CLOCK: std::sync::LazyLock<std::sync::Mutex<merge_hold::HeadClock>> = std::sync::LazyLock::new(Default::default);
-    // Plain timestamps: still usable after a panic elsewhere held the lock.
-    CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// The merge step's failure streaks, shared by every check of this process.
-fn lock_streaks() -> std::sync::MutexGuard<'static, merge_hold::Streaks> {
-    static STREAKS: std::sync::LazyLock<std::sync::Mutex<merge_hold::Streaks>> = std::sync::LazyLock::new(Default::default);
-    // A panic while holding it left plain counters: still usable.
-    STREAKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl TrackIo for LiveTrack<'_> {
@@ -255,7 +243,7 @@ impl TrackIo for LiveTrack<'_> {
         let target = review_loop::target_of(self.repo, pr);
         // The peer only reviews. The merge step is judged and addressed for
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
-        review_loop::advance(&io, &target, &LoopCtx { agent: peer, maintainer: false, permission: None }).await?;
+        review_loop::advance(&io, &target, &LoopCtx { agent: peer, name: "", maintainer: false, permission: None }).await?;
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
         let gate = match self.merge_step(&io, &target, pr, &fixer).await {
             Ok(Gate::Unreadable(error)) | Err(error) => Err(error),
@@ -263,7 +251,7 @@ impl TrackIo for LiveTrack<'_> {
         };
         Ok(match gate {
             Ok(gate) => {
-                lock_streaks().reached(&pr.url);
+                merge_hold::lock_streaks().reached(&pr.url);
                 match gate {
                     Gate::Merge => Followed::Merging,
                     Gate::WaitCi => Followed::WaitingCi,
@@ -274,7 +262,7 @@ impl TrackIo for LiveTrack<'_> {
             Err(error) => {
                 // A transport or timeout failure is never swallowed: logged,
                 // shown, retried next check, and told once after a streak.
-                let failures = lock_streaks().failed(&pr.url);
+                let failures = merge_hold::lock_streaks().failed(&pr.url);
                 makepad_widgets::log!("WARN issue_track_merge_step_failed pr={} failures={failures}: {error}", pr.url);
                 if let Err(notice) = merge_hold::after_failure(&io, &target, failures).await {
                     // The status line below still shows the streak; the notice retries next check.
@@ -283,6 +271,11 @@ impl TrackIo for LiveTrack<'_> {
                 Followed::Unreachable(failures)
             }
         })
+    }
+    async fn ask_ready(&self, pr: &PullRequest) -> Result<(), String> {
+        let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
+        let io = LiveLoop::new(self.worker, &self.watched.watch.setting.room_id)?;
+        super::review_again::ask_ready(&io, &review_loop::target_of(self.repo, pr), &fixer, &self.agent_label()).await
     }
     fn reviewer_notice(&self) -> Option<String> {
         self.peer.as_ref().and_then(|p| p.notice.clone())

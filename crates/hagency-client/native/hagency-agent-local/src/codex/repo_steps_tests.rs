@@ -240,3 +240,33 @@ mod room_repo_reads {
     }
 }
 
+
+/// Live PR #105 (Nov 18): bird-codex's verdict "… table-of-contents link; no
+/// issues found." carried a `;` inside its quoted body. The gate refused any
+/// `;` in the line, so push trust posted the verdict on GitHub and nothing
+/// recorded it: the loop held the PR. A quoted `;` or `|` is body text.
+#[tokio::test]
+async fn a_verdict_with_a_semicolon_in_its_quoted_body_is_recorded() {
+    let mut r = run_under(ToolPolicy::AskOwner);
+    r.ledger.allow_loop(OWNER, "bird", true);
+    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()), unread: false };
+    r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
+    let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
+    let workspace = r.root.to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let mut running = Running::default();
+    let url = format!("https://github.com/{REPO}/pull/50");
+    let command = format!("gh pr review 50 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - Scoped README addition with a matching link; no issues found | ok.\"");
+    let p = super::proposal(&r.ledger, &turn, &command).unwrap();
+    let key = running.key(turn.dispatch);
+    let step = gated_review(&mut r.ledger, &turn, &p, &command, &key, &Pr50 { opened_by: None }).await;
+    assert!(matches!(step, Some(TrustedStep::Command(_))), "the gate judges it: {step:?}");
+    running.outcomes.lock().unwrap().push((key, true));
+    running.settle(&mut r.ledger).unwrap();
+    assert_eq!(r.ledger.agent_reviewers_in(&url, H50, Some(ROOM)).unwrap(), ["bird"]);
+    // An unquoted `;` or `|` still chains a second command: never the gate's.
+    for chained in [format!("{command}; echo x"), format!("{command} | cat")] {
+        let p = super::proposal(&r.ledger, &turn, &chained).unwrap();
+        assert!(gated_review(&mut r.ledger, &turn, &p, &chained, &running.key("d"), &Pr50 { opened_by: None }).await.is_none(), "{chained}");
+    }
+}

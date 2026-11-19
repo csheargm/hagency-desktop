@@ -43,6 +43,8 @@ pub(super) struct Fake {
     reviewer_notice: Option<String>,
     /// The merged pull request GitHub links to an issue, by issue.
     pub(super) merged_link: RefCell<HashMap<i64, u64>>,
+    /// The draft pull requests the Agent was asked to mark ready.
+    pub(super) asked_ready: RefCell<Vec<u64>>,
 }
 impl Fake {
     /// The same stored records, nothing else: what survives a restart.
@@ -111,6 +113,10 @@ impl TrackIo for Fake {
             return Ok(outcome);
         }
         Ok(if self.peer { Followed::Requested } else { Followed::NeedsPerson })
+    }
+    async fn ask_ready(&self, pr: &PullRequest) -> Result<(), String> {
+        self.asked_ready.borrow_mut().push(pr.number);
+        Ok(())
     }
     fn reviewer_notice(&self) -> Option<String> {
         self.reviewer_notice.clone()

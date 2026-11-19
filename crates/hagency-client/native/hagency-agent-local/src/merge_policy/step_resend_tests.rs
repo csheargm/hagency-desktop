@@ -83,6 +83,9 @@ fn sent_and_claimed(l: &mut Ledger, id: &str, at: i64, end: Option<(&str, &str)>
 fn loop_notices_name_their_step_pull_request_and_head_exactly() {
     assert_eq!(loop_step_of(&merge_body()), Some(("merge", PR.to_owned(), HEAD.to_owned(), BIRD.to_owned())));
     assert_eq!(loop_step_of(&review_body()), Some(("review", PR.to_owned(), HEAD.to_owned(), CODEX.to_owned())));
+    // The desktop's merge line names the Agent first: "bird-claude (@bird:test) run exactly …" (GPT review).
+    let named = merge_body().replace("repo rules: @bird:test run", "room rules: bird-claude (@bird:test) run");
+    assert_eq!(loop_step_of(&named), Some(("merge", PR.to_owned(), HEAD.to_owned(), BIRD.to_owned())), "{named}");
     for body in [
         "🔔 New GitHub issue #93 in csheargm/hagency-demo-sandbox".to_owned(),
         format!("run `gh pr merge 94 --squash --match-head-commit {} --repo {REPO}`", &HEAD[..12]),
