@@ -28,6 +28,13 @@ pub(crate) struct Watched<'a> {
     pub seen: &'a HashSet<i64>,
 }
 
+impl Watched<'_> {
+    /// The work-list entry's start; a single-repository watch has no cutoff.
+    fn since(&self) -> i64 {
+        self.entry.map_or(i64::MIN, |e| e.since)
+    }
+}
+
 /// Whether `repo` is on the Agent's work list (`saved["work"]`).
 pub(crate) fn on_work_list(saved: &Value, repo: &str) -> bool {
     saved["work"].as_array().into_iter().flatten().any(|e| e["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo)))
@@ -64,8 +71,9 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
         // copy is still brought up to date: a final write that failed is
         // retried here (a no-op without network once it went through, GPT review).
         let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
-        let mut done = Followups { lines: tracks.iter().filter(ours).filter_map(tracker::terminal_line).collect(), ..Default::default() };
-        if let Err(error) = share(worker, watched, &room, &[]).await {
+        let shown = tracks.iter().filter(ours).filter(|t| !tracker::predates(watched.open_issues, watched.since(), t.number));
+        let mut done = Followups { lines: shown.filter_map(tracker::terminal_line).collect(), ..Default::default() };
+        if let Err(error) = share(worker, watched, &room, &[], &[]).await {
             done.errors.push(error);
         }
         return Ok(done);
@@ -78,23 +86,24 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
     let peers = super::reviewer_candidates::peers(worker, &room).await;
     let io = LiveTrack { worker, watched, repo, room: room.clone(), login, peer: peers.pick(&[]), peers, permission };
-    let since = watched.entry.map_or(i64::MIN, |e| e.since);
-    let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, since, open_issues: watched.open_issues, own_pulls: &own }).await;
-    if let Err(error) = share(worker, watched, &room, &followed.holds).await {
+    let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, since: watched.since(), open_issues: watched.open_issues, own_pulls: &own }).await;
+    if let Err(error) = share(worker, watched, &room, &followed.holds, &followed.predating).await {
         followed.errors.push(error);
     }
     Ok(followed)
 }
 
 /// The room's copy of this repository's tracker states (ADR 0023), read
-/// back from the owner API after this check's changes.
-async fn share(worker: &Worker<'_>, watched: &Watched<'_>, room: &OwnedRoomId, holds: &[(i64, String)]) -> Result<(), String> {
+/// back from the owner API after this check's changes, without the issues
+/// the tracker leaves alone as older than the work-list entry.
+async fn share(worker: &Worker<'_>, watched: &Watched<'_>, room: &OwnedRoomId, holds: &[(i64, String)], predating: &[i64]) -> Result<(), String> {
     let agent = worker.agent["id"].as_str().unwrap_or_default();
     let mxid = worker.agent["puppetMxid"].as_str().ok_or("Unreadable Agent Matrix ID")?;
     let saved = super::live::saved(worker.service, agent, None).await?;
     let tracks: Vec<Track> = if saved["track"].is_null() { Vec::new() } else { serde_json::from_value(saved["track"].clone()).map_err(|e| format!("Unreadable issue tracks: {e}"))? };
     let titles = watched.open_issues.iter().map(|i| (i.number, i.title.clone())).collect();
     let now = chrono::Utc::now().timestamp();
+    let tracks = super::status_publish::shown(tracks, watched.open_issues, watched.since(), predating);
     let fresh = super::status_publish::entries(mxid, &watched.watch.setting.repo, &tracks, &titles, holds, now)?;
     super::status_publish::publish(room, mxid, &watched.watch.setting.repo, fresh, now).await
 }

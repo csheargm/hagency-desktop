@@ -3,6 +3,7 @@
 //! (state key = the owner's Matrix ID, which the homeserver lets no one else
 //! write). Only room-shareable fields leave the ledger; an end-to-end
 //! encrypted room gets nothing, since room state is plaintext to the server.
+use ::hagency::issue_watch::Issue;
 use ::hagency::issue_watch::issue_track::Track;
 use ::hagency::repo_status::{ISSUE_STATUS_STATE_TYPE, Published, REFRESH_SECS, TrackState, publish_content};
 use matrix_sdk::ruma::{OwnedRoomId, api::client::state::get_state_event_for_key::v3 as get_state, events::StateEventType};
@@ -21,6 +22,14 @@ pub(crate) fn entries(agent_mxid: &str, repo: &str, tracks: &[Track], titles: &H
         });
     }
     Ok(out)
+}
+
+/// The tracks the room may see: never one the tracker leaves alone as opened
+/// before the work-list entry (`tracker::predates`) or of unknown age
+/// (`predating`, from this check's pass), so an old issue's leftover record
+/// is no member's "working on" line (live #31, Nov 18).
+pub(crate) fn shown(tracks: Vec<Track>, open_issues: &[Issue], since: i64, predating: &[i64]) -> Vec<Track> {
+    tracks.into_iter().filter(|t| !predating.contains(&t.number) && !super::tracker::predates(open_issues, since, t.number)).collect()
 }
 
 /// Keeps titles and `updatedAt` of issues whose published state did not change,
@@ -183,6 +192,38 @@ mod tests {
         carry_over(&current, &mut moved);
         let next = publish_content(&current, "@_hagency_agt_b:x", "o/r", &moved, 300).unwrap();
         assert_eq!((next["issues"][0]["state"].as_str(), next["issues"][0]["updatedAt"].as_i64(), next["issues"][0]["title"].as_str()), (Some("merged"), Some(300), Some("T")));
+    }
+
+    /// Live #31 (Nov 18): the room's work list started on Nov 18, yet Anna's
+    /// Nov 16 record of #31 (reviewed, PR #32) was published as her "working
+    /// on #31". Issues the tracker leaves alone as older, or of unknown age,
+    /// are not published; newer ones and closed ones still are.
+    #[test]
+    fn a_record_of_an_issue_opened_before_the_work_list_entry_is_not_published() {
+        use super::super::tracker::{Inputs, follow};
+        use super::super::tracker_tests::{Fake, REPO, T0, first_hand_off, issue};
+        use ::hagency::issue_watch::issue_track::IssueFact;
+        let fake = Fake::default();
+        for n in [31, 40, 108] {
+            first_hand_off(&fake, n);
+        }
+        if let Some(t) = fake.store.borrow_mut().get_mut(&31) {
+            (t.state, t.pr) = (State::Reviewed, Some(32));
+        }
+        // #40 is open beyond the listing's page cap and its age unreadable.
+        fake.closed.borrow_mut().insert(40, IssueFact::Open);
+        fake.created.borrow_mut().insert(40, None);
+        let open = [Issue { created_at: T0 - 2 * 86_400, ..issue(31) }, issue(108)];
+        let mut tracks = fake.tracks();
+        tracks.push(Track { repo: REPO.into(), ..track(50, State::Merged) });
+        let seen = tracks.iter().map(|t| t.number).collect();
+        let inputs = Inputs { repo: REPO, now: T0 + 60, tracks: &tracks, seen: &seen, since: T0, open_issues: &open, own_pulls: &[] };
+        let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+        assert_eq!(out.predating, [31, 40]);
+        let published = entries("@_hagency_agt_a:x", REPO, &shown(tracks.clone(), &open, T0, &out.predating), &HashMap::new(), &[], T0 + 60).unwrap();
+        assert_eq!(published.iter().map(|p| p.number).collect::<Vec<_>>(), [108, 50], "newer and closed issues stay");
+        // A pass that never ran (nothing left to advance) still leaves #31 out.
+        assert!(shown(tracks, &open, T0, &[]).iter().all(|t| t.number != 31));
     }
 
     /// A long wait in one state is refreshed, so readers never take it for an abandoned watch.

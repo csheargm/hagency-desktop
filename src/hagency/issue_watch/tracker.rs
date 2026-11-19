@@ -98,6 +98,20 @@ pub(crate) struct Followups {
     pub errors: Vec<String>,
     /// Why a followed pull request waits, by issue (room-shareable, ADR 0023).
     pub holds: Vec<(i64, String)>,
+    /// Tracked issues left alone as opened before the entry, or of unknown
+    /// age: the room's status leaves them out too (live #31, Nov 18).
+    pub predating: Vec<i64>,
+}
+
+/// Whether open issue `number` was opened at or after the work-list entry's `since`.
+fn current(open_issues: &[Issue], since: i64, number: i64) -> bool {
+    open_issues.iter().any(|i| i.number == number && !i.is_pr && i.created_at >= since)
+}
+
+/// Whether `number` is in the open list but not current: opened before the
+/// entry, so never adopted, advanced or shown (live #31, Nov 18).
+pub(crate) fn predates(open_issues: &[Issue], since: i64, number: i64) -> bool {
+    !current(open_issues, since, number) && open_issues.iter().any(|i| i.number == number)
 }
 
 pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups {
@@ -105,17 +119,19 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
     // A hand-off from before tracking (or whose record was lost) is adopted
     // as attempt 1 from now, so it is followed and retried like a new one.
     // An open issue opened before the entry is neither adopted nor advanced (live #31, Nov 18).
-    let current = |n: i64| inputs.open_issues.iter().any(|i| i.number == n && !i.is_pr && i.created_at >= inputs.since);
-    let predates = |n: i64| !current(n) && inputs.open_issues.iter().any(|i| i.number == n);
-    for number in inputs.seen.iter().filter(|n| current(**n)) {
+    for number in inputs.seen.iter().filter(|n| current(inputs.open_issues, inputs.since, **n)) {
         if !inputs.tracks.iter().any(|t| t.repo.eq_ignore_ascii_case(inputs.repo) && t.number == *number) {
             if let Err(error) = io.record(json!({"repo": inputs.repo, "number": number, "handed": 1})).await {
                 out.errors.push(error);
             }
         }
     }
-    for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo) && !predates(t.number)) {
-        match step(io, inputs, track, &mut out.holds).await {
+    for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo)) {
+        if predates(inputs.open_issues, inputs.since, track.number) {
+            out.predating.push(track.number);
+            continue;
+        }
+        match step(io, inputs, track, &mut out).await {
             Ok(Some(line)) => out.lines.push(line),
             Ok(None) => {}
             Err(error) => out.errors.push(format!("#{}: {error}", track.number)),
@@ -125,11 +141,14 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
 }
 
 /// Advance one record by one step; the status part it shows afterwards.
-async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut Vec<(i64, String)>) -> Result<Option<String>, String> {
+async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, out: &mut Followups) -> Result<Option<String>, String> {
     if track.state.is_terminal() {
         return Ok(terminal_line(track));
     }
-    let Some((fact, issue)) = issue_of(io, inputs, track.number).await? else { return Ok(None) };
+    let Some((fact, issue)) = issue_of(io, inputs, track.number).await? else {
+        out.predating.push(track.number);
+        return Ok(None);
+    };
     let issue = issue.as_ref();
     let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
@@ -166,7 +185,7 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
             io.record(change(json!({"state": "needs_human", "notified": true}))).await?;
             Ok(terminal_line(&Track { state: State::NeedsHuman, ..track.clone() }))
         }
-        Action::FollowPr { pr } => follow_one(io, (&track.repo, inputs.now), track, open_pr.ok_or("the pull request is gone")?, pr, holds).await.map(Some),
+        Action::FollowPr { pr } => follow_one(io, (&track.repo, inputs.now), track, open_pr.ok_or("the pull request is gone")?, pr, &mut out.holds).await.map(Some),
         Action::AnnounceFixed => announce(io, &track.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
