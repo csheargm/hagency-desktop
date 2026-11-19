@@ -3878,5 +3878,10 @@
   "#{number} needs a person: the agent said it cannot fix it — {url}": "#{number} 需要人工处理：Agent 表示无法修复 — {url}",
   "{count} merged": "已合并 {count} 个",
   "Hagency ({server}) added {invitee} to this room.": "Hagency（{server}）已将 {invitee} 添加到此房间。",
-  "#{number} needs a person: no pull request after 1 try — {url}": "#{number} 需要人工处理：尝试 1 次后仍没有拉取请求 — {url}"
+  "#{number} needs a person: no pull request after 1 try — {url}": "#{number} 需要人工处理：尝试 1 次后仍没有拉取请求 — {url}",
+  "a room": "一个房间",
+  "Approval needed": "需要审批",
+  "Approval request expired": "审批请求已过期",
+  "{agent} asks for approval in {room}": "{agent} 在 {room} 请求审批",
+  "{agent}'s approval request in {room} expired.": "{agent} 在 {room} 的审批请求已过期。"
 }

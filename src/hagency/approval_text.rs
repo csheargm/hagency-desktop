@@ -96,6 +96,18 @@ fn split_steps(command: &str) -> String {
     out.trim_end().to_owned()
 }
 
+/// The system notification for an approval request: who asks and where, never
+/// the command or the tool input. The notification can show on the lock
+/// screen, and a command may carry a token near its start; the full request
+/// stays inside the window (popup and card). `expired` words one that ran out.
+pub fn notification_text(row: &serde_json::Value, room: Option<&str>, expired: bool) -> (String, String) {
+    let agent = row["approval"]["agentName"].as_str().unwrap_or("Agent").to_owned();
+    let room = room.filter(|r| !r.trim().is_empty()).unwrap_or(crate::i18n::tr("a room")).to_owned();
+    let title = if expired { "Approval request expired" } else { "Approval needed" };
+    let body = if expired { "{agent}'s approval request in {room} expired." } else { "{agent} asks for approval in {room}" };
+    (crate::i18n::tr(title).to_owned(), crate::i18n::format(body, &[("agent", agent), ("room", room)]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +140,27 @@ mod tests {
         let command = format!("cat {}/notes.txt", ws());
         assert_eq!(readable_command(&command, Some(&cwd)), "cat ~workspace/notes.txt");
         assert_eq!(readable_command(&command, None), "cat ~workspace/notes.txt");
+    }
+
+    /// Regression: the desktop notification carried the command, so a token in
+    /// it could show on the lock screen.
+    #[test]
+    fn the_notification_never_carries_the_command_or_tool_input() {
+        let token = "ghp_ABCDEF1234567890abcdef1234567890ABCD";
+        for request in [
+            serde_json::json!({"method":"item/commandExecution/requestApproval","params":{"command":format!("GH_TOKEN={token} gh pr create"),"cwd":"/w","reason":token}}),
+            serde_json::json!({"method":"claude/can_use_tool","params":{"toolName":"Bash","input":{"command":format!("curl -H 'Authorization: {token}'")}}}),
+        ] {
+            let row = serde_json::json!({"approval":{"agentName":"Coder","roomId":"!r:x","request":request}});
+            for expired in [false, true] {
+                let (title, body) = notification_text(&row, Some("Dev room"), expired);
+                let args = crate::shared::desktop_notification::arguments(&title, &body);
+                assert!(args.iter().all(|a| !a.contains(token) && !a.contains("ghp_") && !a.contains("curl")), "{args:?}");
+                assert!(body.contains("Coder") && body.contains("Dev room"), "{body}");
+            }
+        }
+        let row = serde_json::json!({"approval":{"agentName":"Coder"}});
+        assert_eq!(notification_text(&row, None, false).1, "Coder asks for approval in a room");
     }
 
     #[test]
