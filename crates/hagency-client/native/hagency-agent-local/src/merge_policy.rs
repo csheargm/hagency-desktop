@@ -21,6 +21,7 @@
 //! A maintainer's own rules ([`work`]) are judged too; every policy
 //! that applies must pass, so neither can loosen the other.
 pub(crate) mod authorship;
+mod admission;
 pub mod gate;
 pub mod github;
 pub mod work;
@@ -294,3 +295,5 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
 pub(crate) mod tests;
 #[cfg(test)]
 mod autonomy_gate_tests;
+#[cfg(test)]
+mod reviewer_room_tests;

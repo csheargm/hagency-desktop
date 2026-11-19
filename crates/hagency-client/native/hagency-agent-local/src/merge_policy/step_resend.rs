@@ -259,7 +259,7 @@ AND t.addressee=? AND b.room=? AND i.received_at>=? ORDER BY i.received_at DESC,
 #[path = "step_resend_notice.rs"]
 mod notice;
 pub use notice::{LoopStep, MERGE_NOTICE_LEAD, READY_NOTICE_LEAD, REVIEW_NOTICE_LEAD, loop_step_of, merge_command, ready_ask, review_ask};
-pub(crate) use notice::remember_loop_step;
+pub(crate) use notice::{asked_to_review, remember_loop_step};
 #[path = "reviewer_pass.rs"]
 mod reviewer_pass;
 pub(crate) use reviewer_pass::SCHEMA as PASSED_SCHEMA;

@@ -92,3 +92,20 @@ fn an_old_or_refused_create_names_no_author() {
     note(&ledger.db, &bash("git -C app push origin fix-3", temp.path(), "bird"), Some(&push), OPENED + 3_600).unwrap();
     assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap(), (vec!["anna".to_owned(), "bird".to_owned()], true));
 }
+
+/// Live PR #115 (Nov 18): bird-claude's create, exactly as its Bash call ran
+/// it (a single-quoted body over several lines), vouches once it succeeded.
+#[test]
+fn pr_115_the_loops_hand_off_create_vouches_for_its_author() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["bird-claude", "bird-codex"]);
+    let line = "gh pr create --repo csheargm/hagency-demo-sandbox --head bird-claude/issue-114-readme-thanks --draft --title 'docs: add a Thanks line to README' --body 'Adds a short thank-you line to the Credits section of the README.\n\nCloses #114\n\nOpened by agent bird-claude (@_hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5:localhost:8452) on request from issue watch for @bird:localhost:8452'";
+    let branch = "bird-claude/issue-114-readme-thanks";
+    assert_eq!(created_branch_exactly(line), Some(("csheargm/hagency-demo-sandbox".to_owned(), branch.to_owned())));
+    ledger.hold_create("toolu_01T9HJi1iDqaUHPdf3wQ1nGj", &bash(line, temp.path(), "bird-claude"), 1_795_061_484).unwrap();
+    ledger.settle_tool_call("toolu_01T9HJi1iDqaUHPdf3wQ1nGj", true).unwrap();
+    let mut pr = view(Some(branch));
+    pr.url = "https://github.com/csheargm/hagency-demo-sandbox/pull/115".into();
+    pr.head_ref = Some(HeadRef { branch: branch.into(), created_at: 1_795_061_485 });
+    assert_eq!(ledger.branch_authors("csheargm/hagency-demo-sandbox", &pr).unwrap(), (vec!["bird-claude".to_owned()], true));
+}

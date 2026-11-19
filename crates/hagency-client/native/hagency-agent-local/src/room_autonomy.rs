@@ -230,6 +230,13 @@ impl Ledger {
     pub fn loop_may_work(&self, agent: &str, room: &str) -> std::result::Result<(), &'static str> {
         loop_may_work_in(&self.db, agent, room)
     }
+    /// Whether a verdict given in `room` may count now: the room runs
+    /// (Assist or Autonomous, not paused, freshly read). Reviewing is not
+    /// working there, so the reviewer the loop asks need not be let work in
+    /// the room (live PR #115, Nov 18: bird-codex's verdict was never recorded).
+    pub fn loop_may_review(&self, room: &str) -> std::result::Result<(), &'static str> {
+        autonomy_at(&self.db, room, unix_now()).map_err(|_| UNREAD_REASON)?.may_work()
+    }
     /// Whether `agent` may deliver (merge) in `room` now without a person:
     /// as [`Ledger::loop_may_work`], and the room is Autonomous.
     pub fn loop_may_deliver(&self, agent: &str, room: &str) -> std::result::Result<(), &'static str> {

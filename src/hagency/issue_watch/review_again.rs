@@ -13,8 +13,10 @@ use ::hagency::issue_watch::APPROVE_VERDICT;
 use matrix_sdk::ruma::OwnedUserId;
 use serde_json::{Value, json};
 
-/// One once-per-head step per re-request (hold steps: the owner API keeps them once per head).
-pub const REREVIEW_STEPS: [&str; 2] = ["hold-rereview-one", "hold-rereview-two"];
+/// One once-per-head step per re-request (hold steps: the owner API keeps them
+/// once per head). One only: a reviewer that answered on GitHub is asked once
+/// more, never in a loop (live PR #115 got three identical verdicts).
+pub const REREVIEW_STEPS: [&str; 1] = ["hold-rereview-one"];
 /// The least time between two re-requests of one head, and after the last one before the hold.
 pub const REREVIEW_WAIT_SECS: i64 = 10 * 60;
 /// Re-requests post as new messages, apart from `step_resend`'s re-sends (`again` 1..=MAX_RESENDS).
@@ -159,6 +161,20 @@ pub async fn ask_ready(io: &impl LoopIo, target: &Target, fixer: &OwnedUserId, n
     }
     let key = json!({"step": notice.step(), "pr": target.url, "head": target.head});
     post_then_claim(io, &notice, key, due.again).await
+}
+
+/// Said in the hold line when the reviewer's verdict of this head is on
+/// GitHub but was never recorded, after it was asked again (live PR #115).
+pub const UNRECORDED_VERDICT: &str = "a \"Hagency verdict: APPROVE\" of this head is on GitHub, but Hagency did not record it (it was not posted through the merge gate), so it does not count";
+
+/// `readiness` for the hold line: an unrecorded GitHub verdict of `head`
+/// ([`unrecorded_verdict`]) is named plainly as what is missing.
+pub fn noted_unrecorded(mut readiness: Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> Value {
+    if unrecorded_verdict(&readiness, (reviews, login), head) {
+        let reason = readiness["reason"].as_str().unwrap_or("no approval").to_owned();
+        readiness["reason"] = format!("{reason}; {}", crate::i18n::tr(UNRECORDED_VERDICT)).into();
+    }
+    readiness
 }
 
 /// Said in the hold line when the reviewer is another owner's Agent: its

@@ -70,7 +70,14 @@ said (status line, hold notice).
   claims, hand-offs, reviews and merge steps; each held room is named in the
   status line.
 - Gate (agent-local): reviews and readying need the Agent to "may work" in
-  the room and the room to run; a merge without a person needs Autonomous,
+  the room and the room to run. A review also counts from an Agent that may
+  not work there when the owner's own loop asked exactly that Agent, in that
+  very request, to review exactly that pull request at that head (amended
+  Nov 18, live PR #115: the loop picked bird-codex, which only reviews there;
+  its verdict posted card-free under ADR 0025 but was never recorded, and the
+  loop asked again and again). The desktop asks an unrecorded reviewer again
+  once per head, then the hold line says the verdict on GitHub was not
+  recorded. A merge without a person needs Autonomous,
   and the owner of this device's Agents must be the room's owner or a
   maintainer (`ownerMaintainer`, from the server's power levels). A merge
   goes on (to the gate or the owner's card) only in a room with a fresh

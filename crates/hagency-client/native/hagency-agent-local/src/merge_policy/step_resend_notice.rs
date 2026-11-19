@@ -76,3 +76,10 @@ pub(crate) fn remember_loop_step(db: &rusqlite::Connection, dispatch: &str, body
     db.execute("DELETE FROM loop_step_dispatches WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
     Ok(())
 }
+
+/// Whether request `dispatch` is the owner's loop asking `addressee` to
+/// review exactly `pr` at `head` (a received "🔎 Review requested" notice).
+pub(crate) fn asked_to_review(db: &rusqlite::Connection, dispatch: &str, (pr, head): (&str, &str), addressee: &str) -> Result<bool> {
+    const ASKED: &str = "SELECT EXISTS(SELECT 1 FROM loop_step_dispatches WHERE dispatch=? AND step='review' AND lower(pr)=lower(?) AND head=? AND addressee=?)";
+    Ok(db.query_row(ASKED, (dispatch, pr, head, addressee), |r| r.get(0))?)
+}

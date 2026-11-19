@@ -3,7 +3,7 @@
 //! spaced) before any hold; a draft whose fixer's run ended is asked to be
 //! readied once per head; the merge line names the Agent and the room rules.
 use super::super::loop_notice::{DRAFT_STEP, LoopNotice, Target};
-use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, ask_again, ask_ready, asks_again, noted_other_owner, ready_draft, ready_moved, unrecorded_verdict};
+use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, UNRECORDED_VERDICT, ask_again, ask_ready, asks_again, noted_other_owner, noted_unrecorded, ready_draft, ready_moved, unrecorded_verdict};
 use super::super::review_loop::LoopIo;
 use super::super::run_end::RunEnd;
 use super::super::tracker::Followed;
@@ -92,22 +92,20 @@ fn pr_105_an_unrecorded_github_verdict_is_what_asks_again() {
     assert!(!unrecorded_verdict(&rules, (&verdict, "csheargm"), HEAD), "only a missing approval is the reviewer's to fix");
 }
 
+/// Live PR #115 (Nov 18): bird-codex answered on GitHub at 20:13 and was
+/// asked again at 20:14 and 20:24. It is asked once more, never in a loop.
 #[test]
-fn pr_105_the_reviewer_is_asked_again_twice_spaced_out_then_the_hold_may_follow() {
+fn pr_115_the_reviewer_is_asked_again_once_then_the_hold_may_follow() {
     let room = Room::default();
-    let t = target(105);
+    let t = target(115);
     assert_eq!(run(ask_again(&room, &t, &codex(), None)), Ok(Again::Asked), "asked at once: its run is over");
-    assert_eq!(run(ask_again(&room, &t, &codex(), Some(60))), Ok(Again::Waiting), "never twice within the wait");
-    assert_eq!(run(ask_again(&room, &t, &codex(), Some(REREVIEW_WAIT_SECS))), Ok(Again::Asked));
-    assert_eq!(run(ask_again(&room, &t, &codex(), Some(60))), Ok(Again::Waiting), "the last request gets its wait too");
-    assert_eq!(run(ask_again(&room, &t, &codex(), Some(REREVIEW_WAIT_SECS))), Ok(Again::Exhausted));
+    assert_eq!(run(ask_again(&room, &t, &codex(), Some(60))), Ok(Again::Waiting), "the request gets its wait");
+    assert_eq!(run(ask_again(&room, &t, &codex(), Some(REREVIEW_WAIT_SECS))), Ok(Again::Exhausted), "never a second time");
     let posted = room.posted.borrow();
-    assert_eq!(posted.len(), REREVIEW_STEPS.len(), "bounded: {posted:?}");
-    for (notice, again) in posted.iter() {
-        assert!(matches!(notice, LoopNotice::ReviewRequested { reviewer, .. } if *reviewer == codex()), "the same reviewer: {notice:?}");
-        assert!(*again > ::hagency::issue_watch::MAX_RESENDS, "a new message, apart from step re-sends: {again}");
-    }
-    assert_ne!(posted[0].0.txn_id_again("agt", posted[0].1), posted[1].0.txn_id_again("agt", posted[1].1));
+    assert_eq!(posted.len(), 1, "bounded: {posted:?}");
+    let (notice, again) = &posted[0];
+    assert!(matches!(notice, LoopNotice::ReviewRequested { reviewer, .. } if *reviewer == codex()), "the same reviewer: {notice:?}");
+    assert!(*again > ::hagency::issue_watch::MAX_RESENDS, "a new message, apart from step re-sends: {again}");
     drop(posted);
     // A new head starts over.
     let moved = Target { head: "2".repeat(40), ..t };
@@ -115,7 +113,20 @@ fn pr_105_the_reviewer_is_asked_again_twice_spaced_out_then_the_hold_may_follow(
     assert_eq!(run(ask_again(&room, &moved, &codex(), None)), Ok(Again::Asked));
 }
 
-/// GPT review: both requests went out before a restart; the reviewer still
+/// The hold line says plainly what is missing: a verdict on GitHub that
+/// Hagency never recorded, not merely "no approval".
+#[test]
+fn pr_115_the_hold_line_names_the_unrecorded_verdict() {
+    let verdict = vec![("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), HEAD.to_owned())];
+    let said = noted_unrecorded(no_approval(), (&verdict, "csheargm"), HEAD);
+    assert!(said["reason"].as_str().unwrap().ends_with(&format!("; {UNRECORDED_VERDICT}")), "{said}");
+    assert_eq!(noted_unrecorded(no_approval(), (&[], "csheargm"), HEAD), no_approval(), "no verdict on GitHub: nothing to add");
+    let mut recorded = no_approval();
+    recorded["recorded"] = 1.into();
+    assert_eq!(noted_unrecorded(recorded.clone(), (&verdict, "csheargm"), HEAD), recorded, "a recorded review is not unrecorded");
+}
+
+/// GPT review: every request went out before a restart; the reviewer still
 /// gets its wait from the first check after it before the hold.
 #[test]
 fn after_a_restart_with_every_request_sent_the_hold_still_waits_once() {

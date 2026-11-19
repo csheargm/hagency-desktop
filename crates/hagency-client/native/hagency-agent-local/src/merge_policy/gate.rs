@@ -293,6 +293,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     let agent = proposal.scope.agent.clone();
+    let review = matches!(command.kind, Kind::Review | Kind::RequestChanges);
     if command.kind == Kind::RequestChanges {
         // Whatever answers it (this gate or the owner's card), a blocking
         // verdict withdraws this Agent's approvals once it has run ([`super::pending`]).
@@ -300,20 +301,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         let url = source.pull_request(&command).await?.url;
         ledger.hold_withdrawal(call, &url, &agent).ok()?;
     }
-    // The Agent works in this room's loop and the room runs (ADR 0030; it
-    // replaces the per-Agent merge switch): else the card asks.
-    if ledger.loop_may_work(&agent, &proposal.scope.room).is_err() {
-        return None;
-    }
-    // A member's request under a layer the owner never saved is the owner's
-    // card to answer, never this gate's (ADR 0025, GPT review).
-    if ledger.member_default_asks(proposal, now).ok()? {
-        return None;
-    }
-    // A room member's review skips the card here only while the owner lets
-    // the Agent review PRs in that room (ADR 0025, GPT review).
-    let review = matches!(command.kind, Kind::Review | Kind::RequestChanges);
-    if review && proposal.scope.requester != owner && !ledger.room_share(&agent, &proposal.scope.room).ok()?.review {
+    if !super::admission::admits(ledger, owner, proposal, review, now) {
         return None;
     }
     let disposition = ledger.tool_disposition(proposal, now).ok()?;
@@ -321,6 +309,9 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     let view = source.pull_request(&command).await?;
+    if review && !super::admission::works_or_was_asked(ledger, proposal, &view) {
+        return None;
+    }
     if !qualifies(ledger, &command, &view, (&agent, &proposal.scope.room), source).await? {
         return None;
     }
