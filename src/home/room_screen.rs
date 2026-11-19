@@ -1343,6 +1343,8 @@ pub struct RoomScreen {
     #[rust] chat_info_inline: bool,
     /// The room information panel's width, once known (see info_panel_width.rs).
     #[rust] info_width: Option<f64>,
+    /// The redraw and room screen width the panel was last laid out for, and the frame that checks it.
+    #[rust] info_layout: Option<(u64, f64)>, #[rust] info_layout_check: NextFrame,
     /// The width a drag of the panel's edge started from, while one is under way.
     #[rust] info_drag_from: Option<f64>,
     /// Whether the edge moved during the current press (a click saves nothing).
@@ -1436,6 +1438,7 @@ impl ScriptHook for RoomScreen {
 impl Widget for RoomScreen {
     // Handle events and actions for the RoomScreen widget and its inner Timeline view.
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
+        self.check_info_layout_width(cx, event);
         // Skip event handling if this RoomScreen is uninitialized (a background dock tab after dock restore).
         if self.tl_state.is_none() && self.room_name_id.is_none() {
             return;
@@ -2093,7 +2096,8 @@ impl Widget for RoomScreen {
         self.agent_status.agent_runtime_notice(cx,ids!(agent_runtime_notice)).set_room(cx,self.room_name_id.as_ref().map(|r|r.room_id().as_str()).unwrap_or(""));
         self.agent_status.shared_permission_notice(cx,ids!(shared_permission_notice)).set_room(cx,self.room_name_id.as_ref().map(|r|r.room_id().as_str()).unwrap_or(""),self.timeline_kind.as_ref().and_then(|k|k.thread_root_event_id()).map(|id|id.as_str()).unwrap_or(""));
         self.update_desktop_chat_header(cx);
-        let available = cx.peek_walk_turtle(walk).size.x;
+        let peeked = cx.peek_walk_turtle(walk).size.x;
+        let available = self.info_layout_width(cx, peeked);
         self.restore_info_width(scope);
         self.layout_desktop_chat_info(cx, available);
         // If the room isn't loaded yet, we show the restore status label only.
@@ -8954,6 +8958,10 @@ mod desktop_information_columns_tests {
     pub(super) fn draw(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
         cx.redraw_all();
         screen.layout_desktop_chat_info(cx, width);
+        draw_view(cx, screen, width);
+    }
+    /// Draws the room screen's views `width` wide, as laid out already.
+    pub(super) fn draw_view(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
         let pass = DrawPass::new(cx); pass.set_size(cx, dvec2(1280.0, 900.0));
         let mut list = DrawList2d::new(cx);
         let overlay = Overlay {draw_list: DrawList::new(cx)};
@@ -9212,7 +9220,7 @@ mod call_link;
 // TODO(R4): move the rest of the information panel's layout
 // (layout_desktop_chat_info, is_over_desktop_chat_info) next to its width.
 #[path = "room_screen/info_panel_width.rs"]
-mod info_panel_width;
+pub(crate) mod info_panel_width;
 use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
 
 /// Offline layout fixture using the production disclosure presentation.
