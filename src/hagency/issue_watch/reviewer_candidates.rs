@@ -65,31 +65,35 @@ async fn add_roster(worker: &Worker<'_>, joined: &Room, mine: &[&str], out: &mut
     true
 }
 
-/// Every other joined Agent not yet a candidate, with the runtime its
-/// profile publishes; this server's Agents only when `roster_read` is false
+/// Every other joined Agent not yet a candidate, and every roster row
+/// whose runtime the roster left unsaid, with the runtime its profile
+/// publishes; this server's Agents are added only when `roster_read` is false
 /// (the roster then left out the paused ones on purpose). `false` when some
 /// Agent could not be checked.
 async fn add_members(joined: &Room, mine: &[&str], roster_read: bool, out: &mut Vec<Candidate>) -> bool {
     let Some(client) = crate::sliding_sync::get_client() else { return false };
     let Some(server) = client.user_id().map(|id| id.server_name().to_owned()) else { return false };
-    let Ok(members) = joined.members_no_sync(RoomMemberships::JOIN).await else { return false };
+    // `members` fetches the list when the local store has not synced it (GPT review).
+    let Ok(Ok(members)) = tokio::time::timeout(PROFILES_TIMEOUT, joined.members(RoomMemberships::JOIN)).await else { return false };
+    let unknown: Vec<(OwnedUserId, String)> = out.iter().filter(|c| !c.own && c.runtime.is_none()).map(|c| (c.puppet.clone(), c.name.clone())).collect();
     let others: Vec<(OwnedUserId, String)> = members.iter()
         .filter(|m| crate::hagency::backend::is_agent_invitation(m.user_id()) && !mine.contains(&m.user_id().as_str()))
         .filter(|m| !(roster_read && m.user_id().server_name() == server) && !out.iter().any(|c| c.puppet == m.user_id()))
         .map(|m| (m.user_id().to_owned(), m.display_name().map_or_else(|| m.user_id().localpart().to_owned(), str::to_owned)))
         .collect();
-    let all_read = others.len() <= MAX_PROFILES;
-    let reads = futures_util::future::join_all(others.into_iter().take(MAX_PROFILES).map(|(puppet, name)| {
-        let client = &client;
-        async move {
-            let runtime = crate::profile::agent_profile_owner::read_runtime_kind(client, &puppet).await;
-            (puppet, name, runtime)
-        }
-    }));
-    let Ok(read) = tokio::time::timeout(PROFILES_TIMEOUT, reads).await else { return false };
-    let (candidates, complete) = reviewer_pick::from_profiles(read);
-    out.extend(candidates);
-    all_read && complete
+    let all_read = unknown.len() + others.len() <= MAX_PROFILES;
+    let read = read_runtimes(&client, unknown.into_iter().chain(others).take(MAX_PROFILES).collect()).await;
+    reviewer_pick::add_profiles(out, read) && all_read
+}
+
+/// Each Agent's published runtime, every read bounded on its own so one
+/// stalled server keeps the others' answers (GPT review).
+async fn read_runtimes(client: &matrix_sdk::Client, agents: Vec<(OwnedUserId, String)>) -> Vec<reviewer_pick::ProfileRead> {
+    futures_util::future::join_all(agents.into_iter().map(|(puppet, name)| async move {
+        let read = crate::profile::agent_profile_owner::read_runtime_kind(client, &puppet);
+        let runtime = tokio::time::timeout(PROFILES_TIMEOUT, read).await.unwrap_or_else(|_| Err("profile_read_timed_out".into()));
+        (puppet, name, runtime)
+    })).await
 }
 
 /// The name the room shows for `user`, when they are joined.

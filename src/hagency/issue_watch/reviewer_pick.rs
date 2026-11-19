@@ -68,14 +68,30 @@ fn quiet(candidate: &Candidate) -> Pick {
     Pick { reviewer: candidate.puppet.clone(), notice: None, own: candidate.own }
 }
 
+/// One joined Agent, its room name, and the runtime its profile names.
+pub(crate) type ProfileRead = (OwnedUserId, String, Result<Option<&'static str>, String>);
+
 /// Other Agents joined to the room, from what their profiles say
 /// (`Err`: unreadable), sorted so every check picks the same one; `false`
 /// when some profile could not be read, so the room was not fully seen.
-pub(crate) fn from_profiles(mut read: Vec<(OwnedUserId, String, Result<Option<&'static str>, String>)>) -> (Vec<Candidate>, bool) {
+pub(crate) fn from_profiles(mut read: Vec<ProfileRead>) -> (Vec<Candidate>, bool) {
     read.sort_by(|a, b| a.0.cmp(&b.0));
     let complete = read.iter().all(|(_, _, runtime)| runtime.is_ok());
     let candidates = read.into_iter().map(|(puppet, name, runtime)| Candidate { puppet, name, runtime: runtime.ok().flatten(), own: false }).collect();
     (candidates, complete)
+}
+
+/// [`from_profiles`] into `out`: a listed candidate gains the runtime its
+/// profile names (the roster does not say it yet), any other is added.
+pub(crate) fn add_profiles(out: &mut Vec<Candidate>, read: Vec<ProfileRead>) -> bool {
+    let (candidates, complete) = from_profiles(read);
+    for candidate in candidates {
+        match out.iter_mut().find(|c| c.puppet == candidate.puppet) {
+            Some(listed) => listed.runtime = listed.runtime.or(candidate.runtime),
+            None => out.push(candidate),
+        }
+    }
+    complete
 }
 
 pub const NO_OTHER_MODEL: &str = "No {wanted} reviewer in the room; asked {name}";
@@ -136,9 +152,17 @@ mod tests {
     fn a_joined_agent_of_another_server_is_seen_from_its_profile() {
         let mut room = vec![agent("yue-claude", Some("claude"), true)];
         let bird = OwnedUserId::try_from("@_hagency_agt_bird:localhost:8452").unwrap();
-        let (members, complete) = from_profiles(vec![(bird.clone(), "bird-codex".into(), Ok(Some("codex")))]);
-        room.extend(members);
+        let complete = add_profiles(&mut room, vec![(bird.clone(), "bird-codex".into(), Ok(Some("codex")))]);
         assert_eq!(pick(Some("claude"), &room, true, complete), Some(Pick { reviewer: bird, notice: None, own: false }));
+    }
+
+    #[test]
+    fn a_roster_row_without_a_runtime_gains_the_one_its_profile_names() {
+        let mut room = vec![agent("yue-claude", Some("claude"), true), agent("bo-codex", None, false)];
+        let bo = room[1].puppet.clone();
+        assert!(add_profiles(&mut room, vec![(bo.clone(), "bo-codex".into(), Ok(Some("codex")))]));
+        assert_eq!(room.len(), 2, "enriched, not added twice");
+        assert_eq!(pick(Some("claude"), &room, true, true), Some(Pick { reviewer: bo, notice: None, own: false }));
     }
 
     #[test]
