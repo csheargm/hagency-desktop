@@ -39,10 +39,12 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
         return None;
     }
     let message = event.content().as_message()?;
-    if own_automation(event.sender().as_str(), message.body()) {
+    let agent = first_agent(message.mentions()?.user_ids.iter())?;
+    // Unknown until the Agent listing is read: the line shows (GPT batch review).
+    let own_agent = crate::home::agent_ask_badge::is_own_agent(event.sender(), agent).unwrap_or(false);
+    if waits_for_no_card(event.sender().as_str(), message.body(), own_agent) {
         return None;
     }
-    let agent = first_agent(message.mentions()?.user_ids.iter())?;
     let age = age(now_ms(), u64::from(event.timestamp().0))?;
     let pill = match message.msgtype() {
         MessageType::Text(text) => text.formatted.as_ref().and_then(|f| pill_name(&f.body, agent)),
@@ -108,10 +110,12 @@ fn html_text(fragment: &str) -> String {
 }
 
 /// Whether the viewer's own message is one of its loop's notices ("🔎 Review
-/// requested", a hand-off): that run posts no card by design (the tracker's
-/// lines report it), so nothing waits for one (live PR #109, Nov 18).
-fn own_automation(sender: &str, body: &str) -> bool {
-    ::hagency::issue_watch::automated_requests::is_automated(sender, sender, body)
+/// requested", a hand-off) to one of the viewer's own Agents (`own_agent`):
+/// that run posts no card by design (the tracker's lines report it), so
+/// nothing waits for one (live PR #109, Nov 18). Another owner's Agent still
+/// posts its card, so the line waits for it (GPT batch review).
+fn waits_for_no_card(sender: &str, body: &str, own_agent: bool) -> bool {
+    own_agent && ::hagency::issue_watch::automated_requests::is_automated(sender, sender, body)
 }
 
 /// The first Agent a message mentions.
@@ -168,8 +172,19 @@ mod tests {
         let reviewer = OwnedUserId::try_from("@_hagency_agt_01m7kd31m0vbgw7ed27chayat9:localhost:8450").unwrap();
         let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into() };
         let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
-        assert!(own_automation("@csheargm:localhost:8450", &notice), "{notice}");
-        assert!(!own_automation("@csheargm:localhost:8450", "@yue-claude please review PR #109"), "a typed request still waits");
+        assert!(waits_for_no_card("@csheargm:localhost:8450", &notice, true), "{notice}");
+        assert!(!waits_for_no_card("@csheargm:localhost:8450", "@yue-claude please review PR #109", true), "a typed request still waits");
+    }
+
+    /// GPT batch review: the loop's review request to another owner's Agent
+    /// gets that owner's run card, so Anna sees the line until it does.
+    #[test]
+    fn a_loop_notice_to_another_owners_agent_still_waits_for_its_card() {
+        use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+        let reviewer = OwnedUserId::try_from("@_hagency_agt_bird:localhost:8452").unwrap();
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into() };
+        let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
+        assert!(!waits_for_no_card("@anna:localhost:8450", &notice, false), "{notice}");
     }
 
     /// Nov 18: a new reply's header showed `_hagency_agt_…` for a second
