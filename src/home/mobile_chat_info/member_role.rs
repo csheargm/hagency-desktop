@@ -92,21 +92,32 @@ pub fn with_role(mut levels: Value, target: &UserId, make: bool) -> Result<Value
     Ok(levels)
 }
 
-/// Make or remove `target` as a maintainer of `room`, on the server's power levels.
+/// Make or remove `target` as a maintainer of `room`, on the server's power
+/// levels, through the desktop's one power-level writer (re-read before the
+/// write, checked after it; see [`change_levels`](crate::home::call_power_levels::change_levels)).
 pub async fn set_maintainer(room: &Room, target: &UserId, make: bool) -> Result<(), String> {
-    use matrix_sdk::ruma::api::client::state::get_state_event_for_key::v3 as get_state;
     if !is_person(target) {
         return Err(crate::i18n::tr("Agents and service accounts cannot be maintainers.").to_owned());
     }
-    // One change at a time from this desktop; a change from another client between
-    // this read and the write can still be lost (Matrix has no conditional state write).
-    static CHANGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _changing = CHANGING.lock().await;
-    let request = get_state::Request::new(room.room_id().to_owned(), StateEventType::RoomPowerLevels, String::new());
-    let reply = room.client().send(request).await.map_err(|e| e.to_string())?;
-    let current: Value = serde_json::from_str(reply.event_or_content.get()).map_err(|e| e.to_string())?;
-    // Rechecked on the server's levels, not the list's (GPT review): this account is
-    // the room's owner, and the target's effective level is below the owner's.
+    // A refusal is the user's answer as it is; any other failure says the role did not change.
+    let mut refused = None;
+    let outcome = crate::home::call_power_levels::change_levels(room, |current| {
+        role_change(room, current, target, make).map(Some).map_err(|why| {
+            refused = Some(why.clone());
+            anyhow::anyhow!(why)
+        })
+    }).await;
+    match (outcome, refused) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Some(why)) => Err(why),
+        (Err(e), None) => Err(crate::i18n::format("Could not change the role: {error}", &[("error", e.to_string())])),
+    }
+}
+
+/// `current` (the server's levels) with `target`'s role changed, rechecked on
+/// those levels, not the list's (GPT review): this account is the room's
+/// owner, and the target's effective level is below the owner's.
+fn role_change(room: &Room, current: Value, target: &UserId, make: bool) -> Result<Value, String> {
     let levels = crate::home::call_power_levels::typed_levels(room, current.clone()).ok_or_else(|| crate::i18n::tr("The room's power levels are unreadable.").to_owned())?;
     let me = room.own_user_id();
     if role_of(&levels, me) != Some(Role::Owner) || !levels.user_can_send_state(me, StateEventType::RoomPowerLevels) {
@@ -115,9 +126,7 @@ pub async fn set_maintainer(room: &Room, target: &UserId, make: bool) -> Result<
     if role_of(&levels, target) == Some(Role::Owner) {
         return Err(crate::i18n::tr("The room's owner keeps their role.").to_owned());
     }
-    let updated = with_role(current, target, make)?;
-    room.send_state_event_raw("m.room.power_levels", "", updated).await.map(|_| ())
-        .map_err(|e| crate::i18n::format("Could not change the role: {error}", &[("error", e.to_string())]))
+    with_role(current, target, make)
 }
 
 /// The button text for a change.

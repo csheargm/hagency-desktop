@@ -32,6 +32,19 @@ script_mod! {
 /// Under the title.
 pub const HINT: &str = "Tick a room to let this agent claim and fix issues of the room's linked repositories, push its branches and open and review pull requests there. How far it goes is the room's setting, in Room info → Status.";
 
+/// Posted when this desktop saved "may work" for `agent_ids` outside this
+/// section (Room info → Status → "Let agents work on a repo").
+#[derive(Clone, Debug)]
+pub struct MayWorkChanged {
+    pub agent_ids: Vec<String>,
+}
+
+/// Whether the section showing `agent_id` reads its rooms again on `changed`:
+/// only while it can show them (the Agent runs here), and only for that Agent.
+pub fn reloads_on(changed: &MayWorkChanged, agent_id: &str, editable: bool) -> bool {
+    editable && changed.agent_ids.iter().any(|id| id == agent_id)
+}
+
 /// One owner-API answer; stale ones are dropped.
 #[derive(Clone, Debug)]
 struct Reply {
@@ -80,6 +93,9 @@ impl Widget for MayWorkSection {
             if let Some(reply) = action.downcast_ref::<Reply>() {
                 self.apply(cx, reply);
             }
+            if action.downcast_ref::<MayWorkChanged>().is_some_and(|c| reloads_on(c, &self.agent_id, self.editable)) {
+                self.call(None);
+            }
         }
         for index in 0..self.rooms.len().min(MAX_ROOMS) {
             if let Some(on) = self.view.check_box(cx, &[TICKS[index]]).changed(actions) {
@@ -94,7 +110,8 @@ impl Widget for MayWorkSection {
 }
 
 impl MayWorkSection {
-    /// Shows `agent_id`'s rooms; read once per Agent while it runs here.
+    /// Shows `agent_id`'s rooms; read once per Agent while it runs here, and
+    /// again when Room info's one-click setup changed them ([`MayWorkChanged`]).
     pub fn set_context(&mut self, cx: &mut Cx, agent_id: &str, editable: Option<bool>, rooms: Vec<(String, String)>) {
         let changed = self.agent_id != agent_id || self.editable != (editable == Some(true));
         self.rooms = rooms;
@@ -156,5 +173,20 @@ impl MayWorkSectionRef {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_context(cx, agent_id, editable, rooms);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GPT review (P2): after one-click setup ticked "May work" for this Agent,
+    /// its open settings read the rooms again instead of showing it opted out.
+    #[test]
+    fn setup_for_this_agent_reloads_its_ticks() {
+        let changed = MayWorkChanged { agent_ids: vec!["bird".into()] };
+        assert!(reloads_on(&changed, "bird", true));
+        assert!(!reloads_on(&changed, "owl", true), "another Agent's section keeps its read");
+        assert!(!reloads_on(&changed, "bird", false), "kept on another device: nothing to read here");
     }
 }

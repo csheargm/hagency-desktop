@@ -127,25 +127,53 @@ async fn server_levels(room: &Room) -> anyhow::Result<Value> {
     Ok(serde_json::from_str(room.client().send(request).await?.event_or_content.get())?)
 }
 
+/// One power-level change at a time from this desktop: the Members tab's role
+/// change, a repository link and the after-create follow-up each write the
+/// room's whole `m.room.power_levels`, so two at once would each put back the
+/// other's old value (GPT review: a removed maintainer restored by a link).
+static CHANGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Writes of one change: the first, and one more when another write undid it.
+const WRITE_ATTEMPTS: usize = 2;
+
+/// Applies `change` to the room's power levels as the server has them now
+/// (read right before each write); `change` returns `None` when nothing needs
+/// sending. Matrix has no conditional state write, so another client's change
+/// landing between the read and the write can still undo this one: the levels
+/// are read again after the write, and when `change` would still alter them
+/// it is made once more on the newer levels; after that the race is reported.
+/// Not closed (GPT review, not adoptable client-side): another client whose
+/// stale snapshot lands *after* this change was verified undoes it unseen, and
+/// that client checks only its own entries. Only a conditional state write or
+/// a single authoritative writer would close it; a removed maintainer should
+/// be checked on the Members tab after concurrent admin edits.
+pub async fn change_levels(room: &Room, mut change: impl FnMut(Value) -> anyhow::Result<Option<Value>>) -> anyhow::Result<()> {
+    let _one = CHANGING.lock().await;
+    for _ in 0..WRITE_ATTEMPTS {
+        let Some(updated) = change(server_levels(room).await?)? else { return Ok(()) };
+        room.send_state_event_raw("m.room.power_levels", "", updated).await?;
+        let now = server_levels(room).await?;
+        if change(now.clone())?.is_none_or(|again| again == now) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!(crate::i18n::tr("Another change to the room's power levels landed at the same time and undid this one. Try again.").to_owned())
+}
+
 /// Adds the missing Hagency entries this account may add to an existing room;
 /// returns the missing ones it may not add, for the link to name (empty: none).
-/// Matrix has no conditional state write: a power-level change landing between
-/// this read (the last step before the write) and the write is lost, so this
-/// runs only on an admin's explicit link, never in the background (GPT review).
+/// Judged on the server's levels (GPT review), never the sync store, through
+/// [`change_levels`]; it runs only on an admin's explicit link, never in the background.
 pub async fn allow_member_state_in(room: &Room) -> anyhow::Result<Vec<&'static str>> {
     let me = room.client().user_id().ok_or_else(|| anyhow::anyhow!("signed out"))?.to_owned();
-    let send = async {
-        // From the server, not the sync store (GPT review), as the base of the full-content PUT.
-        let current = server_levels(room).await?;
+    let mut left = Vec::new();
+    let send = change_levels(room, |current| {
         let typed = typed_levels(room, current.clone()).ok_or_else(|| anyhow::anyhow!("the room's power levels are unreadable"))?;
         let addable = addable_member_state(&typed, &me);
-        let left = missing_member_state(&typed).into_iter().filter(|key| !addable.contains(key)).collect();
-        if let Some(updated) = add_missing_member_state(current, &addable)? {
-            room.send_state_event_raw("m.room.power_levels", "", updated).await?;
-        }
-        anyhow::Ok(left)
-    };
-    tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))?
+        left = missing_member_state(&typed).into_iter().filter(|key| !addable.contains(key)).collect();
+        add_missing_member_state(current, &addable)
+    });
+    tokio::time::timeout(FOLLOW_UP_TIMEOUT, send).await.map_err(|_| anyhow::anyhow!("timed out"))??;
+    Ok(left)
 }
 
 /// Power-level `content` as `room`'s typed power levels (its version's rules
@@ -166,14 +194,9 @@ pub fn levels_from(content: Value, rules: &AuthorizationRules, creators: Vec<Own
 /// membership and issue status ([`open_call_membership`]); every room gets
 /// the admin-only merge-rules entry when missing.
 pub async fn allow_call_membership(room: &Room, open_calls: bool) -> anyhow::Result<()> {
-    let current = server_levels(room).await?;
-    // The room was created a moment ago by this user with no other members, so no
-    // concurrent power-level change can be overwritten by this full-content PUT.
-    let updated = if open_calls { open_call_membership(current)? } else { add_missing_member_state(current, &CREATED_ROOM_EVENTS)? };
-    if let Some(updated) = updated {
-        room.send_state_event_raw("m.room.power_levels", "", updated).await?;
-    }
-    Ok(())
+    // The room was created a moment ago by this user with no other members; the
+    // shared lock still keeps it from crossing a link this desktop makes meanwhile.
+    change_levels(room, |current| if open_calls { open_call_membership(current) } else { add_missing_member_state(current, &CREATED_ROOM_EVENTS) }).await
 }
 
 /// Creation flows call this once a (non-space) room exists. A failure is

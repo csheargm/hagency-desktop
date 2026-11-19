@@ -54,9 +54,13 @@ pub async fn read_events(room: &Room) -> Result<(RoomState, Vec<Value>), String>
     Ok((state_of(&events, room.room_id().as_str(), may_send, rights), events))
 }
 
-/// `room`'s loop state, read from the homeserver now.
+/// `room`'s loop state, read from the homeserver now; also shown in the
+/// room's Status tab and header when they show it (the loop's check keeps them current).
 pub async fn read(room: &Room) -> Result<RoomState, String> {
-    read_events(room).await.map(|(state, _)| state)
+    let ticket = crate::home::room_watches::autonomy::observe(room.room_id());
+    let read = read_events(room).await.map(|(state, _)| state);
+    crate::home::room_watches::autonomy::observed(ticket, room.room_id(), &read);
+    read
 }
 
 /// This account's name for room lines, and the local time now.
@@ -67,43 +71,72 @@ async fn who_and_when(room: &Room) -> (String, String) {
 }
 
 async fn post(room: &Room, text: String) -> Result<(), String> {
-    room.send(RoomMessageEventContent::text_plain(text)).await.map(|_| ()).map_err(|e| crate::i18n::format("Could not post to the room: {error}", &[("error", e.to_string())]))
+    room.send(RoomMessageEventContent::text_plain(text)).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// What a change returns once its state event is saved (the commit): `None`,
+/// or why the room line announcing it could not be posted. The change holds
+/// either way (GPT review: a refused line must not skip stopping runs).
+pub type Announced = Option<String>;
+
+/// `write` (the state event, the commit), then `after` (what the commit
+/// starts, such as stopping runs) and `announce` (the room line) together, so
+/// a slow line never holds `after` back (GPT review). Only a failed write is
+/// an error; a failed line comes back as [`Announced`].
+pub async fn commit_then<T>(
+    write: impl std::future::Future<Output = Result<(), String>>,
+    after: impl std::future::Future<Output = T>,
+    announce: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(T, Announced), String> {
+    write.await?;
+    let (done, announced) = tokio::join!(after, announce);
+    Ok((done, announced.err().map(|error| crate::i18n::format("The change is saved, but the room was not told: {error}", &[("error", error)]))))
 }
 
 /// Set the level (owner and maintainers), keeping the Resume point; one room line.
-pub async fn set_level(room: &Room, level: Level) -> Result<(), String> {
+pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
     let state = read(room).await?;
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can change agent work here.").to_owned());
     }
-    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await
-        .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))?;
-    let (name, _) = who_and_when(room).await;
-    post(room, lines::level_line(&name, level)).await
+    let write = async {
+        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await.map(|_| ())
+            .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))
+    };
+    commit_then(write, async {}, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|((), a)| a)
 }
 
-/// Pause the room (any member): this account's own pause event, then one room line.
-pub async fn pause(room: &Room) -> Result<(), String> {
+/// Pause the room (any member): this account's own pause event, then `after`
+/// (stopping this desktop's runs) alongside one room line.
+pub async fn pause<T>(room: &Room, after: impl std::future::Future<Output = T>) -> Result<(T, Announced), String> {
     let me = room.client().user_id().map(|u| u.to_string()).ok_or_else(|| crate::i18n::tr("Signed out").to_owned())?;
     let now_ms = chrono::Utc::now().timestamp_millis();
-    room.send_state_event_raw(ROOM_PAUSE_STATE_TYPE, &me, pause_content(now_ms)).await
-        .map_err(|e| crate::i18n::format("Could not pause the room: {error}", &[("error", e.to_string())]))?;
-    let (name, time) = who_and_when(room).await;
-    post(room, lines::paused_line(&name, &time)).await
+    let write = async {
+        room.send_state_event_raw(ROOM_PAUSE_STATE_TYPE, &me, pause_content(now_ms)).await.map(|_| ())
+            .map_err(|e| crate::i18n::format("Could not pause the room: {error}", &[("error", e.to_string())]))
+    };
+    commit_then(write, after, async {
+        let (name, time) = who_and_when(room).await;
+        post(room, lines::paused_line(&name, &time)).await
+    }).await
 }
 
 /// Resume (owner and maintainers): the level event clears exactly the pause
 /// events read now, so a pause sent after the read still counts.
-pub async fn resume(room: &Room) -> Result<(), String> {
+pub async fn resume(room: &Room) -> Result<Announced, String> {
     let (state, events) = read_events(room).await?;
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can resume agent work here.").to_owned());
     }
     let level = state.level.clone().unwrap_or(Level::Off);
-    room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await
-        .map_err(|e| crate::i18n::format("Could not resume the room: {error}", &[("error", e.to_string())]))?;
-    let (name, time) = who_and_when(room).await;
-    post(room, lines::resumed_line(&name, &time)).await
+    let write = async {
+        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await.map(|_| ())
+            .map_err(|e| crate::i18n::format("Could not resume the room: {error}", &[("error", e.to_string())]))
+    };
+    commit_then(write, async {}, async {
+        let (name, time) = who_and_when(room).await;
+        post(room, lines::resumed_line(&name, &time)).await
+    }).await.map(|((), a)| a)
 }
 
 #[cfg(test)]
@@ -134,5 +167,23 @@ mod tests {
         assert!(may_send_now(&permissive, user_id!("@me:x"), ROOM_PAUSE_STATE_TYPE));
         let r = rights_of(&permissive, user_id!("@me:x"));
         assert!(r.change_level && !r.maintainer, "so the Status tab's can_change (both) stays off");
+    }
+
+    /// GPT review (P2): the state event is the commit. A refused room line is
+    /// reported on its own; a refused state event is the error and posts nothing;
+    /// what the commit starts never waits for the line.
+    #[test]
+    fn a_saved_change_holds_even_when_its_room_line_is_refused() {
+        fn run<F: std::future::Future>(f: F) -> F::Output { tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f) }
+        let refused = run(commit_then(async { Ok(()) }, async { 2 }, async { Err("M_FORBIDDEN".to_owned()) }));
+        assert_eq!(refused, Ok((2, Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned()))));
+        let posted = std::cell::Cell::new(false);
+        let failed = run(commit_then(async { Err("no".to_owned()) }, async {}, async { posted.set(true); Ok(()) }));
+        assert_eq!(failed, Err("no".to_owned()));
+        assert!(!posted.get(), "nothing is announced when the change was not saved");
+        // The line finishes only once the runs were stopped: run in turn, this would never end.
+        let (stopped, line) = tokio::sync::oneshot::channel::<()>();
+        let both = run(commit_then(async { Ok(()) }, async { stopped.send(()).unwrap(); 1 }, async { line.await.map_err(|e| e.to_string()) }));
+        assert_eq!(both, Ok((1, None)));
     }
 }

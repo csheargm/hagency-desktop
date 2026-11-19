@@ -8,8 +8,9 @@ use crate::hagency::room_autonomy::{lines, server, state::RoomState};
 use ::hagency::issue_watch::safeguards::room_autonomy::Level;
 use makepad_widgets::*;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+pub use super::autonomy_store::{AutonomyChanged, badge_of, current, observe, observed, refresh};
+use super::account;
+use super::autonomy_store::{note, read_into, set_note};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -164,54 +165,6 @@ impl RoomAutonomyRef {
     }
 }
 
-/// Posted when a room's agent work was read or changed.
-#[derive(Clone, Debug)]
-pub struct AutonomyChanged {
-    pub room_id: OwnedRoomId,
-}
-
-type Key = (String, OwnedRoomId);
-static SHOWN: LazyLock<Mutex<HashMap<Key, Shown>>> = LazyLock::new(Default::default);
-static NOTES: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
-
-use super::account;
-fn set(account: String, room: &RoomId, shown: Shown) {
-    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).insert((account, room.to_owned()), shown);
-    Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
-}
-/// What the section (and the room header's badge) shows for `room`.
-pub fn current(room: &RoomId) -> Shown {
-    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned().unwrap_or(Shown::Loading)
-}
-/// The room header's badge for `room`, once its agent work was read.
-pub fn badge_of(room: &RoomId) -> Option<&'static str> {
-    match current(room) {
-        Shown::Ready(state) => lines::badge(&state),
-        Shown::Loading | Shown::Failed(_) => None,
-    }
-}
-fn note(room: &RoomId) -> Option<String> {
-    NOTES.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned()
-}
-fn set_note(account: String, room: &RoomId, text: String) {
-    NOTES.lock().unwrap_or_else(|p| p.into_inner()).insert((account, room.to_owned()), text);
-    Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
-}
-
-/// Read `room`'s agent work from the homeserver.
-pub fn refresh(room: &RoomId) {
-    let account = account();
-    let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
-        return set(account, room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
-    };
-    crate::sliding_sync::spawn_async_task(async move { read_into(account, &joined).await });
-}
-
-async fn read_into(account: String, joined: &matrix_sdk::Room) {
-    let shown = server::read(joined).await.map_or_else(Shown::Failed, Shown::Ready);
-    set(account, joined.room_id(), shown);
-}
-
 enum Act {
     Level(Level),
     Pause,
@@ -227,13 +180,10 @@ fn act(room: &RoomId, act: Act) {
     };
     crate::sliding_sync::spawn_async_task(async move {
         let outcome = match act {
-            Act::Level(level) => server::set_level(&joined, level).await.map(|()| String::new()),
-            Act::Pause => match server::pause(&joined).await {
-                // This desktop stops its own loop runs now; other owners' desktops on their next check.
-                Ok(()) => Ok(stopped_line(crate::hagency::room_autonomy::stop::stop_loop_runs(&joined).await)),
-                Err(error) => Err(error),
-            },
-            Act::Resume => server::resume(&joined).await.map(|()| String::new()),
+            Act::Level(level) => server::set_level(&joined, level).await.map(Option::unwrap_or_default),
+            // This desktop stops its own loop runs now; other owners' desktops on their next check.
+            Act::Pause => server::pause(&joined, crate::hagency::room_autonomy::stop::stop_loop_runs(&joined)).await.map(|(stopped, announced)| pause_note(stopped, announced)),
+            Act::Resume => server::resume(&joined).await.map(Option::unwrap_or_default),
             Act::Setup(repo) => super::autonomy_setup::run(&joined, &repo).await.map(|done| super::autonomy_setup::done_line(&done)),
         };
         set_note(account.clone(), joined.room_id(), outcome.unwrap_or_else(|error| error));
@@ -242,11 +192,30 @@ fn act(room: &RoomId, act: Act) {
     });
 }
 
+/// After a saved Pause: the runs stopped, and the room line's failure if any.
+fn pause_note(stopped: usize, announced: server::Announced) -> String {
+    let notes = [stopped_line(stopped), announced.unwrap_or_default()];
+    notes.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
 /// After Pause: how many of this desktop's loop runs were stopped.
 fn stopped_line(stopped: usize) -> String {
     match stopped {
         0 => String::new(),
         1 => crate::i18n::tr("Stopped 1 run of your agents' work here.").to_owned(),
         n => crate::i18n::format("Stopped {count} runs of your agents' work here.", &[("count", n.to_string())]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GPT review (P2): a saved pause reports the stopped runs and a refused room line both.
+    #[test]
+    fn a_saved_pause_names_the_stopped_runs_and_a_refused_line() {
+        let note = pause_note(2, Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned()));
+        assert_eq!(note, "Stopped 2 runs of your agents' work here. The change is saved, but the room was not told: M_FORBIDDEN");
+        assert_eq!(pause_note(0, None), "");
     }
 }

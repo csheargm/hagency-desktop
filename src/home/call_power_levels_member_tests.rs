@@ -91,11 +91,8 @@ async fn synced_as(server: &wiremock::MockServer, me: &str, levels: &Value) -> R
     client.get_room(matrix_sdk::ruma::room_id!("!r:x")).expect("room from sync")
 }
 
-async fn mount_levels(server: &wiremock::MockServer, levels: &Value) {
-    use wiremock::{Mock, ResponseTemplate, matchers::{method, path_regex}};
-    let at = r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$";
-    Mock::given(method("GET")).and(path_regex(at)).respond_with(ResponseTemplate::new(200).set_body_json(levels.clone())).mount(server).await;
-    Mock::given(method("PUT")).and(path_regex(at)).respond_with(ResponseTemplate::new(200).set_body_json(json!({"event_id":"$pl"}))).mount(server).await;
+async fn mount_levels(server: &wiremock::MockServer, levels: &Value) -> super::tests::ServerLevels {
+    super::tests::mount_server_levels(server, levels).await
 }
 
 async fn puts(server: &wiremock::MockServer) -> Vec<Value> {
@@ -185,4 +182,59 @@ async fn a_moderator_opens_issue_status_but_never_sets_the_rules_level() {
     let mut expected = levels;
     expected["events"][ISSUE_STATUS_STATE_TYPE] = json!(0);
     assert_eq!(puts(&server).await, vec![expected]);
+}
+
+/// GPT review (P1): a role change and a repository link both rewrite the whole
+/// power levels. Another write landing right after this desktop's restores the
+/// removed maintainer; the re-read sees it and removes them again on the newer levels.
+#[tokio::test]
+async fn a_removed_maintainer_stays_removed_when_an_older_write_lands_after() {
+    let server = wiremock::MockServer::start().await;
+    let room = synced_as(&server, "@admin:x", &old_room()).await;
+    let levels = mount_levels(&server, &old_room()).await;
+    let mut stale = old_room();
+    stale["events"][RULES] = json!(100);
+    *levels.landing.lock().unwrap() = Some(stale.clone());
+    let remove = |mut current: Value| {
+        current["users"]["@mod:x"] = json!(0);
+        anyhow::Ok(Some(current))
+    };
+    change_levels(&room, remove).await.unwrap();
+    let mut expected = stale;
+    expected["users"]["@mod:x"] = json!(0);
+    assert_eq!(*levels.now.lock().unwrap(), expected, "removed, and the other write's entry kept");
+    assert_eq!(puts(&server).await.len(), 2, "written once more after the re-read");
+}
+
+/// Two changes from this desktop at once (a role change while a link adds the
+/// room's entries) are made one after the other, so neither undoes the other.
+#[tokio::test]
+async fn a_role_change_and_a_link_at_once_both_stick() {
+    let server = wiremock::MockServer::start().await;
+    let room = synced_as(&server, "@admin:x", &old_room()).await;
+    let levels = mount_levels(&server, &old_room()).await;
+    let remove = |mut current: Value| {
+        current["users"]["@mod:x"] = json!(0);
+        anyhow::Ok(Some(current))
+    };
+    let (role, link) = tokio::join!(change_levels(&room, remove), allow_member_state_in(&room));
+    role.unwrap();
+    assert!(link.unwrap().is_empty());
+    let now = levels.now.lock().unwrap().clone();
+    assert_eq!((now["users"]["@mod:x"].as_i64(), now["events"][RULES].as_i64(), now["events"][ISSUE_STATUS_STATE_TYPE].as_i64()), (Some(0), Some(100), Some(0)));
+    assert_eq!(puts(&server).await.len(), 2, "one write each, no retry needed");
+}
+
+/// When another client keeps undoing the change, the second try reports it instead of looping.
+#[tokio::test]
+async fn a_change_undone_twice_is_reported() {
+    let server = wiremock::MockServer::start().await;
+    let room = synced_as(&server, "@admin:x", &old_room()).await;
+    let levels = mount_levels(&server, &old_room()).await;
+    let undo = |mut current: Value| {
+        *levels.landing.lock().unwrap() = Some(old_room());
+        current["users"]["@mod:x"] = json!(0);
+        anyhow::Ok(Some(current))
+    };
+    assert!(change_levels(&room, undo).await.unwrap_err().to_string().contains("landed at the same time"));
 }

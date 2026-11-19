@@ -82,20 +82,14 @@ async fn follow_up_failure_is_bounded_and_never_a_creation_error() {
 
 /// Creates a room against a mock server and returns the server's levels and the levels sent back.
 async fn created_room_put(open_calls: bool) -> (Value, Value) {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path, path_regex}};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/_matrix/client/v3/createRoom"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"room_id":"!r:x"})))
         .mount(&server).await;
     let defaults = json!({"users":{"@o:x":100},"state_default":50,
         "events":{"m.room.tombstone":150,"m.room.power_levels":100}});
-    let at = r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$";
-    Mock::given(method("GET")).and(path_regex(at))
-        .respond_with(ResponseTemplate::new(200).set_body_json(defaults.clone()))
-        .mount(&server).await;
-    Mock::given(method("PUT")).and(path_regex(at))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"event_id":"$pl"})))
-        .mount(&server).await;
+    mount_server_levels(&server, &defaults).await;
     let client = signed_in(&server).await;
     let config = crate::home::space_management::CreateRoomConfig { name: "Team".into(), public: !open_calls, ..Default::default() };
     let room = client.create_room(config.request().unwrap()).await.unwrap();
@@ -128,4 +122,34 @@ async fn created_public_room_gets_only_admin_only_merge_rules() {
     expected["events"][MAINTAINER_STATE_EVENTS[0]] = json!(50);
     expected["events"][PAUSE_EVENT] = json!(0);
     assert_eq!(sent, expected);
+}
+
+/// The room's power levels on a mock homeserver: a GET answers what the last
+/// PUT wrote, as a real server does; `landing` is another client's write that
+/// lands right after this desktop's next PUT (the race the re-read catches).
+#[derive(Clone, Default)]
+pub(super) struct ServerLevels {
+    pub now: std::sync::Arc<std::sync::Mutex<Value>>,
+    pub landing: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+}
+
+impl wiremock::Respond for ServerLevels {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let mut now = self.now.lock().unwrap();
+        if request.method.as_str() == "PUT" {
+            let written: Value = serde_json::from_slice(&request.body).unwrap();
+            *now = self.landing.lock().unwrap().take().unwrap_or(written);
+            return wiremock::ResponseTemplate::new(200).set_body_json(json!({"event_id":"$pl"}));
+        }
+        wiremock::ResponseTemplate::new(200).set_body_json(now.clone())
+    }
+}
+
+/// Serves `levels` as the room's power levels, kept up to date by every PUT.
+pub(super) async fn mount_server_levels(server: &wiremock::MockServer, levels: &Value) -> ServerLevels {
+    use wiremock::{Mock, matchers::path_regex};
+    let state = ServerLevels { now: std::sync::Arc::new(std::sync::Mutex::new(levels.clone())), ..Default::default() };
+    let at = r"^/_matrix/client/v3/rooms/.*/state/m\.room\.power_levels/?$";
+    Mock::given(path_regex(at)).respond_with(state.clone()).mount(server).await;
+    state
 }
