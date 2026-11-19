@@ -6,6 +6,9 @@ use std::process::Command;
 
 const REPO: &str = "acme/app";
 
+#[path = "local_git_grep_tests.rs"]
+mod grep;
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git").arg("-C").arg(dir).args(args).envs(crate::agent_env::GIT_HELPERS_OFF_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -13,7 +16,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A workspace with checkout `app` (origin = github acme/app, branch `fix/27`).
-fn workspace() -> (tempfile::TempDir, PathBuf) {
+pub(super) fn workspace() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let app = root.join("app");
@@ -30,7 +33,7 @@ fn workspace() -> (tempfile::TempDir, PathBuf) {
     (temp, root)
 }
 
-fn command(line: &str, root: &Path) -> Option<String> {
+pub(super) fn command(line: &str, root: &Path) -> Option<String> {
     match pinned_line(line, root, REPO) {
         Some(TrustedStep::Command(c)) => Some(c),
         _ => None,
@@ -239,13 +242,13 @@ fn a_pull_is_the_hosts_and_fast_forwards_only() {
 fn the_watch_block_names_the_trusted_shapes() {
     let (_t, root) = workspace();
     let text = crate::watch_info::PUSH_FREELY_STEPS;
-    for sub in ["fetch", "pull", "status", "diff", "log", "show", "branch", "add", "commit -m", "restore", "checkout -b", "push -u origin"] {
+    for sub in ["fetch", "pull", "status", "diff", "log", "show", "grep", "branch", "add", "commit -m", "restore", "checkout -b", "push -u origin"] {
         assert!(text.contains(sub), "{sub}");
     }
     git(&root.join("app"), &["branch", "--set-upstream-to=origin/main"]);
     git(&root.join("app"), &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
     for line in [
-        "git -C app fetch", "git -C app pull", "git -C app status", "git -C app diff", "git -C app log", "git -C app show",
+        "git -C app fetch", "git -C app pull", "git -C app status", "git -C app diff", "git -C app log", "git -C app show", "git -C app grep -n hi",
         "git -C app branch", "git -C app add README.md", "git -C app commit -m x", "git -C app restore README.md",
         "git -C app checkout -b fix/28 origin/main", "git -C app push -u origin fix/27",
     ] {

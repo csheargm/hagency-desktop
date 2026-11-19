@@ -44,7 +44,7 @@ pub const TRUSTED_FIX_STEPS: [&str; 2] = [trusted_fetch!(), trusted_branch!()];
 /// The literal behind [`CODEX_ROOM_REPO_READS`], usable inside `concat!`.
 macro_rules! codex_room_repo_reads {
     () => {
-        "A Codex Agent sends each read-only gh issue view|list and gh pr view|list|diff|checks command naming --repo <owner/repo> of a repository linked to this room or watched for it as the command of its watched_repo_step tool, which runs it without a card even when you watch nothing (exec_command always asks for these); only if the tool refuses one, run it with exec_command, which asks your owner."
+        "A Codex Agent sends each read-only gh issue view|list and gh pr view|list|diff|checks command naming --repo <owner/repo> of a repository linked to this room or watched for it as the command of its watched_repo_step tool, which runs it without a card even when you watch nothing; a read of any other repository asks your owner on a card there and runs once approved. Never send a gh command to exec_command: its sandbox has no network, so an approved card there runs nothing and every retry asks your owner again."
     };
 }
 
