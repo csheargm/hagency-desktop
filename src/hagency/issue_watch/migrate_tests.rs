@@ -97,3 +97,21 @@ fn finishing_switches_off_only_the_watch_that_moved() {
     let roomless = json!({"issueWatch": {"mode": "trusted", "repo": "acme/app"}});
     assert_eq!(watch_key(&roomless), None, "GPT review: a watch planned() skips is never finished");
 }
+
+/// GPT review (P2): the move sets a level only while none was ever set. A
+/// maintainer's explicit Off saved after the check's read is set, so the
+/// re-check right before the write leaves it (and the move reports no level).
+#[test]
+fn a_maintainers_explicit_off_is_never_overwritten_by_the_move() {
+    use ::hagency::issue_watch::safeguards::room_autonomy::{ROOM_AUTONOMY_STATE_TYPE, level_content};
+    use crate::hagency::room_autonomy::state::{Rights, state_of};
+    let member = json!({"type": "m.room.member", "state_key": "@mo:x", "sender": "@mo:x", "event_id": "$m", "content": {"membership": "join"}});
+    let rights = Rights { change_level: true, pause: true, link: true, maintainer: true };
+    let earlier = state_of(std::slice::from_ref(&member), "!r:x", |_, _| true, rights);
+    assert!(level_unset(&earlier), "the check's read: no level yet");
+    let off = json!({"type": ROOM_AUTONOMY_STATE_TYPE, "state_key": "", "sender": "@mo:x", "event_id": "$off", "content": level_content(Level::Off, &[])});
+    let now = state_of(&[off, member], "!r:x", |_, _| true, rights);
+    assert_eq!(now.level, Ok(Level::Off));
+    assert!(!level_unset(&now), "an explicit Off is a maintainer's choice: the write is refused");
+    assert_eq!(chosen(&now), None, "and the room line leaves the level to a maintainer");
+}

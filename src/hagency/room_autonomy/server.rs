@@ -95,7 +95,19 @@ pub async fn commit_then<T>(
 
 /// Set the level (owner and maintainers), keeping the Resume point; one room line.
 pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
+    set_level_if(room, level, |_| true).await.map(|written| written.unwrap_or_default())
+}
+
+/// [`set_level`] only while `still` holds for the room's state read right
+/// before the write (GPT review P2: the migration's "unset" was judged on an
+/// earlier read and could overwrite a maintainer's Off); `Err(state)` when it
+/// no longer held and nothing was written. Matrix has no conditional state
+/// write, so this narrows the window to one request; it cannot close it.
+pub async fn set_level_if(room: &Room, level: Level, still: impl Fn(&RoomState) -> bool) -> Result<Result<Announced, RoomState>, String> {
     let state = read(room).await?;
+    if !still(&state) {
+        return Ok(Err(state));
+    }
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can change agent work here.").to_owned());
     }
@@ -104,7 +116,7 @@ pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
             .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))
     };
     let pushed = super::gate::push(room, super::gate::Saved::Level(level));
-    commit_then(write, pushed, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|(p, a)| told(a, p))
+    commit_then(write, pushed, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|(p, a)| Ok(told(a, p)))
 }
 
 /// The note after a saved change: the room line's failure and the gate's, if any.
