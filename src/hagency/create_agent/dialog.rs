@@ -106,6 +106,8 @@ pub struct CreateAgentDialog {
     #[rust] stem: String,
     /// The owner's existing Agent names; the suggestion skips them.
     #[rust] taken: Vec<String>,
+    /// The owner typed in the Name field this opening; set only by `name_typed`.
+    #[rust] name_edited: bool,
 }
 impl Widget for CreateAgentDialog {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -147,7 +149,7 @@ impl CreateAgentDialog {
             cx.action(crate::accounts::AccountAction::Reauthenticate);
         }
         if self.view.button(cx, ids!(create)).clicked(actions) { self.create(cx); }
-        if let Some(name) = self.view.text_input(cx, ids!(name)).changed(actions) { self.state.name = name; self.render_create(cx); }
+        if let Some(name) = self.view.text_input(cx, ids!(name)).changed(actions) { self.name_typed(cx, name); }
         if let Some(index) = self.view.drop_down(cx, ids!(harness)).selected(actions) { self.choose_harness(cx, index); }
         if let Some(index) = self.view.drop_down(cx, ids!(model)).selected(actions) { self.state.model = index; }
         if let Some(index) = self.view.drop_down(cx, ids!(thinking)).selected(actions) { self.state.thinking = index; }
@@ -156,6 +158,7 @@ impl CreateAgentDialog {
     fn open(&mut self, cx: &mut Cx) {
         self.request = next_request();
         self.busy = false;
+        self.name_edited = false;
         self.stem = owner_stem(cx, true);
         let stem = self.stem.clone();
         self.state = DialogState::new(|runtime| default_name(&stem, runtime));
