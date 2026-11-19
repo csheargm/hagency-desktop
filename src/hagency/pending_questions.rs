@@ -224,6 +224,24 @@ fn current(generation: u64) -> bool {
     GENERATION.load(Ordering::SeqCst) == generation
 }
 
+// TODO(R4): pending_questions.rs is over budget; split the run-card admission
+// (consider, accept_event, admit_loaded) into its own module.
+/// The current login generation.
+pub(super) fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
+/// Admits run cards a room timeline loaded from the cache, in order, through
+/// the live sync boundary (`loaded_run_cards`). Returns whether any changed.
+pub(super) async fn admit_loaded(generation: u64, room: &Room, events: Vec<(Value, Option<EncryptionInfo>)>) -> bool {
+    let client = room.client();
+    let mut changed = false;
+    for (value, info) in &events {
+        changed |= consider(generation, &client, room, value, info.as_ref(), true).await;
+    }
+    changed
+}
+
 fn with_state<T>(generation: u64, f: impl FnOnce(&mut State) -> T) -> Option<T> {
     let mut state = STATE.lock().ok()?;
     (state.generation == generation).then(|| f(&mut state))
@@ -706,6 +724,16 @@ async fn retry_event(client: &Client, generation: u64, parked: Parked) -> bool {
 #[cfg(test)]
 pub(super) fn test_serial() -> tokio::sync::MutexGuard<'static, ()> {
     tests::serial()
+}
+/// A new login as `owner` for another module's test; returns its generation.
+#[cfg(test)]
+pub(super) fn test_login(owner: &str) -> u64 {
+    reset(owner.into())
+}
+/// `accept_event` in a plaintext room, for another module's test.
+#[cfg(test)]
+pub(super) fn test_accept(generation: u64, room: &str, server: &str, value: &Value, remote_trusted: bool) -> bool {
+    accept_event(generation, room, server, "Agent", value, None, true, remote_trusted)
 }
 
 fn reset(owner: String) -> u64 {

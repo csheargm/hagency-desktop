@@ -5933,6 +5933,10 @@ async fn timeline_subscriber_handler(
 
     #[cfg(feature = "agent_chat")]
     for event in timeline_items.iter().filter_map(|item| item.as_event()) {crate::agent_chat::approval_runtime::ingest(&timeline.room().client(), &room_id, event);}
+    // Run cards loaded from the cache never reach the sync handler (restart, Nov 19).
+    // TODO(R4): sliding_sync.rs is over budget; move these timeline ingests into one hook.
+    #[cfg(feature = "agent_chat")]
+    crate::hagency::loaded_run_cards::ingest(timeline.room(), &timeline_items);
     if timeline_update_sender.send(TimelineUpdate::FirstUpdate {
         initial_items: timeline_items.clone(),
     }).is_err() {
@@ -6210,6 +6214,8 @@ async fn timeline_subscriber_handler(
             if num_updates > 0 {
                 #[cfg(feature = "agent_chat")]
                 if !is_progress_only {for event in timeline_items.iter().filter_map(|item| item.as_event()) {crate::agent_chat::approval_runtime::ingest(&timeline.room().client(), &room_id, event);}}
+                #[cfg(feature = "agent_chat")]
+                if !is_progress_only { crate::hagency::loaded_run_cards::ingest(timeline.room(), &timeline_items); }
                 // Handle the case where back pagination inserts items at the beginning of the timeline
                 // (meaning the entire timeline needs to be re-drawn),
                 // but there is a virtual event at index 0 (e.g., a day divider).
