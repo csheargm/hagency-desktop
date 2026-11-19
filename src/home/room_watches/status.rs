@@ -119,7 +119,7 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
         }
     }
     let accepted = status::accepted(&events, |id| members.get(id).cloned().unwrap_or_default(), |agent| owners.get(agent).cloned(), now.timestamp());
-    if accepted.ignored_claims > 0 {
+    if hidden_note_due(room_id.as_str(), accepted.ignored_claims) {
         out.notes.push(crate::i18n::tr("Some agent status updates could not be confirmed or were out of date, so they are hidden.").to_owned());
     }
     out.names = members.iter().filter_map(|(id, m)| m.name.clone().map(|n| (id.clone(), n))).collect();
@@ -128,6 +128,16 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
     tables(&mut out, &repos, own, &accepted.seen, now.timestamp()).await;
     out.seen = accepted.seen;
     Ok(out)
+}
+
+/// Whether the hidden-updates note shows for `room`: only when more updates
+/// are hidden than at the room's last view, so a stale claim that stays
+/// hidden does not repeat the note on every open (polish round 3, Nov 19).
+pub(super) fn hidden_note_due(room: &str, hidden: usize) -> bool {
+    static LAST: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, usize>>> = std::sync::LazyLock::new(Default::default);
+    // Plain counts: still usable after a panic elsewhere held the lock.
+    let before = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(room.to_owned(), hidden);
+    hidden > before.unwrap_or(0)
 }
 
 /// Whose Agent each puppet is, from the server's listings only (GPT

@@ -112,3 +112,18 @@ fn a_link_left_for_an_admin_says_what_is_missing() {
     assert!(link_note(&[STATUS]).is_some_and(|n| n.contains("issue status") && !n.contains("merge rules")));
     assert!(link_note(&[RULES]).is_some_and(|n| n.contains("moderators can change them") && !n.contains("issue status")));
 }
+
+/// Polish round 3, Nov 19: the hidden-updates note showed on every open even
+/// when nothing new was hidden. It shows only when the hidden count grew
+/// since the room's last view.
+#[test]
+fn the_hidden_updates_note_shows_only_when_something_new_was_hidden() {
+    use super::super::status::hidden_note_due;
+    const ROOM: &str = "!hidden-note:hs.test";
+    assert!(!hidden_note_due(ROOM, 0), "nothing hidden: no note");
+    assert!(hidden_note_due(ROOM, 2), "two updates hidden: the note shows");
+    assert!(!hidden_note_due(ROOM, 2), "the same two on the next view: no note");
+    assert!(!hidden_note_due(ROOM, 1), "fewer hidden: no note");
+    assert!(hidden_note_due(ROOM, 3), "a new one hidden since the last view: the note shows");
+    assert!(hidden_note_due("!other-room:hs.test", 1), "each room counts its own views");
+}
