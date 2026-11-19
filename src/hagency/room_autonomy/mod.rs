@@ -9,6 +9,7 @@ pub mod lines;
 pub mod server;
 pub mod state;
 pub mod stop;
+pub mod writes;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]

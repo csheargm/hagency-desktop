@@ -104,6 +104,19 @@ pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
 /// no longer held and nothing was written. Matrix has no conditional state
 /// write, so this narrows the window to one request; it cannot close it.
 pub async fn set_level_if(room: &Room, level: Level, still: impl Fn(&RoomState) -> bool) -> Result<Result<Announced, RoomState>, String> {
+    super::writes::serialized(room.room_id(), write_level(room, level, still)).await
+}
+
+/// The Status tab's level choice `ticket` ([`super::writes::choose`]):
+/// written after the room's earlier level writes, unless a newer choice
+/// superseded it meanwhile (`None`: not written).
+pub async fn choose_level(room: &Room, level: Level, ticket: u64) -> Option<Result<Announced, String>> {
+    let written = super::writes::latest_only(room.room_id(), ticket, write_level(room, level, |_| true)).await?;
+    Some(written.map(|w| w.unwrap_or_default()))
+}
+
+/// [`set_level_if`]'s read and write; callers hold the room's level lock.
+async fn write_level(room: &Room, level: Level, still: impl Fn(&RoomState) -> bool) -> Result<Result<Announced, RoomState>, String> {
     let state = read(room).await?;
     if !still(&state) {
         return Ok(Err(state));
@@ -143,8 +156,14 @@ pub async fn pause<T>(room: &Room, after: impl std::future::Future<Output = T>) 
 }
 
 /// Resume (owner and maintainers): the level event clears exactly the pause
-/// events read now, so a pause sent after the read still counts.
+/// events read now, so a pause sent after the read still counts. It holds the
+/// room's level lock and reads under it, so a level saved meanwhile on this
+/// desktop (an Off) is the one it writes back (GPT review P2).
 pub async fn resume(room: &Room) -> Result<Announced, String> {
+    super::writes::serialized(room.room_id(), resume_now(room)).await
+}
+
+async fn resume_now(room: &Room) -> Result<Announced, String> {
     let (state, events) = read_events(room).await?;
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can resume agent work here.").to_owned());
