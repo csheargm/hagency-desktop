@@ -88,7 +88,7 @@ fn a_pinned_gh_line_is_recognised_and_a_git_line_is_not() {
 /// one the tokenless guard sees; a pinned git line is not.
 #[test]
 fn every_production_gh_step_is_seen_by_the_guard() {
-    let review = super::super::review_post::ReviewPost::parse("gh pr review 7 -R a/b --approve -b 'Hagency verdict: APPROVE x'").unwrap();
+    let review = super::super::review_post::ReviewPost::parse(&format!("gh pr review 7 -R a/b --approve -b 'Hagency verdict: APPROVE {}'", "a".repeat(40))).unwrap();
     assert!(runs_gh(&review.command()));
     assert!(runs_gh(&super::super::read_only::command("gh issue list -R a/b")));
     assert!(runs_gh(&super::super::pin_env("gh pr create --repo a/b --head fix/1")));

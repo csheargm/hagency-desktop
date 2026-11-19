@@ -60,7 +60,8 @@ fn created_branch(line: &str) -> Option<(String, String)> {
 /// [`created_branch`] when `line` is exactly one `gh pr create` and nothing
 /// else (round-2 GPT review P1-1): only then does the call's success say the
 /// create succeeded; `gh pr create … || true`, a chain, a pipe or an
-/// environment prefix (another `GH_HOST`) could succeed without it.
+/// environment prefix (another `GH_HOST`) could succeed without it, and so
+/// could an option that creates nothing (GPT review of the fix).
 fn created_branch_exactly(line: &str) -> Option<(String, String)> {
     let parsed = shell::parse(line)?;
     let [words] = parsed.segments.as_slice() else { return None };
@@ -68,6 +69,9 @@ fn created_branch_exactly(line: &str) -> Option<(String, String)> {
     if parsed.heredoc_at.is_some() || line.contains("2>&1") || !words.get(..3).is_some_and(is_create) {
         return None;
     }
+    // Only options push trust knows: `--help`, `--web` or `--dry-run` exit 0 and create nothing.
+    let rest: Vec<&str> = words[3..].iter().map(String::as_str).collect();
+    crate::watch_trust::gh::PrCommand::parse("create", &rest)?;
     create_args(words, 0)
 }
 

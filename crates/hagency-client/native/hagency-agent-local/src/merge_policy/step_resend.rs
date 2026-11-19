@@ -141,8 +141,12 @@ impl Ledger {
         let say = (round.said <= round.again).then_some(Say { why, gave_up: spent >= why.cap(), round: round.again });
         // A used-up budget is a hold, never a pass (GPT review), and a reviewer
         // is passed only once the back-off elapsed (round-2 GPT review P2-6).
-        if why == Why::Budget || now - at < RESEND_AFTER_SECS {
+        if why == Why::Budget {
             return Ok(StepDue { say, ..kept });
+        }
+        // Inside the back-off the last round says nothing yet: it gives up only after.
+        if now - at < RESEND_AFTER_SECS {
+            return Ok(StepDue { say: say.filter(|s| !s.gave_up), ..kept });
         }
         if spent >= why.cap() {
             if step == "review" {
@@ -215,7 +219,9 @@ impl Ledger {
     /// [`Ledger::recorded_room_reviews`] counts them without GitHub's view:
     /// never the step's Agent (the merger) nor an Agent the tracker handed
     /// the pull request to (round-2 GPT review P2-5: an author's or merger's
-    /// approval stopped the rotation while readiness counted zero).
+    /// approval stopped the rotation while readiness counted zero). Residual:
+    /// an author known only from GitHub (its body's "Opened by", its branch's
+    /// publishes) still stops it; that only waits for a person, never merges.
     fn eligible_recorded(&self, agent: &str, (pr, head): (&str, &str), room: &str) -> Result<usize> {
         let number = pr.rsplit('/').next().and_then(|n| n.parse::<u64>().ok());
         let authors = match number.and_then(|n| Some((super::github::repo_of_url(pr, n)?, n))) {

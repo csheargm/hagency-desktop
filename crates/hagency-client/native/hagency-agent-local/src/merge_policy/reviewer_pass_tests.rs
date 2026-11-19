@@ -105,8 +105,10 @@ fn a_reviewer_is_passed_only_after_the_back_off() {
     let at = T0 + 100 * RESEND_AFTER_SECS;
     receive(&mut l, "review-last", &review_body(), ME, at, NO_RUN);
     l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
-    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), at + 1).unwrap().taken);
+    let early = l.step_due(AGENT, review, (ME, CODEX, ROOM), at + 1).unwrap();
+    assert_eq!((early.taken, early.say), (true, None), "no give-up line inside the back-off");
     assert!(l.passed_reviewers(AGENT, PR, HEAD).unwrap().is_empty(), "not passed inside the back-off");
-    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), at + RESEND_AFTER_SECS).unwrap().taken);
+    let late = l.step_due(AGENT, review, (ME, CODEX, ROOM), at + RESEND_AFTER_SECS).unwrap();
+    assert_eq!((late.taken, late.say.map(|s| s.gave_up)), (true, Some(true)));
     assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
 }

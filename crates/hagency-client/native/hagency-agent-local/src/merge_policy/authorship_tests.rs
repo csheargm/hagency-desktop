@@ -61,6 +61,9 @@ fn only_a_lone_create_vouches_for_its_pull_request() {
         ("cd", "cd app && gh pr create -R Acme/App -H fix-3 -t x"),
         ("host", "GH_HOST=evil.example gh pr create -R Acme/App -H fix-3 -t x"),
         ("redirect", "gh pr create -R Acme/App -H fix-3 -t x 2>&1"),
+        ("help", "gh pr create -R Acme/App -H fix-3 --help"),
+        ("web", "gh pr create -R Acme/App -H fix-3 --web"),
+        ("dry", "gh pr create -R Acme/App -H fix-3 -t x --dry-run"),
     ] {
         ledger.hold_create(call, &bash(line, temp.path(), "yue"), OPENED - 30).unwrap();
         ledger.settle_tool_call(call, true).unwrap();
