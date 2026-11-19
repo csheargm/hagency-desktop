@@ -11,8 +11,7 @@ use matrix_sdk::{Room, deserialized_responses::EncryptionInfo, ruma::{OwnedEvent
 use matrix_sdk_ui::timeline::{EventTimelineItem, TimelineItem};
 use makepad_widgets::Cx;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 
 /// One event to admit, with what the SDK knows about its encryption.
 type Admit = (Value, Option<EncryptionInfo>);
@@ -41,21 +40,8 @@ impl Loaded {
     }
 }
 
-/// Where a loaded card stands.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Handed {
-    /// Being admitted, after this many failed tries.
-    Admitting(u8),
-    /// Stored with its latest edit: not handed over again.
-    Stored,
-    /// Not stored after this many tries (e.g. an untrusted sender, a full store).
-    Failed(u8),
-}
-static HANDED: LazyLock<Mutex<HashMap<Key, Handed>>> = LazyLock::new(Default::default);
-/// Forgotten past this size; handing a card over again is harmless (admission is idempotent).
-const MAX_HANDED: usize = 2048;
-/// Tries per card and edit before it waits for the next login.
-const MAX_TRIES: u8 = 3;
+mod claims;
+use claims::*;
 
 /// An Agent run card (not its edits) is a timeline item. The SDK's default
 /// filter drops unknown msgtypes, so a card never became one: after a restart
@@ -96,40 +82,10 @@ fn cards_of(original: Value, edit: Option<Value>, info: Option<EncryptionInfo>) 
     Some(Loaded { card, original: (original, info), edit })
 }
 
-/// The cards not handed over yet in `generation`, now marked as being admitted.
-fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
-    let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
-    // An older login's claims never apply again (its tasks end on sign-out).
-    handed.retain(|key, _| key.0 == generation);
-    if handed.len() > MAX_HANDED {
-        handed.retain(|_, state| matches!(state, Handed::Admitting(_)));
-    }
-    cards.into_iter().filter(|c| claim_key(&mut handed, c.key(generation))).collect()
-}
-
-/// Marks `key` as being admitted unless it is stored, being admitted, or out of tries.
-fn claim_key(handed: &mut HashMap<Key, Handed>, key: Key) -> bool {
-    let state = handed.entry(key).or_insert(Handed::Failed(0));
-    match *state {
-        Handed::Failed(n) if n < MAX_TRIES => { *state = Handed::Admitting(n); true }
-        _ => false,
-    }
-}
-
 /// Marks `card` handed over only once the store holds it with its latest
 /// edit; otherwise a later timeline update tries it again (`MAX_TRIES`).
 fn settle(generation: u64, room: &str, card: &Loaded) {
     settle_key(card.key(generation), stored(room, card));
-}
-
-fn settle_key(key: Key, stored: bool) {
-    let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
-    let state = handed.entry(key).or_insert(Handed::Failed(0));
-    *state = match *state {
-        _ if stored => Handed::Stored,
-        Handed::Admitting(n) | Handed::Failed(n) => Handed::Failed(n.saturating_add(1)),
-        Handed::Stored => Handed::Failed(1),
-    };
 }
 
 /// The edit to admit: as the event cache has it, with its own encryption
