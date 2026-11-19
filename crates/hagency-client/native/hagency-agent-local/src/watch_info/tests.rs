@@ -132,3 +132,13 @@ fn the_taught_issue_command_passes_the_card_free_checker() {
     let plain = one_command(&plain).unwrap();
     assert!(crate::watch_trust::issue_create::IssueCreate::parse(&plain.iter().map(String::as_str).collect::<Vec<_>>()).is_some());
 }
+
+#[test]
+fn the_taught_apostrophe_form_passes_the_shell_checker_and_the_escape_does_not() {
+    // Live Nov 19: the steps told agents to write an apostrophe as '\'', which the
+    // shell checker refuses (no unquoted backslash), so such a commit asked the owner.
+    assert!(super::PUSH_FREELY_STEPS.contains("goes in double quotes instead"));
+    assert!(!super::PUSH_FREELY_STEPS.contains("(an apostrophe as '\\''"));
+    assert!(crate::outside::shell::parse("git -C /w/repo commit -m \"docs: add the team's index\"").is_some());
+    assert!(crate::outside::shell::parse("git -C /w/repo commit -m 'docs: add the team'\\''s index'").is_none());
+}
