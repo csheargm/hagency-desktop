@@ -42,6 +42,8 @@ struct WireState {
     renewal_stall_once: Option<Duration>,
     /// The server has ended the lease: renewals are refused.
     lease_ended: bool,
+    /// The server has revoked the device: renewals are refused as such.
+    device_revoked: bool,
     events: Vec<Value>,
     paths: Vec<String>,
     replies: usize,
@@ -158,7 +160,9 @@ impl WireState {
                 (200, lease(self.epoch))
             }
             "/hagency/api/v1/execution/leases/renew" => {
-                if self.lease_ended {
+                if self.device_revoked {
+                    (401, json!({"code":"device_authorization_required"}))
+                } else if self.lease_ended {
                     (401, json!({"code":"transport_scope_not_authorized"}))
                 } else if self.renewal_failures > 0 {
                     self.renewal_failures -= 1;
@@ -1564,17 +1568,26 @@ async fn heartbeat_stops_when_the_server_ended_the_lease_during_a_stall() {
     server.abort();
 }
 
-/// A refusal while the lease is still live locally is a revocation: terminal.
+/// A refusal stops the heartbeat at once, classified by the server's code
+/// whenever it arrives (GPT batch review, Nov 18): a lease the server ended
+/// is recoverable even while it is still live locally; a revoked device is
+/// terminal.
 #[tokio::test]
 async fn heartbeat_stops_at_once_when_the_server_refuses_a_live_lease() {
-    let run = heartbeat_run(6_000, |wire| wire.lease_ended = true).await;
-    let HeartbeatRun { stop, failed, task, native, server, _root, .. } = run;
-    tokio::time::timeout(Duration::from_secs(5), task)
-        .await
-        .expect("a refused renewal must stop the heartbeat")
-        .unwrap();
-    assert!(*stop.borrow());
-    assert_eq!(failed.load(std::sync::atomic::Ordering::Acquire), 1);
-    native.shutdown().await;
-    server.abort();
+    for (revoked, outcome) in [(false, 2), (true, 1)] {
+        let run = heartbeat_run(6_000, |wire| {
+            wire.lease_ended = true;
+            wire.device_revoked = revoked;
+        })
+        .await;
+        let HeartbeatRun { stop, failed, task, native, server, _root, .. } = run;
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("a refused renewal must stop the heartbeat")
+            .unwrap();
+        assert!(*stop.borrow());
+        assert_eq!(failed.load(std::sync::atomic::Ordering::Acquire), outcome, "revoked={revoked}");
+        native.shutdown().await;
+        server.abort();
+    }
 }
