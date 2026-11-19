@@ -157,7 +157,7 @@ impl Fake {
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = facts(self.files.clone(), self.checks.clone());
-        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), facts })
+        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), head_ref: None, facts })
     }
     async fn approvals_on(&self, _: &GhPr, _: &str, head: &str) -> Option<Vec<i64>> {
         self.posted.borrow().as_ref().map(|all| all.iter().filter(|(commit, _)| commit == head).map(|(_, at)| *at).collect())

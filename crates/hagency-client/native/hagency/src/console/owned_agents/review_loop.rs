@@ -161,8 +161,9 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         // the merger, round-2 GPT review): tells "no review yet" from "a person must decide".
         if let Some((view, _, counted)) = &judged {
             reply["readiness"]["approvers"] = (*counted).into();
-            // Recorded reviews of this head in this room, counted or not: one never asks again (PR #109).
-            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(&view.url, &view.head_sha, &ask.room)?.into();
+            // Recorded reviews of this head in this room that could count (never an
+            // author's or the merger's, GPT P2-4): one never asks again (PR #109).
+            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(view, ask.number, (agent, &ask.room))?.into();
         }
     }
     Ok(reply)

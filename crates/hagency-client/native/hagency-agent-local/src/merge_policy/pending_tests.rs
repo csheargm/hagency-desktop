@@ -126,3 +126,19 @@ async fn a_failed_settlement_is_undone_and_codex_keys_are_not_claudes() {
     let again = ToolProposal { expires: 101, ..bash(&merge_line(), temp.path(), "fixer") };
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &again, "m2", 11, &docs).await, None, "still claimed");
 }
+
+/// GPT batch review P1-2: a card's withdrawal is keyed by the room's
+/// spelling of the repository, the approval by GitHub's; owner/repo are
+/// case-insensitive on GitHub, so `acme/app` withdraws `Acme/App`'s approval.
+#[test]
+fn a_withdrawal_in_another_case_still_withdraws() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = setup(temp.path());
+    let github = "https://github.com/Acme/App/pull/7";
+    ledger.record_agent_review(github, HEAD, "reviewer", "!r:x").unwrap();
+    ledger.hold_agent_review("held", github, HEAD, ("reviewer", "!r:x")).unwrap();
+    ledger.hold_withdrawal("rc", "https://github.com/acme/app/pull/7", "reviewer").unwrap();
+    ledger.settle_withdrawal("rc", true).unwrap();
+    ledger.settle_agent_review("held", true).unwrap();
+    assert!(ledger.agent_reviewers(github, HEAD).unwrap().is_empty(), "the approval is withdrawn whatever the case");
+}

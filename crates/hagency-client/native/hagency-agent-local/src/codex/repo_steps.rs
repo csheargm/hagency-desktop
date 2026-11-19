@@ -123,6 +123,10 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
     let Ok(slot) = running.slots.clone().try_acquire_owned() else { return refuse(call, "another step is still running; wait for it") };
     let Some(proposal) = proposal(ledger, turn, &call.command) else { return refuse(call, "this run cannot be checked") };
     let key = running.key(turn.dispatch);
+    // A `gh pr create` names its Agent as the author once this step ran (GPT batch review P1-1).
+    if ledger.hold_create(&key, &proposal, super::now()).is_err() {
+        return refuse(call, "this step cannot be checked now");
+    }
     let step = match gated_review(ledger, turn, &proposal, &call.command, &key, source).await {
         Some(step) => step,
         None => match ledger.trusted_publish(turn.owner, &proposal, super::now()) {

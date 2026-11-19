@@ -71,7 +71,7 @@ const H50: &str = "4fe966ad790d85f5120ccf172f29eb6a4b3fc005";
 impl crate::merge_policy::github::PrSource for Pr50 {
     async fn pull_request(&self, _: &crate::merge_policy::gate::GhPr) -> Option<crate::merge_policy::github::PrView> {
         let facts = crate::merge_policy::PrFacts { open: true, files: vec![crate::merge_policy::ChangedFile { path: "README.md".into(), previous_path: None, additions: 4, deletions: 0, opaque: false }], checks: vec![crate::merge_policy::Check::Passed] };
-        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/50"), base_sha: "2".repeat(40), head_sha: H50.into(), author: "csheargm".into(), opened_by: self.opened_by.clone(), facts })
+        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/50"), base_sha: "2".repeat(40), head_sha: H50.into(), author: "csheargm".into(), opened_by: self.opened_by.clone(), head_ref: None, facts })
     }
 }
 fn review(mode: &str, head: &str) -> String {
@@ -286,4 +286,22 @@ async fn a_multiline_quoted_verdict_is_recorded_and_an_unquoted_newline_is_refus
     assert!(crate::watch_trust::review_post::ReviewPost::parse(&command).is_some(), "the post reader accepts it");
     assert!(crate::watch_trust::review_post::ReviewPost::parse(&chained).is_none(), "the post reader refuses it");
     verdict_recorded_and_chains_refused(&command, &[chained]).await;
+}
+
+/// GPT review of the P1-1 fix: a `gh pr create` step is held under its key
+/// and vouches for its pull request only once it ran; this one fails (no
+/// GitHub token here), so it names its Agent as an author and vouches for nothing.
+#[tokio::test]
+async fn a_create_step_that_failed_never_vouches_for_a_pull_request() {
+    let mut r = run_under(ToolPolicy::Deny);
+    let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
+    let workspace = r.root.to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
+    let mut running = Running::default();
+    let (out, failed) = ask(&mut r.ledger, &turn, &format!("gh pr create --repo {REPO} --head fix/typo --title t --body b"), &mut running).await;
+    assert!(failed && out.contains(crate::watch_trust::step_env::NO_TOKEN), "{out}");
+    running.settle(&mut r.ledger).unwrap();
+    let rows: Vec<(String, i64)> = r.ledger.db.prepare("SELECT call, ran FROM pr_branch_publishes WHERE kind='create'").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert!(rows.iter().any(|(call, ran)| call.starts_with(crate::merge_policy::codex_review::KEY_PREFIX) && *ran == 0), "{rows:?}");
+    assert!(rows.iter().all(|(_, ran)| *ran == 0), "nothing that failed vouches: {rows:?}");
 }

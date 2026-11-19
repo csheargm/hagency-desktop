@@ -13,7 +13,7 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// GitHub's compare API lists at most this many files; a full page may be truncated.
 const COMPARE_FILE_LIMIT: usize = 300;
-const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author,body";
+const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author,body,headRefName,isCrossRepository,createdAt";
 const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
 
 /// One pull request as the gate judges it.
@@ -26,7 +26,24 @@ pub struct PrView {
     pub author: String,
     /// The Agent its body names: "Opened by agent <name> (" (Hagency's attribution line).
     pub opened_by: Option<String>,
+    /// Its head branch in the base repository and when it was opened; `None`
+    /// for a fork's branch or when GitHub does not say ([`super::authorship`]).
+    pub head_ref: Option<HeadRef>,
     pub facts: PrFacts,
+}
+
+/// A same-repository pull request's head branch and opening time (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadRef {
+    pub branch: String,
+    pub created_at: i64,
+}
+
+/// [`HeadRef`] of a `gh pr view --json` object.
+fn head_ref(view: &Value) -> Option<HeadRef> {
+    let branch = view["headRefName"].as_str().filter(|b| !b.is_empty() && view["isCrossRepository"] == false)?;
+    let created = time::OffsetDateTime::parse(view["createdAt"].as_str()?, &time::format_description::well_known::Rfc3339).ok()?;
+    Some(HeadRef { branch: branch.to_owned(), created_at: created.unix_timestamp() })
 }
 
 /// A full 40-hex commit SHA, lower case.
@@ -57,7 +74,7 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
     let checks = view["statusCheckRollup"].as_array().map_or_else(|| vec![Check::Pending], |all| all.iter().map(check_state).collect());
     let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
     let opened_by = view["body"].as_str().and_then(opened_by);
-    Some(PrView { url, base_sha, head_sha, author, opened_by, facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+    Some(PrView { url, base_sha, head_sha, author, opened_by, head_ref: head_ref(view), facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }
 
 fn changed_file(file: &Value) -> Option<ChangedFile> {

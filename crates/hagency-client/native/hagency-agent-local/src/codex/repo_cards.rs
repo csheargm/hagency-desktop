@@ -11,6 +11,7 @@
 //! each answer ([`decided`]), records the approval in the ledger and runs
 //! the step. A turn that ends drops the waits, and with them the cards.
 use super::repo_steps::{Call, Launch, Running, Turn, launch, refuse};
+use crate::merge_policy::{gate, github::PrSource};
 use crate::watch_trust::{TrustedStep, review_post::ReviewPost};
 use crate::{Ledger, ToolPolicy, ToolProposal};
 use std::time::Duration;
@@ -29,6 +30,8 @@ pub(super) struct Decided {
     allowed: bool,
     /// The pull request whose earlier approval a posted request for changes withdraws.
     withdraws: Option<String>,
+    /// The verdict as checked: an approval posts only on the head it names.
+    post: ReviewPost,
 }
 
 /// Ask the owner about `call` (a step nothing lets run card-free), or
@@ -55,7 +58,7 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
         Err(_) => return refuse(call, "this step cannot be checked now"),
     };
     if !card {
-        cards.spawn(std::future::ready(Decided { call, proposal, step, card, allowed: true, withdraws }));
+        cards.spawn(std::future::ready(Decided { call, proposal, step, card, allowed: true, withdraws, post }));
         return;
     }
     let Some(queue) = turn.queue else { return refuse(call, "no card can be shown to your owner here") };
@@ -72,7 +75,7 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
             // Given up (the MCP wait expired): the card goes away unanswered.
             () = call.reply.closed() => false,
         };
-        Decided { call, proposal, step, card, allowed, withdraws }
+        Decided { call, proposal, step, card, allowed, withdraws, post }
     });
 }
 
@@ -85,13 +88,29 @@ pub(super) async fn next(running: &mut Running) -> Option<Decided> {
 /// Act on a card's answer: refused, or the approval recorded in the ledger
 /// (it must still validate: the dispatch's rules may have changed meanwhile)
 /// and the pinned step run.
-pub(super) fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, running: &mut Running) {
-    let Decided { call, proposal, step, card, allowed, withdraws } = answer;
+pub(super) async fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, running: &mut Running) {
+    let github = crate::merge_policy::github::GhCli { token: turn.token.clone() };
+    decided_with(ledger, turn, answer, running, &github).await
+}
+
+/// [`decided`], reading the pull request's head through `source`.
+pub(super) async fn decided_with(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, running: &mut Running, source: &impl PrSource) {
+    let Decided { call, proposal, step, card, allowed, withdraws, post } = answer;
     if call.reply.is_closed() {
         return;
     }
     if !allowed {
         return refuse(call, "your owner did not approve this step");
+    }
+    // An approval posts only while the head is the commit its verdict names,
+    // as the merge gate's own (GPT batch review P2-3): a push during the
+    // card's wait must not land it on code nobody reviewed. Residual, as
+    // the gate's: a push between this read and the post.
+    if let Err(why) = head_still_reviewed(&post, turn, source).await {
+        return refuse(call, why);
+    }
+    if call.reply.is_closed() {
+        return;
     }
     // The slot first: an approval is never spent on a step that cannot start.
     let Ok(slot) = running.slots.clone().try_acquire_owned() else { return refuse(call, "another step is still running; send it again") };
@@ -108,6 +127,20 @@ pub(super) fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, run
         return refuse(call, &format!("the request for changes cannot be recorded: {error}"));
     }
     launch(ledger, turn, Launch { call, step, proposal, key, slot }, running);
+}
+
+/// `Ok` unless `post` approves and the pull request's head is not the
+/// commit its body names ([`gate::review_names_head`]), or cannot be read.
+async fn head_still_reviewed(post: &ReviewPost, turn: &Turn<'_>, source: &impl PrSource) -> Result<(), &'static str> {
+    if post.mode != "--approve" && !post.body.starts_with(gate::APPROVE_MARKER) {
+        return Ok(());
+    }
+    let command = gate::GhPr { dir: turn.workspace.into(), number: post.number, repo: Some(post.repo.clone()), head: None, kind: gate::Kind::Review, body: post.body.clone() };
+    match source.pull_request(&command).await {
+        Some(view) if gate::review_names_head(&post.body, &view.head_sha) => Ok(()),
+        Some(_) => Err("the pull request has a new commit since this verdict: review its current head again"),
+        None => Err("the pull request cannot be read now to check its head"),
+    }
 }
 
 #[cfg(test)]

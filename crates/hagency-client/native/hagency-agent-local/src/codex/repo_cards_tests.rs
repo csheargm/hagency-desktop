@@ -46,10 +46,22 @@ async fn send(ledger: &mut Ledger, turn: &Turn<'_>, command: &str, running: &mut
     answer
 }
 
-/// The turn loop's part: take the card's answer and act on it.
+/// GitHub's pull request #107 at head `.0`.
+struct AtHead(&'static str);
+impl crate::merge_policy::github::PrSource for AtHead {
+    async fn pull_request(&self, _: &crate::merge_policy::gate::GhPr) -> Option<crate::merge_policy::github::PrView> {
+        let facts = crate::merge_policy::PrFacts { open: true, files: vec![], checks: vec![] };
+        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/107"), base_sha: "1".repeat(40), head_sha: self.0.into(), author: "x".into(), opened_by: None, head_ref: None, facts })
+    }
+}
+
+/// The turn loop's part: take the card's answer and act on it (the pull request still at `HEAD`).
 async fn answer_card(ledger: &mut Ledger, turn: &Turn<'_>, running: &mut Running) {
+    answer_card_at(ledger, turn, running, HEAD).await;
+}
+async fn answer_card_at(ledger: &mut Ledger, turn: &Turn<'_>, running: &mut Running, head: &'static str) {
     let decided_card = next(running).await.expect("a card waits");
-    decided(ledger, turn, decided_card, running);
+    decided_with(ledger, turn, decided_card, running, &AtHead(head)).await;
 }
 
 #[tokio::test]
@@ -73,6 +85,26 @@ async fn a_members_review_verdict_asks_the_owner_and_runs_the_pinned_post_once_a
     assert!(failed && out.contains(crate::watch_trust::step_env::NO_TOKEN) && !out.contains("not_card_free"), "{out}");
     let consumed: i64 = ledger.db.query_row("SELECT count(*) FROM approvals WHERE consumed=1", [], |r| r.get(0)).unwrap();
     assert_eq!(consumed, 1, "the owner's approval is recorded and spent once");
+}
+
+/// GPT batch review P2-3: a push while the owner's card waited moved the
+/// head; the approved verdict names the old one, so it never posts (it
+/// would land on the new head) and the owner's approval is not spent.
+#[tokio::test]
+async fn an_approved_verdict_of_an_old_head_never_posts() {
+    let db = tempfile::tempdir().unwrap();
+    let (mut ledger, scope) = ledger_under(db.path(), ToolPolicy::AskOwner);
+    let (queue, mut cards) = crate::codex::approval_queue(4).unwrap();
+    let workspace = db.path().to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: Some(&queue) };
+    let mut running = Running::default();
+    let answer = send(&mut ledger, &turn, &verdict(), &mut running).await;
+    cards.recv().await.unwrap().decide(true);
+    answer_card_at(&mut ledger, &turn, &mut running, "5".repeat(40).leak()).await;
+    let (out, failed) = answer.await.unwrap();
+    assert!(failed && out.contains("new commit since this verdict"), "{out}");
+    let approvals: i64 = ledger.db.query_row("SELECT count(*) FROM approvals", [], |r| r.get(0)).unwrap();
+    assert_eq!(approvals, 0, "nothing approved or run");
 }
 
 #[tokio::test]

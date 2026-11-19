@@ -20,6 +20,7 @@
 //! required; protected paths and `always_human:` globs still need a person.
 //! A maintainer's own rules ([`work`]) are judged too; every policy
 //! that applies must pass, so neither can loosen the other.
+pub(crate) mod authorship;
 pub mod gate;
 pub mod github;
 pub mod work;

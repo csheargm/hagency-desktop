@@ -33,9 +33,11 @@ impl Ledger {
         self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_claims VALUES (?,?,?)", (call, pr, head))?;
         Ok(())
     }
-    /// Tool call `call` finished: a merge claim held under it is kept only if it succeeded.
+    /// Tool call `call` finished: a merge claim held under it is kept only if
+    /// it succeeded, and a `gh pr create` held under it vouches only then ([`super::authorship`]).
     pub(crate) fn settle_auto_merge(&mut self, call: &str, succeeded: bool) -> Result<()> {
         use rusqlite::OptionalExtension;
+        self.settle_publish(call, succeeded)?;
         self.atomically(|ledger| {
             let held: Option<(String, String)> = ledger
                 .db
@@ -54,7 +56,7 @@ impl Ledger {
         if call.is_empty() {
             return self.withdraw_agent_review(pr, reviewer);
         }
-        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE lower(pr)=lower(?) AND reviewer=?", (pr, reviewer))?;
         self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_withdrawals VALUES (?,?,?)", (call, pr, reviewer))?;
         Ok(())
     }

@@ -81,21 +81,25 @@ pub async fn merge_readiness_counted(ledger: &mut Ledger, command: &GhPr, (merge
 
 /// This device's Agents that approved `view`'s head, counted for a merge from
 /// `room` (any room, `None`), never one
-/// that wrote the pull request: the Agent the issue tracker handed it to, or
+/// that may have written the pull request: the Agent the issue tracker handed it to,
 /// the one its body names as "Opened by agent <name>" (GPT review: a shared
-/// login lets the author post a marker comment).
+/// login lets the author post a marker comment), or any recorded as
+/// publishing its head branch ([`super::authorship`]).
 fn local_approvers(ledger: &Ledger, repo: &str, number: u64, view: &PrView, room: Option<&str>) -> Result<Vec<String>> {
     let mut authors = ledger.pr_author_agents(repo, number)?;
     authors.extend(view.opened_by.clone());
+    authors.extend(ledger.branch_authors(repo, view)?.0);
     let all = ledger.agent_reviewers_in(&view.url, &view.head_sha, room)?;
     Ok(all.into_iter().filter(|reviewer| !authors.iter().any(|a| a.eq_ignore_ascii_case(reviewer))).collect())
 }
 
 impl Ledger {
-    /// How many Agents' approvals of `pr` at exactly `head` were given in `room`
-    /// and recorded, whoever wrote it: a recorded review is never asked for again.
-    pub fn recorded_room_reviews(&self, pr: &str, head: &str, room: &str) -> Result<usize> {
-        Ok(self.agent_reviewers_in(pr, head, Some(room))?.len())
+    /// How many Agents' approvals of `view`'s head given in `room` are
+    /// recorded and could count (never an author's or the merger's, GPT batch
+    /// review P2-4): such a review is never asked for again.
+    pub fn recorded_room_reviews(&self, view: &PrView, number: u64, (merger, room): (&str, &str)) -> Result<usize> {
+        let Some(repo) = repo_of_url(&view.url, number) else { return Ok(0) };
+        Ok(local_approvers(self, repo, number, view, Some(room))?.iter().filter(|r| !r.eq_ignore_ascii_case(merger)).count())
     }
     /// The Agents the issue tracker handed issues to whose pull request is `number` in `repo`.
     pub(crate) fn pr_author_agents(&self, repo: &str, number: u64) -> Result<Vec<String>> {
@@ -134,10 +138,10 @@ async fn judge_counted(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &P
     let (approvers, excluded) = match &judged.rules {
         None => (local, merger.to_owned()),
         Some(_) => {
-            // A shared login wrote it, but the tracker knows which Agent: the
-            // others' approvals count (live PR #109, Nov 18: yue-claude's
-            // recorded review was read as none and asked for again).
-            let author_known = !ledger.pr_author_agents(repo, command.number).ok()?.is_empty();
+            // A shared login wrote it, but this ledger recorded which Agent
+            // created it: the others' approvals count (live PR #109, Nov 18).
+            // Never the tracker's guess alone (GPT batch review P1-1).
+            let author_known = ledger.branch_authors(repo, view).ok()?.1;
             let counted = (judged.count_local || author_known).then(|| local.clone());
             (approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?, judged.excluded.clone())
         }
