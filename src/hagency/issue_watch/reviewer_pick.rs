@@ -40,6 +40,27 @@ pub(crate) struct Pick {
     pub own: bool,
 }
 
+/// One check's reviewer candidates and how to choose among them, read once
+/// per room: the author's runtime, the room's setting, and whether every
+/// joined Agent was seen.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Peers {
+    pub candidates: Vec<Candidate>,
+    pub author: Option<&'static str>,
+    pub prefer_different: bool,
+    pub complete: bool,
+}
+
+impl Peers {
+    /// [`pick`] among the candidates not `passed` over: they never answered
+    /// this head's review request (GPT batch review: a paused remote Codex
+    /// Agent kept every re-send).
+    pub(crate) fn pick(&self, passed: &[String]) -> Option<Pick> {
+        let left: Vec<Candidate> = self.candidates.iter().filter(|c| !passed.iter().any(|p| p == c.puppet.as_str())).cloned().collect();
+        pick(self.author, &left, self.prefer_different, self.complete)
+    }
+}
+
 /// The reviewer for a pull request opened by an Agent running `author`.
 /// Own Agents come first among different-model reviewers (their approval is
 /// in this ledger); among the same-model fallbacks another owner's Agent
@@ -184,6 +205,20 @@ mod tests {
         assert!(complete);
         assert_eq!(members.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "z"]);
         assert!(members.iter().all(|c| !c.own));
+    }
+
+    /// GPT batch review: the remote Codex Agent never answered this head's
+    /// review, so the next check asks the available local Claude reviewer;
+    /// with nobody left, a person reviews.
+    #[test]
+    fn a_reviewer_passed_over_for_this_head_is_skipped() {
+        let bird = agent("bird-codex", Some("codex"), false);
+        let yue = agent("yue-claude", Some("claude"), true);
+        let peers = Peers { candidates: vec![yue.clone(), bird.clone()], author: Some("claude"), prefer_different: true, complete: true };
+        assert_eq!(peers.pick(&[]).map(|p| p.reviewer), Some(bird.puppet.clone()), "PR #109: the other server's Codex Agent first");
+        let next = peers.pick(&[bird.puppet.to_string()]).unwrap();
+        assert_eq!((next.reviewer, next.own), (yue.puppet.clone(), true));
+        assert_eq!(peers.pick(&[bird.puppet.to_string(), yue.puppet.to_string()]), None);
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub(super) struct ReviewChange {
     /// The room accepted a step's "could not start" line of this round.
     #[serde(default)]
     step_said: Option<SaidStep>,
+    /// The reviewers of a head's review that never answered (GPT batch review).
+    #[serde(default)]
+    step_passed: Option<Step>,
     #[serde(default)]
     work_claim: Option<Claim>,
     #[serde(default)]
@@ -136,6 +139,10 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         reply["taken"] = ledger.loop_step_taken(agent, &step.step, &step.pr, &step.head)?.into();
     }
     resend_parts(ledger, agent, (change.step_due, change.step_said), now, &mut reply)?;
+    if let Some(step) = change.step_passed {
+        pr_head(&step)?;
+        reply["passed"] = ledger.passed_reviewers(agent, &step.pr, &step.head)?.into();
+    }
     if let Some(step) = change.claim_step {
         pr_head(&step)?;
         reply["claimed"] = ledger.claim_dispatched_step(agent, &step.step, &step.pr, &step.head)?.into();
@@ -203,6 +210,8 @@ mod tests {
         assert!(room_id("!r:x").is_ok() && room_id("r:x").is_err() && room_id("!r").is_err() && room_id("!r :x").is_err());
         let due: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x", "to": "@bird:x", "room": "!r:x"}, "stepSaid": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "round": 0}})).unwrap();
         assert!(due.step_due.is_some() && due.step_said.is_some());
+        let passed: ReviewChange = serde_json::from_value(json!({"stepPassed": {"step": "review", "pr": "https://github.com/a/b/pull/1", "head": sha}})).unwrap();
+        assert!(passed.step_passed.is_some(), "the reviewers that never answered are asked for by head");
         let step = |s: &str, pr: &str, head: &str| Step { step: s.into(), pr: pr.into(), head: head.into() };
         assert!(pr_head(&step("merge", "https://github.com/a/b/pull/1", &sha)).is_ok());
         assert!(pr_head(&step("merge", "http://evil/a", &sha)).is_err());

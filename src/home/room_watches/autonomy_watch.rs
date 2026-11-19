@@ -9,13 +9,16 @@
 //! in the subscription's required state); the loop's own check of the room
 //! then shows its fresh read ([`server::read`](crate::hagency::room_autonomy::server::read)).
 use ::hagency::issue_watch::safeguards::room_autonomy::{ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE};
+use ::hagency::repo_status::linked::ROOM_REPOS_STATE_TYPE;
 use matrix_sdk::{Client, room::Room, ruma::{events::{AnySyncStateEvent, AnySyncTimelineEvent}, serde::Raw}};
 use std::sync::Mutex;
 
 /// The room's power levels: who is owner or maintainer.
 const POWER_LEVELS: &str = "m.room.power_levels";
-/// The state types whose change makes a room's agent work stale.
-const STALE_BY: [&str; 3] = [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, POWER_LEVELS];
+/// The state types whose change makes a room's agent work stale; its
+/// "Linked:" line reads the linked repositories (GPT batch review: an unlink
+/// by someone else left the line stale).
+const STALE_BY: [&str; 4] = [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, POWER_LEVELS, ROOM_REPOS_STATE_TYPE];
 
 /// Whether an event of type `kind` changes who holds a role (the Members tab's tags and menus).
 pub fn changes_roles(kind: &str) -> bool {
@@ -64,11 +67,19 @@ mod tests {
 
     #[test]
     fn a_pause_resume_level_or_role_change_rereads_the_room() {
-        for kind in [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, "m.room.power_levels"] {
+        for kind in [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, "m.room.power_levels", ROOM_REPOS_STATE_TYPE] {
             assert!(makes_stale(kind), "{kind}");
         }
         assert!(!makes_stale("m.room.message"), "a message is no change to the room's agent work");
         assert!(changes_roles("m.room.power_levels"), "a role change rereads the Members tab");
         assert!(!changes_roles(ROOM_PAUSE_STATE_TYPE));
+    }
+
+    /// GPT batch review: someone else's unlink left the Status tab's "Linked:" line stale.
+    #[test]
+    fn a_link_or_unlink_rereads_the_linked_line() {
+        assert_eq!(ROOM_REPOS_STATE_TYPE, "io.hagency.room_repos");
+        assert!(makes_stale(ROOM_REPOS_STATE_TYPE));
+        assert!(!changes_roles(ROOM_REPOS_STATE_TYPE), "a link moves no role");
     }
 }

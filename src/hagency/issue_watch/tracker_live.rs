@@ -5,7 +5,7 @@
 //! the owner API's `track` record.
 use super::merge_hold::{self, Gate};
 use super::review_loop::{self, LoopCtx, LoopIo};
-use super::reviewer_pick::Pick;
+use super::reviewer_pick::{Peers, Pick};
 use super::tracker::{self, CLOCK_SLACK_SECS, Followed, Followups, Inputs, TrackIo};
 use super::work::{Holder, LiveLoop, Worker};
 use super::run_end::RunView;
@@ -76,8 +76,8 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     // A failed read is kept as the failure: the merge step counts it, never "cannot merge" (GPT review).
     let permission = fetch_permission(worker.client, GITHUB_API, repo, &login, worker.token).await.map_err(|e| e.to_string());
     let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
-    let peer = super::reviewer_candidates::pick_peer(worker, &room).await;
-    let io = LiveTrack { worker, watched, repo, room: room.clone(), login, peer, permission };
+    let peers = super::reviewer_candidates::peers(worker, &room).await;
+    let io = LiveTrack { worker, watched, repo, room: room.clone(), login, peer: peers.pick(&[]), peers, permission };
     let since = watched.entry.map_or(i64::MIN, |e| e.since);
     let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, since, open_issues: watched.open_issues, own_pulls: &own }).await;
     if let Err(error) = share(worker, watched, &room, &followed.holds).await {
@@ -105,7 +105,10 @@ struct LiveTrack<'a> {
     repo: &'a str,
     room: OwnedRoomId,
     login: String,
+    /// The room's pick, for its once-said fallback line; each pull request
+    /// picks again without the reviewers that never answered its head.
     peer: Option<Pick>,
+    peers: Peers,
     permission: Result<String, String>,
 }
 
@@ -115,7 +118,7 @@ impl LiveTrack<'_> {
     }
     /// The gate's answer for `pr` and the step it leads to; every GitHub read
     /// (the owner API's own, and the reviews) fails here, never silently.
-    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, pr: &PullRequest, fixer: &OwnedUserId) -> Result<Gate, String> {
+    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, (pr, peer): (&PullRequest, Option<&Pick>), fixer: &OwnedUserId) -> Result<Gate, String> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
@@ -126,10 +129,10 @@ impl LiveTrack<'_> {
         let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         // A verdict on GitHub the gate never recorded: ask the reviewer again before holding (PR #105).
-        if let Some(peer) = &self.peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
+        if let Some(peer) = peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
-        let readiness = super::review_again::noted_other_owner(readiness, self.peer.as_ref().is_some_and(|p| !p.own));
+        let readiness = super::review_again::noted_other_owner(readiness, peer.is_some_and(|p| !p.own));
         let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
         let settled = merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now);
         merge_hold::follow_gate(io, target, &readiness, ctx, settled).await
@@ -181,14 +184,15 @@ impl TrackIo for LiveTrack<'_> {
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
         super::merged_link::find(self.worker, (self.repo, &self.login), track).await
     }
-    async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
-        let (state, reason) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;
-        Ok(match (state.as_str(), reason.as_str()) {
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<Issue>), String> {
+        let (state, reason, issue) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;
+        let fact = match (state.as_str(), reason.as_str()) {
             ("open", _) => IssueFact::Open,
             ("closed", "completed") => IssueFact::Done,
             ("closed", _) => IssueFact::ClosedOther,
             _ => return Err(format!("unknown issue state {state:?}")),
-        })
+        };
+        Ok((fact, issue))
     }
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String> {
         let comments = fetch_comments(self.worker.client, GITHUB_API, self.repo, track.number, self.worker.token).await.map_err(|e| e.to_string())?;
@@ -199,26 +203,28 @@ impl TrackIo for LiveTrack<'_> {
         if pr.draft || super::review_again::ready_moved(&pr.url, &pr.head_sha, pr.draft) {
             return Ok(Followed::Draft);
         }
-        let Some(peer) = self.peer.as_ref().map(|p| &p.reviewer) else { return Ok(Followed::NeedsPerson) };
         let io = LiveLoop::new(self.worker, &self.watched.watch.setting.room_id)?;
         let target = review_loop::target_of(self.repo, pr);
+        let passed = review_loop::passed_reviewers(&io, &target).await?;
+        let peer = self.peers.pick(&passed);
+        if peer.is_none() && passed.is_empty() {
+            return Ok(Followed::NeedsPerson);
+        }
         // The peer only reviews. The merge step is judged and addressed for
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
-        review_loop::advance(&io, &target, &LoopCtx { agent: peer, name: "", maintainer: false, permission: None }).await?;
+        if let Some(peer) = &peer {
+            review_loop::advance(&io, &target, &LoopCtx { agent: &peer.reviewer, name: "", maintainer: false, permission: None }).await?;
+        }
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
-        let gate = match self.merge_step(&io, &target, pr, &fixer).await {
+        // Everyone passed over: nobody is asked, but a late verdict still merges (GPT review).
+        let gate = match self.merge_step(&io, &target, (pr, peer.as_ref()), &fixer).await {
             Ok(Gate::Unreadable(error)) | Err(error) => Err(error),
             Ok(gate) => Ok(gate),
         };
         Ok(match gate {
             Ok(gate) => {
                 merge_hold::lock_streaks().reached(&pr.url);
-                match gate {
-                    Gate::Merge => Followed::Merging,
-                    Gate::WaitCi => Followed::WaitingCi,
-                    Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
-                    Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) => Followed::Requested,
-                }
+                followed_of(gate, peer.is_some())
             }
             Err(error) => {
                 // A transport or timeout failure is never swallowed: logged,
@@ -246,8 +252,36 @@ impl TrackIo for LiveTrack<'_> {
     }
 }
 
+/// What the merge step's `gate` means for the pull request; `asking`: a
+/// reviewer was asked, else everyone was passed over and a person reviews,
+/// though a late verdict still carries it on (GPT review).
+pub(super) fn followed_of(gate: Gate, asking: bool) -> Followed {
+    match gate {
+        Gate::Merge => Followed::Merging,
+        Gate::WaitCi => Followed::WaitingCi,
+        Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
+        Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) if !asking => Followed::NeedsPerson,
+        Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) => Followed::Requested,
+    }
+}
+
 /// Fixed by Agent, repository, issue and step: one line per step.
 pub(super) fn line_txn_id(agent_id: &str, repo: &str, number: i64, key: &str) -> OwnedTransactionId {
     let hash = blake3::hash(format!("{agent_id}\n{repo}\n{number}\n{key}").as_bytes());
     OwnedTransactionId::from(format!("hagency-track-{}", hash.to_hex()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GPT review: with every reviewer passed over the head was never judged
+    /// again, so a late approval left it waiting; the gate still runs.
+    #[test]
+    fn with_everyone_passed_over_a_late_approval_still_merges() {
+        assert_eq!(followed_of(Gate::Merge, false), Followed::Merging);
+        assert_eq!(followed_of(Gate::WaitReview, false), Followed::NeedsPerson, "nobody left to ask: a person reviews");
+        assert_eq!(followed_of(Gate::WaitReview, true), Followed::Requested);
+        assert_eq!(followed_of(Gate::WaitCi, false), Followed::WaitingCi);
+    }
 }

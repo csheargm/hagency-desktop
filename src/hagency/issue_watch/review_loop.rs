@@ -59,6 +59,13 @@ pub(crate) fn target_of(repo: &str, pr: &PullRequest) -> Target {
     Target { repo: repo.to_owned(), number: pr.number, url: pr.url.clone(), head: pr.head_sha.clone() }
 }
 
+/// The reviewers that never answered `target`'s review request, as Matrix
+/// IDs: the next pick skips them (GPT batch review).
+pub(crate) async fn passed_reviewers(io: &impl LoopIo, target: &Target) -> Result<Vec<String>, String> {
+    let passed = io.review(json!({"stepPassed": {"step": "review", "pr": target.url, "head": target.head}})).await?;
+    Ok(passed["passed"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect())
+}
+
 /// Advance one pull request head by at most one step.
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, ctx: &LoopCtx<'_>) -> Result<(), String> {
     let step = json!({"step": "review", "pr": target.url, "head": target.head});

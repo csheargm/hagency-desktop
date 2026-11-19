@@ -223,6 +223,9 @@ fn a_given_back_step_not_re_posted_yet_waits_while_the_budget_is_used_up_again()
     assert_eq!(due(&mut l, T0 + 86_400).taken, false, "the next day it goes out");
 }
 
+#[path = "reviewer_pass_tests.rs"]
+mod reviewer_pass;
+
 #[path = "step_resend_scope_tests.rs"]
 mod scope;
 
