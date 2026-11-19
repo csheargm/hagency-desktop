@@ -15,7 +15,7 @@ const QUEUED: usize = 4;
 /// The most output one step returns to the model.
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 /// Seconds an authorized proposal stays valid (as a native approval).
-const PROPOSAL_LIFETIME_SECS: i64 = 300;
+pub(super) const PROPOSAL_LIFETIME_SECS: i64 = 300;
 
 /// One tool call: its command line and where the answer goes.
 pub(super) struct Call {
@@ -53,7 +53,9 @@ const PARALLEL: usize = 2;
 /// the slots that bound how many run at once.
 pub(super) struct Running {
     guards: Vec<CancelOnDrop>,
-    slots: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(super) slots: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Steps waiting for the owner's card ([`super::repo_cards`]).
+    pub(super) cards: tokio::task::JoinSet<super::repo_cards::Decided>,
     /// Finished steps the merge gate held something under: (key, succeeded).
     outcomes: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
     /// Makes this turn's gate keys unique, across turns and restarts.
@@ -63,7 +65,7 @@ pub(super) struct Running {
 impl Default for Running {
     fn default() -> Self {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos().to_string()).unwrap_or_default();
-        Self { guards: Vec::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)), outcomes: std::sync::Arc::default(), nonce, next: 0 }
+        Self { guards: Vec::new(), cards: tokio::task::JoinSet::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)), outcomes: std::sync::Arc::default(), nonce, next: 0 }
     }
 }
 impl Running {
@@ -78,7 +80,7 @@ impl Running {
         Ok(())
     }
     /// A fresh gate key for one step (a Codex key: no Claude call id settles it).
-    fn key(&mut self, dispatch: &str) -> String {
+    pub(super) fn key(&mut self, dispatch: &str) -> String {
         self.next += 1;
         format!("{}step:{}", crate::merge_policy::codex_review::KEY_PREFIX, json!([dispatch, self.nonce, self.next]))
     }
@@ -94,11 +96,15 @@ pub(super) struct Turn<'a> {
     pub token: Option<String>,
     /// False where Codex runs no native commands (a shared project).
     pub enabled: bool,
+    /// Where a step nothing lets run card-free asks the owner (`None`: it is refused).
+    pub queue: Option<&'a super::ApprovalQueue>,
 }
 
 /// Answer `call`: a PR review verdict goes through the merge gate first,
 /// exactly as a Claude `Bash` call does (recorded on the exact head once it
-/// ran); otherwise refused at once unless push trust covers it, else started.
+/// ran); otherwise started when the room's work loop or a room read covers
+/// it, else a review verdict asks the owner on a card and anything else is
+/// refused at once.
 pub(super) async fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &mut Running) {
     let github = crate::merge_policy::github::GhCli { token: turn.token.clone() };
     start_with(ledger, turn, call, running, &github).await
@@ -106,10 +112,6 @@ pub(super) async fn start(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, runn
 
 /// [`start`] reading GitHub through `source` (tests give a stand-in).
 pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, running: &mut Running, source: &impl crate::merge_policy::github::PrSource) {
-    let refuse = |call: Call, why: &str| {
-        let text = json!({"error": "not_card_free", "reason": why, "next": "run it as a normal command; it asks your owner"}).to_string();
-        let _ = call.reply.send((text, true));
-    };
     if !turn.enabled {
         return refuse(call, "this room's workspace runs no commands");
     }
@@ -125,8 +127,14 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
         Some(step) => step,
         None => match ledger.trusted_publish(turn.owner, &proposal, super::now()) {
             Ok(Some(step)) if step != TrustedStep::Allow => step,
-            // Not a card-free step, or the ledger could not say: nothing runs.
-            _ => return refuse(call, "neither a read of this room's repositories nor a step push freely covers here"),
+            // Nothing lets it run card-free: a review verdict asks the
+            // owner on a card, as a Claude `Bash` call does (e2e 8, Nov 18).
+            Ok(None) => {
+                drop(slot);
+                return super::repo_cards::ask(ledger, turn, call, proposal, &mut running.cards);
+            }
+            // The ledger could not say: nothing runs.
+            _ => return refuse(call, "this step cannot be checked now"),
         },
     };
     // Given up while the gate read GitHub: nothing starts, and what the gate held goes back.
@@ -136,6 +144,29 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
         }
         return;
     }
+    launch(ledger, turn, Launch { call, step, proposal, key, slot }, running);
+}
+
+/// Answer `call` with a refusal the model reads: nothing ran.
+pub(super) fn refuse(call: Call, why: &str) {
+    let text = json!({"error": "not_card_free", "reason": why, "next": "run it as a normal command; it asks your owner"}).to_string();
+    // The call may have gone already: nobody to tell.
+    let _ = call.reply.send((text, true));
+}
+
+/// A step authorized to run, and the slot it runs in.
+pub(super) struct Launch {
+    pub call: Call,
+    pub step: TrustedStep,
+    pub proposal: ToolProposal,
+    pub key: String,
+    pub slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Run an authorized step off the async threads; its output (or why it
+/// failed) answers the call, and what the gate held settles with it.
+pub(super) fn launch(ledger: &Ledger, turn: &Turn<'_>, run: Launch, running: &mut Running) {
+    let Launch { call, step, proposal, key, slot } = run;
     let outcomes = running.outcomes.clone();
     let repo = match &step { TrustedStep::Host(host) => host.repo().to_owned(), _ => String::new() };
     let mut ctx = HostCtx::new(turn.token.clone(), std::sync::Arc::default(), ledger.push_trust_recheck(&proposal, &repo));

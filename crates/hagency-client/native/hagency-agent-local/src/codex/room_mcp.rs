@@ -30,6 +30,10 @@ use tokio::{
 pub(super) const SERVER: &str = "hagency_matrix";
 const MAX_BODY: usize = 16 * 1024;
 const CALL_WAIT: Duration = Duration::from_secs(65);
+/// A repo step may wait for its owner's card before it runs (`repo_cards`).
+pub(super) const REPO_STEP_WAIT: Duration = Duration::from_secs(super::repo_cards::CARD_WAIT.as_secs() + crate::watch_trust::codex_step::STEP_TIMEOUT.as_secs() + 5);
+/// Codex's own wait for one Room MCP call: past the longest host-side wait.
+pub(super) const TOOL_TIMEOUT_SECS: u64 = REPO_STEP_WAIT.as_secs() + 10;
 type Key = (String, String);
 type Shared = Arc<Mutex<Option<Active>>>;
 struct Active {
@@ -98,7 +102,7 @@ impl Bridge {
             .collect::<String>();
         let mut config = json!({"url":format!("http://{authority}/matrix"),
             "http_headers":{"Authorization":format!("Bearer {token}")},
-            "enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":75});
+            "enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":TOOL_TIMEOUT_SECS});
         for definition in definitions(tools) {
             config["tools"][definition["name"].as_str().expect("host tool name")] =
                 json!({"approval_mode":"approve"});
@@ -339,7 +343,7 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
         Err(reason) => return refused(reason),
     };
     let Some(operation) = operation else {
-        return match super::repo_steps::forward(repo_steps, &params["arguments"], cancel, CALL_WAIT).await {
+        return match super::repo_steps::forward(repo_steps, &params["arguments"], cancel, REPO_STEP_WAIT).await {
             Ok((text, is_error)) => text_result(RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable())),
             Err(reason) => refused(reason),
         };

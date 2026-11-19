@@ -18,7 +18,7 @@ async fn a_turn_runs_only_card_free_steps() {
     git(&r.root.join("app"), &["remote", "set-url", "origin", &format!("https://github.com/{REPO}.git")]);
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
-    let mut turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let mut turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
     let mut running = Running::default();
     let (out, failed) = ask(&mut r.ledger, &turn, "git -C app status --short --branch", &mut running).await;
     assert!(!failed && out.starts_with("## main"), "{out}");
@@ -91,7 +91,7 @@ async fn a_review_sent_as_a_repo_step_is_judged_and_recorded_by_the_merge_gate()
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
-    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
     let mut running = Running::default();
     let source = Pr50 { opened_by: None };
     // (Author Agents never counting at merge time: merge_policy::codex_observed tests.)
@@ -121,7 +121,7 @@ async fn a_repo_step_review_of_a_stale_head_is_never_recorded() {
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
-    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
     let mut running = Running::default();
     let url = format!("https://github.com/{REPO}/pull/50");
     // A verdict naming another head: the gate leaves it to push trust, never records it.
@@ -148,7 +148,7 @@ async fn only_a_verdict_reaches_the_gate_and_a_members_needs_the_rooms_review_gr
     let workspace = r.root.to_string_lossy().into_owned();
     let mut running = Running::default();
     let source = Pr50 { opened_by: None };
-    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
     let merge = format!("gh pr merge 50 --squash --match-head-commit {H50} --repo {REPO}");
     let p = super::proposal(&r.ledger, &turn, &merge).unwrap();
     let key = running.key(turn.dispatch);
@@ -196,7 +196,7 @@ mod room_repo_reads {
         let db = tempfile::tempdir().unwrap();
         let (mut ledger, scope) = watcherless(db.path());
         let workspace = db.path().to_string_lossy().into_owned();
-        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
         for read in [format!("gh pr view 70 --repo {REPO} --json title,body,files"), format!("gh pr diff 70 --repo {REPO}"), format!("gh issue list --repo {REPO}")] {
             let p = super::super::proposal(&ledger, &turn, &read).unwrap();
             let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
@@ -220,7 +220,7 @@ mod room_repo_reads {
         let db = tempfile::tempdir().unwrap();
         let (mut ledger, scope) = watcherless(db.path());
         let workspace = db.path().to_string_lossy().into_owned();
-        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
         let mut running = Running::default();
         let marker = db.path().join("ran");
         // (A review verdict on a room repository is ADR 0025's own grant,
@@ -250,7 +250,7 @@ async fn verdict_recorded_and_chains_refused(command: &str, chained: &[String]) 
     r.ledger.set_room_merge_rules(OWNER, &rules, crate::merge_policy::room_rules::unix_now()).unwrap();
     let scope = proposal(&r.root, ROOM, "codex.repo_step", serde_json::json!({})).scope;
     let workspace = r.root.to_string_lossy().into_owned();
-    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: None };
     let mut running = Running::default();
     let p = super::proposal(&r.ledger, &turn, command).unwrap();
     let key = running.key(turn.dispatch);
