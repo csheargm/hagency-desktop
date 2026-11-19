@@ -33,16 +33,25 @@ pub enum Again {
     Exhausted,
 }
 
-/// Whether GitHub holds an approving verdict of exactly `head`, posted by
-/// `login` (the GitHub account this owner's Agents post as), while the gate,
-/// judging that same head, counts no approval at all and the ledger recorded
-/// none (`recorded`; live PR #109: a recorded review was asked for again).
+/// Whether GitHub holds more approving verdicts of exactly `head`, posted by
+/// `login` (the GitHub account this owner's Agents post as), than the ledger
+/// recorded Agent reviews of it (`recorded`; live PR #109: a recorded review
+/// was asked for again), while the rule still needs an approval (GPT batch-3
+/// review: a 2-approval rule with one recorded never re-asked the second).
+/// `approvers` may count a person's approval too, so it stands in only when
+/// `recorded` is missing. Every Agent shares the login, so the count is all
+/// there is: an Agent that posted its one verdict twice is asked once more
+/// at most ([`REREVIEW_STEPS`]).
 pub fn unrecorded_verdict(readiness: &Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> bool {
-    readiness["kind"] == "approvals"
-        && readiness["approvers"].as_u64() == Some(0)
-        && readiness["recorded"].as_u64().unwrap_or(0) == 0
-        && readiness["head"].as_str() == Some(head)
-        && reviews.iter().any(|(who, state, commit)| who.eq_ignore_ascii_case(login) && state == APPROVE_VERDICT && commit == head)
+    let known = readiness["recorded"].as_u64().or(readiness["approvers"].as_u64()).unwrap_or(0);
+    let on_github = reviews.iter().filter(|(who, state, commit)| who.eq_ignore_ascii_case(login) && is_verdict(state) && commit == head).count();
+    readiness["kind"] == "approvals" && readiness["head"].as_str() == Some(head) && on_github as u64 > known
+}
+
+/// A verdict comment, or a native approval whose body names its commit
+/// (`parse_reviews` reads an approval naming another head `UNBOUND`, GPT batch-3 review).
+fn is_verdict(state: &str) -> bool {
+    state == APPROVE_VERDICT || state == "APPROVED"
 }
 
 /// Ask `reviewer` to review `target` again, unless it was asked in the last

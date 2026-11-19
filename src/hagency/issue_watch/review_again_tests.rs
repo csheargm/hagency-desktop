@@ -126,6 +126,38 @@ fn pr_115_the_hold_line_names_the_unrecorded_verdict() {
     assert_eq!(noted_unrecorded(recorded.clone(), (&verdict, "csheargm"), HEAD), recorded, "a recorded review is not unrecorded");
 }
 
+/// GPT batch-3 review: a 2-approval rule with one recorded approval still
+/// asks again and names a second, unrecorded verdict of this head.
+#[test]
+fn a_second_unrecorded_verdict_under_a_two_approval_rule_is_asked_again() {
+    let one = ("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), HEAD.to_owned());
+    let mut half = json!({"decision": "human", "head": HEAD, "kind": "approvals", "approvers": 1, "recorded": 1, "reason": "needs 2 approval(s) from another Agent, has 1"});
+    assert!(!unrecorded_verdict(&half, (&[one.clone()], "csheargm"), HEAD), "the one verdict on GitHub is the recorded one");
+    let two = vec![one.clone(), one];
+    assert!(unrecorded_verdict(&half, (&two, "csheargm"), HEAD), "a second verdict the ledger never recorded");
+    assert!(noted_unrecorded(half.clone(), (&two, "csheargm"), HEAD)["reason"].as_str().unwrap().ends_with(UNRECORDED_VERDICT));
+    let room = Room::default();
+    assert_eq!(run(asks_again(&room, &target(116), (&half, &two, "csheargm"), &codex(), T0)), Ok(true));
+    assert_eq!(room.posted.borrow().len(), 1, "the reviewer is asked again once");
+    half["recorded"] = 2.into();
+    assert!(!unrecorded_verdict(&half, (&two, "csheargm"), HEAD), "both recorded: nothing to ask");
+    // GPT review of the fix: a person's approval is counted, the Agent's verdict is not recorded.
+    let person = json!({"decision": "human", "head": HEAD, "kind": "approvals", "approvers": 1, "recorded": 0});
+    assert!(unrecorded_verdict(&person, (&two[..1], "csheargm"), HEAD), "a counted person's approval is no Agent's record");
+}
+
+/// GPT batch-3 review: a native GitHub approval carrying the verdict of this
+/// head reads `APPROVED` (bound); it is an unrecorded verdict like the comment.
+#[test]
+fn a_native_approval_of_this_head_is_an_unrecorded_verdict() {
+    let native = vec![("csheargm".to_owned(), "APPROVED".to_owned(), HEAD.to_owned())];
+    assert!(unrecorded_verdict(&no_approval(), (&native, "csheargm"), HEAD));
+    let unbound = vec![("csheargm".to_owned(), "UNBOUND".to_owned(), HEAD.to_owned())];
+    assert!(!unrecorded_verdict(&no_approval(), (&unbound, "csheargm"), HEAD), "an approval whose body names another head");
+    let older = vec![("csheargm".to_owned(), "APPROVED".to_owned(), "1".repeat(40))];
+    assert!(!unrecorded_verdict(&no_approval(), (&older, "csheargm"), HEAD), "an approval of another head");
+}
+
 /// GPT review: every request went out before a restart; the reviewer still
 /// gets its wait from the first check after it before the hold.
 #[test]

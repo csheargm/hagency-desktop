@@ -25,11 +25,11 @@ pub(crate) fn entries(agent_mxid: &str, repo: &str, tracks: &[Track], titles: &H
 }
 
 /// The tracks the room may see: never one the tracker leaves alone as opened
-/// before the work-list entry (`tracker::predates`) or of unknown age
-/// (`predating`, from this check's pass), so an old issue's leftover record
-/// is no member's "working on" line (live #31, Nov 18).
+/// before the work-list entry (`track_age::hidden`, listed or not) or of
+/// unknown age (`predating`, from this check's pass), so an old issue's
+/// leftover record is no member's "working on" line (live #31, Nov 18).
 pub(crate) fn shown(tracks: Vec<Track>, open_issues: &[Issue], since: i64, predating: &[i64]) -> Vec<Track> {
-    tracks.into_iter().filter(|t| !predating.contains(&t.number) && !super::tracker::predates(open_issues, since, t.number)).collect()
+    tracks.into_iter().filter(|t| !predating.contains(&t.number) && !super::track_age::hidden(t, open_issues, since)).collect()
 }
 
 /// Keeps titles and `updatedAt` of issues whose published state did not change,
@@ -216,7 +216,9 @@ mod tests {
         // #45's lookup fails (the fake knows no state for it): unverified, so left out.
         let open = [Issue { created_at: T0 - 2 * 86_400, ..issue(31) }, issue(108)];
         let mut tracks = fake.tracks();
-        tracks.push(Track { repo: REPO.into(), ..track(50, State::Merged) });
+        // #50 merged after the entry: GitHub's own answer tells its age (GPT batch-3 review).
+        fake.closed.borrow_mut().insert(50, IssueFact::Done);
+        tracks.push(Track { repo: REPO.into(), handed_at: T0, ..track(50, State::Merged) });
         let seen = tracks.iter().map(|t| t.number).collect();
         let inputs = Inputs { repo: REPO, now: T0 + 60, tracks: &tracks, seen: &seen, since: T0, open_issues: &open, own_pulls: &[] };
         let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));

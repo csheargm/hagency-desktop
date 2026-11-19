@@ -65,13 +65,15 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let tracked: HashSet<i64> = tracks.iter().filter(ours).map(|t| t.number).collect();
     let busy = tracks.iter().filter(ours).any(|t| !t.state.is_terminal())
         || watched.open_issues.iter().any(|i| watched.seen.contains(&i.number) && !tracked.contains(&i.number));
+    // Before any other read can fail, so the room's copy is filtered either way (GPT review).
+    super::track_age::look_up(worker, repo, tracks.iter().filter(ours), watched.open_issues, watched.since()).await;
     let now = chrono::Utc::now().timestamp();
     if !busy {
         // Only finished records: their lines need no GitHub read. The room's
         // copy is still brought up to date: a final write that failed is
         // retried here (a no-op without network once it went through, GPT review).
         let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
-        let shown = tracks.iter().filter(ours).filter(|t| !tracker::predates(watched.open_issues, watched.since(), t.number));
+        let shown = tracks.iter().filter(ours).filter(|t| !super::track_age::hidden(t, watched.open_issues, watched.since()));
         let mut done = Followups { lines: shown.filter_map(tracker::terminal_line).collect(), ..Default::default() };
         if let Err(error) = share(worker, watched, &room, &[], &[]).await {
             done.errors.push(error);
