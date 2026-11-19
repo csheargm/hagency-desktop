@@ -22,6 +22,7 @@ mod review_again;
 mod migrate;
 pub mod may_work_section;
 pub(crate) mod room_loop;
+mod room_discovery;
 #[cfg(test)]
 mod merge_hold_tests;
 mod review_loop;

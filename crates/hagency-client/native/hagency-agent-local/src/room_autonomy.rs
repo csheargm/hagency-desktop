@@ -33,6 +33,8 @@ const LEVEL_FIELD: &str = "level";
 const CLEARED_FIELD: &str = "cleared";
 /// The most pause event IDs one Resume records (one current pause per member).
 pub const MAX_CLEARED: usize = 1000;
+/// The most rooms one owner-API change records (the desktop sends its loop's rooms first).
+pub const MAX_ROOM_SNAPSHOTS: usize = 256;
 
 /// How far a room's agents go on their own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

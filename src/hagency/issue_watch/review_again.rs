@@ -89,25 +89,89 @@ pub async fn asks_again(io: &impl LoopIo, target: &Target, (readiness, reviews, 
 /// A draft whose run never reads as ended is asked to be readied after this long.
 pub const DRAFT_WAIT_SECS: i64 = 30 * 60;
 
+/// The head each pull request was last asked to be readied at, and when (by
+/// URL). In memory: a restart forgets it, so a head moved just before then is reviewed at once.
+fn lock_ready() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, (String, i64)>> {
+    static READY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>> = std::sync::LazyLock::new(Default::default);
+    // Plain heads and timestamps: still usable after a panic elsewhere held the lock.
+    READY.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// When each moved head was first seen held ([`ready_moved`]); apart from the
+/// merge step's own clock, whose review wait must start only once the review is asked.
+fn lock_moved() -> std::sync::MutexGuard<'static, super::merge_hold::HeadClock> {
+    static MOVED: std::sync::LazyLock<std::sync::Mutex<super::merge_hold::HeadClock>> = std::sync::LazyLock::new(Default::default);
+    MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether ready pull request `url` (not a draft) is at another head than
+/// the one its fixer was asked to ready (round-2 GPT review: a request run
+/// late readies whatever was pushed since). Ready at the asked head: the
+/// request is done and forgotten.
+pub(super) fn ready_moved(url: &str, head: &str, draft: bool) -> bool {
+    let mut asked = lock_ready();
+    match asked.get(url) {
+        Some((at, _)) if at == head => {
+            if !draft {
+                asked.remove(url);
+            }
+            false
+        }
+        Some(_) => !draft,
+        None => false,
+    }
+}
+
 /// A draft nobody will ready: the fixer's run ended (or the draft is
 /// [`DRAFT_WAIT_SECS`] old), so no review can ever start unless the Agent
-/// marks it ready. An unreadable run waits for the deadline, never fails the step.
+/// marks it ready. An unreadable run waits for the deadline, never fails the
+/// step. A pull request readied at a moved head ([`ready_moved`]) waits the
+/// same way before its review starts: the fixer's run may still be pushing.
 pub(super) async fn ready_draft(io: &impl super::tracker::TrackIo, track: &::hagency::issue_watch::issue_track::Track, pull: &::hagency::issue_watch::PullRequest, now: i64) -> Result<(), String> {
     let ended = io.run_end(track).await.is_ok_and(|view| view.run.ended());
+    if !pull.draft {
+        let seen = lock_moved().seen_at(&pull.url, &pull.head_sha, now);
+        if ended || now - seen >= DRAFT_WAIT_SECS {
+            lock_ready().remove(&pull.url);
+        }
+        return Ok(());
+    }
     if ended || now - pull.created_at >= DRAFT_WAIT_SECS {
         io.ask_ready(pull).await?;
+        let mut asked = lock_ready();
+        let entry = asked.entry(pull.url.clone()).or_insert_with(|| (pull.head_sha.clone(), now));
+        if entry.0 != pull.head_sha {
+            *entry = (pull.head_sha.clone(), now);
+        }
     }
     Ok(())
 }
 
-/// The "still a draft" notice for `fixer` (display name `name`), once per head.
+/// The "still a draft" notice for `fixer` (display name `name`), once per
+/// head, given back like a merge when its dispatch never ran (`step_resend`).
 pub async fn ask_ready(io: &impl LoopIo, target: &Target, fixer: &OwnedUserId, name: &str) -> Result<(), String> {
     let notice = LoopNotice::MarkReady { target: target.clone(), fixer: fixer.clone(), name: name.to_owned() };
-    let key = json!({"step": notice.step(), "pr": target.url, "head": target.head});
-    if io.review(json!({"stepTaken": key.clone()})).await?["taken"] == true {
+    let due = super::step_resend::due(io, target, notice.step(), notice.mention()).await?;
+    if due.taken {
         return Ok(());
     }
-    post_then_claim(io, &notice, key, 0).await
+    let key = json!({"step": notice.step(), "pr": target.url, "head": target.head});
+    post_then_claim(io, &notice, key, due.again).await
+}
+
+/// Said in the hold line when the reviewer is another owner's Agent: its
+/// GitHub login is not known here, so only this owner's login's verdict is
+/// matched (round-2 GPT review).
+pub const OTHER_OWNER_VERDICT: &str = "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it posted on GitHub was not asked for again";
+
+/// `readiness` for the hold line: a missing approval from `other_owner`'s
+/// reviewer says why no unrecorded GitHub verdict was asked for again.
+pub fn noted_other_owner(mut readiness: Value, other_owner: bool) -> Value {
+    if other_owner && readiness["kind"] == "approvals" && readiness["approvers"].as_u64() == Some(0) {
+        let reason = readiness["reason"].as_str().unwrap_or("no approval").to_owned();
+        readiness["reason"] = format!("{reason}; {}", crate::i18n::tr(OTHER_OWNER_VERDICT)).into();
+    }
+    readiness
 }
 
 #[cfg(test)]

@@ -3816,6 +3816,8 @@
   "this desktop has not joined the room": "this desktop has not joined the room",
   "the room was not read": "the room was not read",
   "The rooms' agent work settings could not be recorded: {error}": "The rooms' agent work settings could not be recorded: {error}",
+  "{count} project rooms past the limit of {max} were not recorded, so agents treat them as paused": "{count} project rooms past the limit of {max} were not recorded, so agents treat them as paused",
+  "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it posted on GitHub was not asked for again": "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it posted on GitHub was not asked for again",
   "Could not move the watch to room {room}: {error}": "Could not move the watch to room {room}: {error}",
   "you cannot link {repo} in this room; ask its owner or a maintainer to link it": "you cannot link {repo} in this room; ask its owner or a maintainer to link it",
   "Agent work in this room: paused — nothing new starts until the owner or a maintainer resumes it": "Agent work in this room: paused — nothing new starts until the owner or a maintainer resumes it",

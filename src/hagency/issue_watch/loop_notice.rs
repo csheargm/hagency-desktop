@@ -14,9 +14,9 @@ use serde_json::{Map, Value, json};
 /// The content field that marks a message as the review loop's.
 pub const MARKER: &str = "io.hagency.review_loop";
 
-/// The once-per-head step of the "still a draft" notice (a hold step: the
-/// owner API keeps it once per head like the other holds).
-pub const DRAFT_STEP: &str = "hold-draft";
+/// The once-per-head step of the "still a draft" notice: kept once per head
+/// like the holds, and given back like a merge when its dispatch never ran.
+pub const DRAFT_STEP: &str = ::hagency::issue_watch::READY_STEP;
 
 /// An Agent as the room reads it: its display name, then its Matrix ID
 /// (the mention it needs); the ID alone when it has no name.
@@ -98,9 +98,15 @@ impl LoopNotice {
                 who = named(name, fixer),
                 command = ::hagency::issue_watch::merge_command(t.number, &t.head, &t.repo),
             ),
+            // The full head pins the request (round-2 GPT review): a request run late, after a newer push, must not ready that push.
             Self::MarkReady { fixer, name, .. } => format!(
-                "📝 PR #{} in {} at {short} is still a draft, so no review can start: {who} if the fix is done, run exactly `gh pr ready {} --repo {}` as its own command; otherwise say what is left. {}",
-                t.number, t.repo, t.number, t.repo, t.url, who = named(name, fixer),
+                "{lead}{who} {ask}: no review can start while it is a draft. If the fix is done and the pull request's head is still {short}, run exactly `gh pr ready {n} --repo {repo}` as its own command; if its head moved since, do not mark it ready and say so. Otherwise say what is left. {url}",
+                lead = ::hagency::issue_watch::READY_NOTICE_LEAD,
+                who = named(name, fixer),
+                ask = ::hagency::issue_watch::ready_ask(t.number, &t.repo, &t.head),
+                n = t.number,
+                repo = t.repo,
+                url = t.url,
             ),
             Self::NeedsMaintainer { .. } => format!("✅ Approved at {short}, ready to merge — needs someone with GitHub write access: this owner's GitHub account cannot merge {}. PR #{}: {}", t.repo, t.number, t.url),
             Self::NeedsOwner { reason, .. } => format!("⚠️ PR #{} in {} at {short} needs the owner: {}. {}", t.number, t.repo, quoted_title(reason), t.url),
