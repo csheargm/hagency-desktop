@@ -145,7 +145,8 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, out: &mut F
     if track.state.is_terminal() {
         return Ok(terminal_line(track));
     }
-    let Some((fact, issue)) = issue_of(io, inputs, track.number).await? else {
+    // A failed lookup leaves the issue's age unknown too (GPT review).
+    let Some((fact, issue)) = issue_of(io, inputs, track.number).await.inspect_err(|_| out.predating.push(track.number))? else {
         out.predating.push(track.number);
         return Ok(None);
     };

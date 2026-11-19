@@ -204,7 +204,7 @@ mod tests {
         use super::super::tracker_tests::{Fake, REPO, T0, first_hand_off, issue};
         use ::hagency::issue_watch::issue_track::IssueFact;
         let fake = Fake::default();
-        for n in [31, 40, 108] {
+        for n in [31, 40, 45, 108] {
             first_hand_off(&fake, n);
         }
         if let Some(t) = fake.store.borrow_mut().get_mut(&31) {
@@ -213,13 +213,14 @@ mod tests {
         // #40 is open beyond the listing's page cap and its age unreadable.
         fake.closed.borrow_mut().insert(40, IssueFact::Open);
         fake.created.borrow_mut().insert(40, None);
+        // #45's lookup fails (the fake knows no state for it): unverified, so left out.
         let open = [Issue { created_at: T0 - 2 * 86_400, ..issue(31) }, issue(108)];
         let mut tracks = fake.tracks();
         tracks.push(Track { repo: REPO.into(), ..track(50, State::Merged) });
         let seen = tracks.iter().map(|t| t.number).collect();
         let inputs = Inputs { repo: REPO, now: T0 + 60, tracks: &tracks, seen: &seen, since: T0, open_issues: &open, own_pulls: &[] };
         let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
-        assert_eq!(out.predating, [31, 40]);
+        assert_eq!((out.predating.clone(), out.errors.len()), (vec![31, 40, 45], 1), "the failed lookup stays an error");
         let published = entries("@_hagency_agt_a:x", REPO, &shown(tracks.clone(), &open, T0, &out.predating), &HashMap::new(), &[], T0 + 60).unwrap();
         assert_eq!(published.iter().map(|p| p.number).collect::<Vec<_>>(), [108, 50], "newer and closed issues stay");
         // A pass that never ran (nothing left to advance) still leaves #31 out.
