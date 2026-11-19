@@ -4,6 +4,7 @@
 //! thread to see what the Agent did, and the room timeline stays one answer
 //! per request.
 use matrix_sdk::{
+    deserialized_responses::EncryptionInfo,
     room::{IncludeRelations, RelationsOptions},
     ruma::{OwnedEventId, OwnedRoomId, UInt, events::relation::RelationType},
 };
@@ -141,6 +142,20 @@ fn person_name(sender: &str) -> &str {
     sender.strip_prefix('@').and_then(|s| s.split(':').next()).unwrap_or(sender)
 }
 
+/// Whether a thread event may be shown as an update: in a room known to be
+/// unencrypted, a plaintext one; otherwise only an event the SDK decrypted
+/// from its claimed sender's device, the rule run cards are admitted by
+/// (`agent_questions::authentic`). A plaintext event claiming the Agent's ID
+/// in an encrypted room (or one whose state is unknown) showed fabricated
+/// progress (integration GPT review, Nov 19).
+pub fn authentic_update(event: &Value, info: Option<&EncryptionInfo>, plaintext_room: bool) -> bool {
+    let Some(sender) = event["sender"].as_str() else { return false };
+    match info {
+        None => plaintext_room && event["type"] != "m.room.encrypted",
+        Some(info) => ::hagency::agent_questions::authentic(info, sender),
+    }
+}
+
 fn is_agent_id(sender: &str) -> bool {
     matrix_sdk::ruma::UserId::parse(sender).is_ok_and(|u| crate::profile::profile_route::is_agent(&u))
 }
@@ -166,9 +181,15 @@ fn load(key: Key, count: usize) {
                 limit: UInt::new(MAX_UPDATES as u64),
                 ..Default::default()
             };
+            // Unknown encryption state: only decrypted, authentic events count.
+            let state = room.latest_encryption_state().await.ok()?;
+            let plaintext = !state.is_unknown() && !state.is_encrypted();
             let page = room.relations(root, options).await.ok()?;
             // Decrypted events carry their clear content; undecryptable ones are left out.
-            let events: Vec<Value> = page.chunk.iter().filter_map(|e| serde_json::from_str(e.kind.raw().json().get()).ok()).collect();
+            let events: Vec<Value> = page.chunk.iter().filter_map(|e| {
+                let value: Value = serde_json::from_str(e.kind.raw().json().get()).ok()?;
+                authentic_update(&value, e.encryption_info().map(|info| &**info), plaintext).then_some(value)
+            }).collect();
             Some(lines(&events, &key.3, is_agent_id))
         };
         let updates = read.await.map_or(Updates::Failed, Updates::Loaded);
@@ -192,61 +213,5 @@ fn finish(key: &Key, ticket: u64, count: usize, updates: Updates) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    const AGENT: &str = "@anna-claude:test";
-    fn message(body: &str) -> Value {
-        json!({"type":"m.room.message","sender":AGENT,"content":{"msgtype":"m.text","body":body}})
-    }
-
-    #[test]
-    fn updates_read_oldest_first_one_short_line_each() {
-        let newest_first = vec![
-            message("running cargo test\nmore output"),
-            json!({"type":"m.room.message","content":{"body":"* edited","m.relates_to":{"rel_type":"m.replace","event_id":"$a"}}}),
-            json!({"type":"m.reaction","content":{}}),
-            message(&"x".repeat(LINE_CHARS + 3)),
-            message("reading the issue list"),
-            json!({"type":"m.room.message","sender":"@betty:test","content":{"msgtype":"m.text","body":"> <@anna-claude:test> q\n\nuse the staging repo"}}),
-            json!({"type":"m.room.message","sender":"@other-codex:test","content":{"msgtype":"m.text","body":"my own run"}}),
-            json!({"type":"m.room.message","sender":AGENT,"content":{"msgtype":"im.hagency.agent_run","body":"⏳"}}),
-        ];
-        let agents = |s: &str| s.ends_with("-codex:test") || s == AGENT;
-        let shown = lines(&newest_first, AGENT, agents);
-        assert_eq!(shown.len(), 4);
-        assert_eq!(shown[0], "• betty: use the staging repo", "a teammate's reply in the thread stays reachable");
-        assert_eq!(shown[1], "• reading the issue list");
-        assert!(shown[2].ends_with('…') && shown[2].chars().count() == LINE_CHARS + 3);
-        assert_eq!(shown[3], "• running cargo test");
-    }
-
-    #[test]
-    fn the_open_state_has_words_for_every_case() {
-        assert_eq!(text(&Updates::Loaded(vec!["• a".into(), "• b".into()])), "• a\n• b");
-        for key in ["Loading updates…", "Could not load the updates. Close and open them to try again.", "No updates yet.", "Hide updates"] {
-            assert_ne!(crate::i18n::text_for(crate::i18n::Language::Chinese, key), key, "{key} has no Chinese text");
-        }
-    }
-
-    /// A card closed while its updates load stays closed; a superseded load
-    /// never replaces a newer one (GPT review).
-    #[test]
-    fn closing_or_reloading_drops_the_older_answer() {
-        let key = key("!r:test", "$closing", AGENT);
-        let begin = |k: &Key| { let mut s = store(); s.next += 1; let t = s.next; s.latest.insert(k.clone(), t); t };
-        store().open.insert(key.clone(), Updates::Loading);
-        let first = begin(&key);
-        store().open.remove(&key);
-        finish(&key, first, 2, Updates::Loaded(vec!["• late".into()]));
-        assert_eq!(shown(&key.1, &key.2, AGENT), None);
-        store().open.insert(key.clone(), Updates::Loading);
-        let old = begin(&key);
-        let new = begin(&key);
-        finish(&key, new, 3, Updates::Loaded(vec!["• now".into()]));
-        finish(&key, old, 2, Updates::Failed);
-        assert_eq!(shown(&key.1, &key.2, AGENT), Some(Updates::Loaded(vec!["• now".into()])));
-        assert_eq!(shown(&key.1, &key.2, "@other:test"), None, "keyed by Agent");
-    }
-}
+#[path = "agent_run_updates_tests.rs"]
+mod tests;
