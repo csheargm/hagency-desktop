@@ -206,23 +206,42 @@ pub(crate) async fn run(service: &Service, agent: &Value, saved: &Value, rooms: 
             Err(error) => return vec![failed(room_id, error)],
         }
     }
-    finish(service, id).await.err().into_iter().collect()
+    finish(service, id, watch_key(saved).as_ref()).await.err().into_iter().collect()
 }
 
-/// The old watch carried into the work list and switched off in one save,
-/// then the Agent recorded as moved on this device. Built from the saved
-/// state read now, not the check's earlier snapshot, so an owner's edit made
-/// during the room calls is kept (GPT review); the work list is written only
-/// when the watch adds an entry.
-async fn finish(service: &Service, id: &str) -> Result<(), String> {
-    let saved = super::live::saved(service, id, None).await?;
+/// The repository (lower case) and room of the old watch a check moves;
+/// `None` when no watch moves: as in [`planned`], one without both is skipped
+/// (GPT review: a work-list move must not switch off a watch it never planned).
+fn watch_key(saved: &Value) -> Option<(String, String)> {
+    let watch = &saved["issueWatch"];
+    carried_filter(watch)?;
+    let (repo, room) = (watch["repo"].as_str().unwrap_or_default(), watch["roomId"].as_str().unwrap_or_default());
+    (!repo.is_empty() && !room.is_empty()).then(|| (repo.to_lowercase(), room.to_owned()))
+}
+
+/// The one save that ends a move, from the saved state read now: the old
+/// watch carried into the work list and switched off — only when it is still
+/// the watch `moved` names, whose room was linked and enabled. A watch the
+/// owner pointed at another repository or room meanwhile stays on and moves
+/// next check (GPT review). The work list is written only when the watch adds an entry.
+pub(crate) fn finish_change(saved: &Value, moved: Option<&(String, String)>) -> Result<Value, String> {
     let mut change = json!({});
-    if let Some(work) = work_with_watch(&saved)? {
+    if moved.is_none() || watch_key(saved).as_ref() != moved {
+        return Ok(change);
+    }
+    if let Some(work) = work_with_watch(saved)? {
         change["work"] = Value::Array(work);
     }
-    if carried_filter(&saved["issueWatch"]).is_some() {
-        change["issueWatch"] = json!({"mode": "off"});
-    }
+    change["issueWatch"] = json!({"mode": "off"});
+    Ok(change)
+}
+
+/// Saves [`finish_change`] on the state read now, not the check's earlier
+/// snapshot, so an owner's edit made during the room calls is kept (GPT
+/// review); then records the Agent's work list moved on this device.
+async fn finish(service: &Service, id: &str, moved: Option<&(String, String)>) -> Result<(), String> {
+    let saved = super::live::saved(service, id, None).await?;
+    let change = finish_change(&saved, moved)?;
     if change != json!({}) {
         super::live::saved(service, id, Some(change)).await?;
     }

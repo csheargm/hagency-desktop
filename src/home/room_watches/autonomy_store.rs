@@ -56,16 +56,26 @@ static NEXT_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// A ticket for a read of `room` starting now; the room counts as read from here.
 fn begin(account: &str, room: &RoomId) -> u64 {
     let key = (account.to_owned(), room.to_owned());
+    // Allocated and registered under one lock, so tickets register in order (GPT review).
+    let mut reads = READS.lock().unwrap_or_else(|p| p.into_inner());
     let ticket = NEXT_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    READS.lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone(), ticket);
+    reads.insert(key.clone(), ticket);
+    drop(reads);
     SHOWN.lock().unwrap_or_else(|p| p.into_inner()).entry(key).or_insert(Shown::Loading);
     ticket
 }
 /// Shows what the read `ticket` found, unless a newer read of `room` started since.
+/// The check and the write happen under the read tickets' lock, so a newer
+/// read cannot start and show its state in between (GPT review).
 fn finish(account: String, room: &RoomId, ticket: u64, shown: Shown) {
-    if READS.lock().unwrap_or_else(|p| p.into_inner()).get(&(account.clone(), room.to_owned())) == Some(&ticket) {
-        set(account, room, shown);
+    let key = (account, room.to_owned());
+    let reads = READS.lock().unwrap_or_else(|p| p.into_inner());
+    if reads.get(&key) != Some(&ticket) {
+        return;
     }
+    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).insert(key, shown);
+    drop(reads);
+    Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
 }
 
 /// A fresh read of `room` another part of the desktop starts (the loop's
@@ -101,3 +111,41 @@ pub(super) async fn read_into(account: String, joined: &matrix_sdk::Room) {
     finish(account, joined.room_id(), ticket, shown);
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GPT review (P2): while an older read's reply is being shown, no newer
+    /// read can start (and finish first): the ticket check and the write are one step.
+    #[test]
+    fn showing_a_read_holds_the_tickets_until_written() {
+        let room = matrix_sdk::ruma::owned_room_id!("!atomic:x");
+        let ticket = begin("@atomic:x", &room);
+        let shown = SHOWN.lock().unwrap_or_else(|p| p.into_inner());
+        let writer = { let room = room.clone(); std::thread::spawn(move || finish("@atomic:x".to_owned(), &room, ticket, Shown::Failed("old".into()))) };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(READS.try_lock().is_err(), "a newer read must wait until the older one is written");
+        drop(shown);
+        writer.join().unwrap();
+        let newer = begin("@atomic:x", &room);
+        finish("@atomic:x".to_owned(), &room, ticket, Shown::Failed("stale".into()));
+        finish("@atomic:x".to_owned(), &room, newer, Shown::Loading);
+        let key = ("@atomic:x".to_owned(), room.clone());
+        assert!(matches!(SHOWN.lock().unwrap().get(&key), Some(Shown::Loading)), "the older reply never overwrites the newer");
+    }
+
+    /// GPT review (P2): a ticket is allocated only once the tickets' lock is
+    /// held, so two reads starting together register in ticket order.
+    #[test]
+    fn a_ticket_is_allocated_under_the_tickets_lock() {
+        let room = matrix_sdk::ruma::owned_room_id!("!order:x");
+        let reads = READS.lock().unwrap_or_else(|p| p.into_inner());
+        let before = NEXT_READ.load(std::sync::atomic::Ordering::Relaxed);
+        let starter = std::thread::spawn(move || begin("@order:x", &room));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(NEXT_READ.load(std::sync::atomic::Ordering::Relaxed), before, "no ticket is taken before the lock");
+        drop(reads);
+        assert!(starter.join().unwrap() >= before);
+    }
+}

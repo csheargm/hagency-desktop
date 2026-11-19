@@ -162,9 +162,17 @@ async fn tables(out: &mut RoomStatus, repos: &[String], own: &[OwnWatch], seen: 
 /// homeserver refuses a member below the room's level for the event. `Some`
 /// note when linked but a room admin still has power levels to set.
 pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool) -> Result<Option<String>, String> {
-    // One change at a time per process, each re-reading the list first (GPT review).
-    static LINKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _linking = LINKING.lock().await;
+    let room = change_repos(client, room_id, repo, link).await?;
+    if link { after_link(&room).await } else { Ok(None) }
+}
+
+/// The repository list change alone, its read-modify-write one at a time per
+/// room (GPT review); the power-level follow-up ([`after_link`]) runs
+/// outside that lock, and a slow room never holds up another room's link.
+pub async fn change_repos(client: &Client, room_id: &RoomId, repo: &str, link: bool) -> Result<Room, String> {
+    static LINKING: crate::home::call_power_levels::RoomLocks = crate::home::call_power_levels::RoomLocks::new();
+    let lock = LINKING.of(room_id);
+    let _linking = lock.lock().await;
     let room = client.get_room(room_id).ok_or_else(|| crate::i18n::tr("This desktop has not joined the room").to_owned())?;
     if !room.latest_encryption_state().await.is_ok_and(|s| !s.is_unknown() && !s.is_encrypted()) {
         // Plaintext state would show the repositories to the homeserver (ADR 0023).
@@ -184,8 +192,13 @@ pub async fn set_link(client: &Client, room_id: &RoomId, repo: &str, link: bool)
         room.send_state_event_raw(ROOM_REPOS_STATE_TYPE, "", content).await
             .map_err(|e| crate::i18n::format("Could not change the room's repositories: {error}", &[("error", e.to_string())]))?;
     }
-    // Also when the repository was already linked: linking again is how an admin opens an old room.
-    if link { allow_member_status(&room).await.map(|left| link_note(&left)) } else { Ok(None) }
+    Ok(room)
+}
+
+/// After a link — also when the repository was already linked: linking again
+/// is how an admin opens an old room — the missing power-level entries.
+pub async fn after_link(room: &Room) -> Result<Option<String>, String> {
+    allow_member_status(room).await.map(|left| link_note(&left))
 }
 
 /// What the link says when power-level entries are left for a room admin
