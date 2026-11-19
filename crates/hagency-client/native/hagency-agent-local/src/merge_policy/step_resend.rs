@@ -121,10 +121,14 @@ impl Ledger {
         if !self.loop_step_taken(agent, step, pr, head)? {
             // A given-back step not re-posted yet waits while its Agent's budget is used up (GPT review).
             let held = round.again > 0 && out(self, &round.runner)?;
+            if step == "review" && !held {
+                self.note_asked(agent, (pr, head), to, round.again)?;
+            }
             return Ok(StepDue { taken: held, ..kept });
         }
-        // The next reviewer after one that never answered gets a round of its own (`reviewer_pass`).
-        if step == "review" && self.hands_on(agent, (pr, head), to, round.again)? {
+        // A reviewer never asked for this head gets a round of its own (`reviewer_pass`).
+        if step == "review" && self.hands_on(agent, (pr, head), to)? {
+            self.note_asked(agent, (pr, head), to, round.again + 1)?;
             return Ok(StepDue { taken: false, again: self.give_back(agent, (step, pr, head), now, String::new(), round.again + 1)?, say: None });
         }
         if !DISPATCHED_STEPS.contains(&step) || (step == "merge" && self.head_used(pr, head)?) {
@@ -135,7 +139,8 @@ impl Ledger {
         // Only the current reviewer's rounds count toward its cap.
         let spent = round.again - if step == "review" { self.reviewer_base(agent, (pr, head))?.min(round.again) } else { 0 };
         let say = (round.said <= round.again).then_some(Say { why, gave_up: spent >= why.cap(), round: round.again });
-        if spent >= why.cap() && step == "review" {
+        // A used-up budget is a hold, never a pass (GPT review).
+        if spent >= why.cap() && step == "review" && why != Why::Budget {
             self.pass_reviewer(agent, (pr, head), to, round.again)?;
         }
         if spent >= why.cap() || why == Why::Budget || now - at < RESEND_AFTER_SECS {

@@ -223,31 +223,8 @@ fn a_given_back_step_not_re_posted_yet_waits_while_the_budget_is_used_up_again()
     assert_eq!(due(&mut l, T0 + 86_400).taken, false, "the next day it goes out");
 }
 
-/// GPT batch review: a paused remote Codex reviewer (its profile publishes a
-/// runtime, nothing says it is active) never answered, and every re-send of the
-/// head's review went to it. Once its rounds are spent it is passed over, and
-/// the next reviewer gets a round of its own.
-#[test]
-fn a_reviewer_that_never_answers_is_passed_over_for_the_next_one() {
-    const CLAUDE: &str = "@claude:test";
-    let (_temp, mut l) = ledger();
-    let review = ("review", PR, HEAD);
-    let ask = |l: &mut Ledger, to: &str, now: i64| l.step_due(AGENT, review, (ME, to, ROOM), now).unwrap();
-    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
-    assert!(ask(&mut l, CODEX, T0).taken, "no dispatch here yet: it waits");
-    assert_eq!(ask(&mut l, CODEX, T0 + UNSEEN_AFTER_SECS), StepDue { taken: false, again: 1, say: say(Why::Unseen, false, 0) });
-    let t1 = T0 + UNSEEN_AFTER_SECS + 10;
-    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
-    assert!(ask(&mut l, CODEX, t1).taken);
-    assert_eq!(ask(&mut l, CODEX, t1 + UNSEEN_AFTER_SECS), StepDue { taken: true, again: 1, say: say(Why::Unseen, true, 1) });
-    assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
-    assert_eq!(ask(&mut l, CLAUDE, t1 + UNSEEN_AFTER_SECS + 1), StepDue { taken: false, again: 2, say: None }, "the next reviewer is asked, as a new message");
-    let t2 = t1 + UNSEEN_AFTER_SECS + 5;
-    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
-    assert!(ask(&mut l, CLAUDE, t2).taken);
-    assert_eq!(ask(&mut l, CLAUDE, t2 + UNSEEN_AFTER_SECS).again, 3, "its own re-send, not the one Codex spent");
-    assert!(l.passed_reviewers(AGENT, PR, &"b".repeat(40)).unwrap().is_empty(), "a new head starts over");
-}
+#[path = "reviewer_pass_tests.rs"]
+mod reviewer_pass;
 
 #[path = "step_resend_scope_tests.rs"]
 mod scope;
