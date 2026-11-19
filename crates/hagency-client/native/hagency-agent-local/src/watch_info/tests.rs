@@ -83,3 +83,52 @@ fn a_long_room_list_stays_under_the_result_cap() {
     let out = render_room(&many);
     assert!(out.len() <= ROOM_RESULT_BYTES && out.contains("\"more\":true"));
 }
+
+/// Live dev room, Nov 19 00:15: "@anna-claude go build this" made the Agent
+/// build it itself. With "may work in this room" and a linked repository the
+/// context makes it a planner, and the command it is taught files card-free.
+#[test]
+fn go_build_this_planner_rule_only_where_it_may_work_and_the_room_links_repos() {
+    let (_t, mut ledger) = ledger();
+    let linked = vec!["csheargm/hagency-demo-sandbox".to_owned()];
+    let context = |ledger: &Ledger, linked: &[String]| {
+        render_context(&[], DEV, OWNER, ledger.may_work("agt_yue", DEV).unwrap(), linked)
+    };
+    assert!(!context(&ledger, &linked).contains(hagency_runtime::PLAN_ON_GO_BUILD), "not let work here");
+    ledger.set_may_work(OWNER, "agt_yue", DEV, true).unwrap();
+    assert!(!context(&ledger, &[]).contains(hagency_runtime::PLAN_ON_GO_BUILD), "no linked repository");
+    let shown = context(&ledger, &linked);
+    assert!(shown.starts_with(OWN_WATCH_OPEN) && shown.ends_with(hagency_runtime::PLAN_ON_GO_BUILD));
+}
+
+/// The words a command line reads as, or `None` when it is not one plain command.
+fn one_command(line: &str) -> Option<Vec<String>> {
+    let mut parsed = crate::outside::shell::parse(line)?;
+    (parsed.segments.len() == 1 && parsed.heredoc_at.is_none()).then(|| parsed.segments.remove(0))
+}
+
+/// The taught shape, filled in, passes issue_create's checker; the usual
+/// `'\''` escape does not (the shell reader refuses any backslash), so the
+/// rule teaches double quotes for an apostrophe instead.
+#[test]
+fn the_taught_issue_command_passes_the_card_free_checker() {
+    let note = hagency_runtime::PLAN_ON_GO_BUILD;
+    let start = note.find("gh issue create").unwrap();
+    let end = note.find("criteria>'").unwrap() + "criteria>'".len();
+    let fill = |title: &str, body: &str| {
+        note[start..end].replace("<owner/name>", "csheargm/hagency-demo-sandbox")
+            .replace("'<title>'", title).replace("'<body with clear acceptance criteria>'", body)
+    };
+    let escaped = fill("'Add each doc'\\''s purpose'", "'Acceptance: it'\\''s linked from README.'");
+    assert!(one_command(&escaped).is_none(), "'\\'' must not be taught: {escaped}");
+    assert!(note.contains("apostrophe goes in double quotes"));
+    let line = fill("\"Add each doc's purpose to docs/INDEX.md\"", "\"Acceptance: INDEX.md names every file in docs/; it's linked from README.\"");
+    let words = one_command(&line).expect(&line);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let issue = crate::watch_trust::issue_create::IssueCreate::parse(&words).expect(&line);
+    assert_eq!((issue.repo, issue.title), ("csheargm/hagency-demo-sandbox", "Add each doc's purpose to docs/INDEX.md"));
+    assert!(issue.body.contains("it's linked from README."));
+    let plain = fill("'Add docs/INDEX.md'", "'Acceptance: one line per doc.'");
+    let plain = one_command(&plain).unwrap();
+    assert!(crate::watch_trust::issue_create::IssueCreate::parse(&plain.iter().map(String::as_str).collect::<Vec<_>>()).is_some());
+}

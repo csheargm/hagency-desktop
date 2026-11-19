@@ -53,6 +53,11 @@ macro_rules! codex_room_repo_reads {
 /// both carry this one text.
 pub const CODEX_ROOM_REPO_READS: &str = codex_room_repo_reads!();
 
+/// What an Agent asked to "go build this" does (ADR 0030, "Go build this"):
+/// it plans, filing the room's agreement as issues on the room's linked
+/// repositories with the one card-free shape (`watch_trust::issue_create`).
+pub const PLAN_ON_GO_BUILD: &str = "When someone in this room asks you to build, start or hand over something the room agreed (for example \"go build this\"), plan it, don't build it: split it into small issues and file each on this room's linked repository with exactly one command each, as its own command: gh issue create --repo <owner/name> --title '<title>' --body '<body with clear acceptance criteria>' (a title or body with an apostrophe goes in double quotes instead, with no $, backticks, ! or backslashes; '\\'' is refused and asks your owner; a Codex Agent sends it as the command of its watched_repo_step tool). Then post one line listing the issue links. Don't clone, edit files, push or open pull requests for it yourself: Agents that may work in this room claim and build those issues. If this room is Off or paused, file nothing and say agent work is off in this room.";
+
 /// The literal behind [`REVIEW_STEPS`], usable inside `concat!`.
 macro_rules! review_steps {
     () => {
@@ -90,5 +95,13 @@ mod tests {
         assert!(!super::REVIEW_STEPS.contains("Never merge"));
         assert!(super::REVIEW_STEPS.contains("✅ Approved"));
         assert!(super::AGENT_MERGE_NOTE.contains(super::REVIEW_STEPS));
+    }
+
+    /// "Go build this" makes the asked Agent a planner (live dev room, Nov 19 00:15).
+    #[test]
+    fn go_build_this_plans_issues_and_never_builds() {
+        let note = super::PLAN_ON_GO_BUILD;
+        assert!(note.contains("gh issue create --repo <owner/name> --title '<title>' --body '"));
+        assert!(note.contains("plan it, don't build it") && note.contains("Off or paused"));
     }
 }
