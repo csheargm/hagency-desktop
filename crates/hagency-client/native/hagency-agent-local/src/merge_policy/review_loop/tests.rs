@@ -20,16 +20,17 @@ pub(crate) struct Src {
     pub reviews: Option<Vec<(String, String, String)>>,
     pub author: &'static str,
     pub viewer: Option<&'static str>,
+    pub head_ref: Option<crate::merge_policy::github::HeadRef>,
 }
 impl Src {
     pub fn new(files: Vec<ChangedFile>) -> Self {
-        Self { repo: A, files, checks: vec![Check::Passed], reviews: Some(vec![]), author: "betty", viewer: Some("anna") }
+        Self { repo: A, files, checks: vec![Check::Passed], reviews: Some(vec![]), author: "betty", viewer: Some("anna"), head_ref: None }
     }
 }
 impl PrSource for Src {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = PrFacts { open: true, files: self.files.clone(), checks: self.checks.clone() };
-        Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, facts })
+        Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, head_ref: self.head_ref.clone(), facts })
     }
     async fn viewer_login(&self, _: &GhPr) -> Option<String> {
         self.viewer.map(str::to_owned)

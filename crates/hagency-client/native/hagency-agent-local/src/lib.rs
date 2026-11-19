@@ -395,6 +395,7 @@ impl Ledger {
         db.execute_batch(merge_policy::gate::SCHEMA)?;
         db.execute_batch(merge_policy::pending::SCHEMA)?;
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
+        db.execute_batch(merge_policy::authorship::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(room_autonomy::SCHEMA)?;
         db.execute_batch(room_autonomy::merge_room::SCHEMA)?;
@@ -1247,7 +1248,12 @@ impl Ledger {
         match admitted_policies(&tx, proposal, now) {
             // No policy saved since the run was admitted (GPT review):
             // a new rule, Deny or not, ends the override for this run.
-            Ok((original, current)) if unchanged(&original, &current) => Ok(Some(command)),
+            // A published branch is recorded as this Agent's (GPT batch review P1-1).
+            Ok((original, current)) if unchanged(&original, &current) => {
+                merge_policy::authorship::note(&tx, proposal, Some(&command), now)?;
+                tx.commit()?;
+                Ok(Some(command))
+            }
             Ok(_) => Ok(None),
             Err(Error::Denied) => Ok(None),
             Err(other) => Err(other),
@@ -1333,6 +1339,7 @@ impl Ledger {
             _ => Err(Error::Denied),
         };
         result?;
+        merge_policy::authorship::note(&tx, proposal, None, now)?;
         tx.commit()?;
         Ok(())
     }

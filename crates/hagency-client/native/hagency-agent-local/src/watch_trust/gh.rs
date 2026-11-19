@@ -8,7 +8,7 @@ use std::path::Path;
 /// No `--fill*` and no `--template`: those read commit messages or files
 /// from the git checkout gh runs in, which need not be the watched
 /// repository's (integration GPT review, Nov 17); the body is explicit.
-const CREATE_VALUED: [&str; 20] = [
+pub(crate) const CREATE_VALUED: [&str; 20] = [
     "-a", "--assignee", "-B", "--base", "-b", "--body", "-H", "--head", "-l", "--label", "-m", "--milestone",
     "-p", "--project", "-r", "--reviewer", "-t", "--title", "-F", "--body-file",
 ];

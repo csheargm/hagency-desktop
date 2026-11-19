@@ -71,7 +71,7 @@ const H50: &str = "4fe966ad790d85f5120ccf172f29eb6a4b3fc005";
 impl crate::merge_policy::github::PrSource for Pr50 {
     async fn pull_request(&self, _: &crate::merge_policy::gate::GhPr) -> Option<crate::merge_policy::github::PrView> {
         let facts = crate::merge_policy::PrFacts { open: true, files: vec![crate::merge_policy::ChangedFile { path: "README.md".into(), previous_path: None, additions: 4, deletions: 0, opaque: false }], checks: vec![crate::merge_policy::Check::Passed] };
-        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/50"), base_sha: "2".repeat(40), head_sha: H50.into(), author: "csheargm".into(), opened_by: self.opened_by.clone(), facts })
+        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/50"), base_sha: "2".repeat(40), head_sha: H50.into(), author: "csheargm".into(), opened_by: self.opened_by.clone(), head_ref: None, facts })
     }
 }
 fn review(mode: &str, head: &str) -> String {

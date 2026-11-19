@@ -141,6 +141,10 @@ fn a_hand_off_run_fixes_an_issue_with_zero_cards() {
     let pushed = git(&r.target, &["log", "-1", "--format=%s", "refs/heads/fix/typo"]);
     assert_eq!(pushed, "docs: fix typo (#1)", "the fix reached the watched repository");
     assert_eq!(git(&r.target, &["rev-parse", "refs/heads/main"]), git(&app, &["rev-parse", "origin/main"]), "main is untouched");
+    // GPT batch review P1-1: the ledger knows which Agent pushed the branch and opened its pull request.
+    let sql = "SELECT agent || ' ' || kind FROM pr_branch_authors WHERE repo='csheargm/hagency-demo-sandbox' AND branch='fix/typo' ORDER BY kind";
+    let rows: Vec<String> = r.ledger.db.prepare(sql).unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows, [format!("{} create", edit.scope.agent), format!("{} push", edit.scope.agent)]);
 }
 
 #[test]
