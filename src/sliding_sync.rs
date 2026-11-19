@@ -5700,6 +5700,15 @@ async fn text_preview_of_latest_thread_reply(
 }
 
 
+// TODO(R4): sliding_sync.rs is over budget; preview_names belongs with
+// get_latest_event_details in the rooms-list latest-event preview module (see the TODO at update_latest_event).
+/// The display names of the user IDs a latest message writes out, so its
+/// preview names them as the timeline's pills do (`shared::preview_names`).
+async fn preview_names(client: &Client, room_id: &matrix_sdk::ruma::RoomId, content: &matrix_sdk_ui::timeline::TimelineItemContent) -> Vec<(OwnedUserId, Option<String>)> {
+    let Some(msg) = crate::thread_reply_preview::message_of(content) else { return Vec::new() };
+    crate::shared::preview_names::names_in(client.get_room(room_id).as_ref(), msg.body()).await
+}
+
 /// Returns the timestamp and an HTML-formatted text preview of the given `latest_event`.
 ///
 /// If the sender profile of the event is not yet available, this function will
@@ -5737,7 +5746,8 @@ async fn get_latest_event_details(
                 return None;
             }
             let sender_username = get_sender_username!(profile, sender, *is_own);
-            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, scope);
+            let names = preview_names(client, room_id, content).await;
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, &names, scope);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::Local { timestamp, sender, profile, content, state: _ } => {
@@ -5746,7 +5756,8 @@ async fn get_latest_event_details(
             //                "<span color="red">Failed to send {msg}</span>"
             let is_own = current_user_id().is_some_and(|id| &id == sender);
             let sender_username = get_sender_username!(profile, sender, is_own);
-            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, scope);
+            let names = preview_names(client, room_id, content).await;
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, &names, scope);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::RemoteInvite { timestamp, .. } => {

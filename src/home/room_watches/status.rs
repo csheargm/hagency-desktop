@@ -40,6 +40,7 @@ pub fn activity(status: &RoomStatus, agent: &str, owner: Option<&str>) -> String
     if let Some(s) = busy {
         let i = &s.issue;
         return match i.pr {
+            Some(pr) if awaits_person(i) => crate::i18n::format("working on #{number} (PR #{pr} ready — a person merges)", &[("number", i.number.to_string()), ("pr", pr.to_string())]),
             Some(pr) => crate::i18n::format("working on #{number} (PR #{pr} {state})", &[("number", i.number.to_string()), ("pr", pr.to_string()), ("state", crate::i18n::tr(i.state.words()).to_owned())]),
             None => crate::i18n::format("working on #{number}", &[("number", i.number.to_string())]),
         };
@@ -48,6 +49,13 @@ pub fn activity(status: &RoomStatus, agent: &str, owner: Option<&str>) -> String
         Some(t) => crate::i18n::tr(t.state.words()).to_owned(),
         None => crate::i18n::tr("idle").to_owned(),
     }
+}
+
+/// Reviewed and held only by the room's level (Assist, Off, paused): the
+/// room was told "is ready … a person merges it", so the line says so too.
+fn awaits_person(issue: &::hagency::repo_status::Published) -> bool {
+    issue.state == ::hagency::repo_status::TrackState::Reviewed
+        && issue.hold.as_deref() == Some(crate::hagency::issue_watch::merge_hold::Missing::Autonomy.label())
 }
 
 async fn member(room: &Room, id: &str) -> Member {

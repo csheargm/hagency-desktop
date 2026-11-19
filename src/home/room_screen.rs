@@ -4341,7 +4341,7 @@ impl RoomScreen {
     }
     fn layout_desktop_chat_info(&mut self, cx: &mut Cx, available: f64) {
         let desktop = self.view.view(cx, ids!(desktop_chat_header)).visible();
-        let inline = available >= 600.0;
+        let inline = available >= info_panel_width::INLINE_MIN;
         // Resizing down preserves the timeline and input; a narrow information
         // pane is opened only by an explicit click, never by room selection.
         if self.chat_info_inline && !inline { self.chat_info_requested = false; }
@@ -9025,8 +9025,10 @@ mod desktop_information_columns_tests {
         assert!(center.pos.x + center.size.x <= info.pos.x + 0.1, "{center:?} {info:?}");
         assert!(input.size.x > 0.0 && input.size.y > 0.0, "{input:?}");
         assert!(input.pos.x >= center.pos.x && input.pos.x + input.size.x <= info.pos.x + 0.1);
-        draw(&mut cx, &mut screen, 600.0);
-        assert_eq!(screen.view.view(&mut cx, ids!(chat_center)).area().rect(&cx).size.x, 600.0 - info_panel_width::INFO_DEFAULT);
+        draw(&mut cx, &mut screen, info_panel_width::INLINE_MIN);
+        assert_eq!(screen.view.view(&mut cx, ids!(chat_center)).area().rect(&cx).size.x, crate::miniapps::side::CHAT_MIN, "the chat keeps its minimum");
+        draw(&mut cx, &mut screen, info_panel_width::INLINE_MIN - 1.0);
+        assert!(!screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).visible(), "narrower, the panel goes over the chat");
         draw(&mut cx, &mut screen, 500.0);
         assert!(!screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).visible());
         assert!(!screen.view.view(&mut cx, ids!(compact_chat_info_panel)).visible());

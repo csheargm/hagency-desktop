@@ -55,6 +55,13 @@ fn several_repositories_group_into_sections_with_a_summary_and_a_filter() {
 fn activity_comes_from_published_state_then_tasks_else_idle() {
     let s = status_with(Vec::new(), vec![seen("h/desktop", 37, TrackState::Reviewed, Some(38)), seen("h/desktop", 30, TrackState::Merged, Some(31))], Vec::new());
     assert_eq!(activity(&s, BIRD, Some(BETTY)), "working on #37 (PR #38 in review)");
+    let mut ready = seen("h/desktop", 37, TrackState::Reviewed, Some(38));
+    ready.issue.hold = Some(crate::hagency::issue_watch::merge_hold::Missing::Autonomy.label().to_owned());
+    let s_ready = status_with(Vec::new(), vec![ready.clone()], Vec::new());
+    assert_eq!(activity(&s_ready, BIRD, Some(BETTY)), "working on #37 (PR #38 ready — a person merges)", "an Assist-held reviewed PR is ready, not in review");
+    ready.issue.hold = Some("green CI".into());
+    let s_ci = status_with(Vec::new(), vec![ready], Vec::new());
+    assert_eq!(activity(&s_ci, BIRD, Some(BETTY)), "working on #37 (PR #38 in review)", "any other hold stays in review");
     assert_eq!(activity(&s, BIRD, Some("@mallory:hs.test")), "idle", "a claim from someone who is not the Agent's owner is not shown");
     assert_eq!(activity(&s, BIRD, None), "idle");
     let working = Task { agent: "@_hagency_agt_x:hs.test".into(), requester: "@anna:hs.test".into(), state: TaskState::Working, step: String::new(), age_secs: 5 };

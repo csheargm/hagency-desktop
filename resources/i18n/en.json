@@ -3661,6 +3661,7 @@
   "owner/name of a GitHub repository": "owner/name of a GitHub repository",
   "working on #{number} (PR #{pr} {state})": "working on #{number} (PR #{pr} {state})",
   "working on #{number}": "working on #{number}",
+  "working on #{number} (PR #{pr} ready — a person merges)": "working on #{number} (PR #{pr} ready — a person merges)",
   "{n} more not shown": "{n} more not shown",
   "{state} (attempt {n})": "{state} (attempt {n})",
   "handed off": "handed off",

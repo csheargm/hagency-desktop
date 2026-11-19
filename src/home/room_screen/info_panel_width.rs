@@ -6,7 +6,7 @@
 //! The edge is the same [`MiniAppsSideHandle`] the docked mini-apps region
 //! uses: it reports the drag offset, this module turns it into a width.
 use makepad_widgets::*;
-use crate::miniapps::side::MiniAppsSideHandle;
+use crate::miniapps::side::{CHAT_MIN, MiniAppsSideHandle};
 use super::RoomScreen;
 
 /// The narrowest panel: names and Matrix IDs stay readable.
@@ -16,11 +16,18 @@ pub const INFO_DEFAULT: f64 = 320.0;
 /// The widest panel, as a share of the room screen, so the chat keeps room.
 pub const INFO_MAX_SHARE: f64 = 0.6;
 
+/// The narrowest room screen that shows the panel beside the chat: the
+/// panel's minimum and the chat's [`CHAT_MIN`]. Narrower, the panel shows
+/// over the chat instead of squeezing it (as the docked mini-apps do).
+pub const INLINE_MIN: f64 = INFO_MIN + CHAT_MIN;
+
 /// The panel width to lay out: the chosen width kept between the minimum and
-/// the maximum share of `available`. A room screen narrower than the minimum
-/// gets the whole width (the compact overlay case).
+/// the maximum share of `available`, and never so wide that the chat beside
+/// it drops under [`CHAT_MIN`]; the saved width is unchanged and comes back
+/// when there is room. A room screen narrower than the minimum gets the
+/// whole width (the compact overlay case).
 pub fn clamp_width(width: f64, available: f64) -> f64 {
-    let max = (available * INFO_MAX_SHARE).max(INFO_MIN);
+    let max = (available * INFO_MAX_SHARE).min(available - CHAT_MIN).max(INFO_MIN);
     width.clamp(INFO_MIN, max).min(available.max(0.0))
 }
 
@@ -83,17 +90,31 @@ mod tests {
         assert_eq!(clamp_width(INFO_DEFAULT, 1280.0), INFO_DEFAULT);
         assert_eq!(clamp_width(100.0, 1280.0), INFO_MIN, "never narrower than the minimum");
         assert_eq!(clamp_width(2000.0, 1000.0), 600.0, "never wider than 60% of the room screen");
-        assert_eq!(clamp_width(2000.0, 600.0), 360.0);
+        assert_eq!(clamp_width(2000.0, 600.0), INFO_MIN, "a narrow room screen keeps the panel at its minimum");
         assert_eq!(clamp_width(INFO_DEFAULT, 280.0), 280.0, "a tiny screen gives the overlay all it has");
     }
 
-    /// GPT review: a saved 700 in a 600-point room shows 360; dragging
+    /// GPT review: a saved 700 in an 800-point room shows 400; dragging
     /// starts from there.
     #[test]
     fn a_drag_starts_from_the_clamped_width_on_screen() {
-        let from = clamp_width(700.0, 600.0);
-        assert_eq!(from, 360.0);
-        assert_eq!(dragged_width(from, 20.0, 600.0), 340.0);
+        let from = clamp_width(700.0, 800.0);
+        assert_eq!(from, 400.0);
+        assert_eq!(dragged_width(from, 20.0, 800.0), 380.0);
+    }
+
+    /// Nov 19: a widened panel beside the open Agents panel left the chat
+    /// ~170 points wide. The chat keeps [`CHAT_MIN`]; the saved width stays.
+    #[test]
+    fn a_wide_saved_panel_never_squeezes_the_chat_below_its_minimum() {
+        for available in [INLINE_MIN, 760.0, 900.0, 1000.0, 1280.0] {
+            let width = clamp_width(2000.0, available);
+            assert!(available - width >= CHAT_MIN, "{available}: chat {}", available - width);
+            assert!(width >= INFO_MIN);
+        }
+        assert_eq!(clamp_width(700.0, 900.0), 500.0, "the panel shrinks first");
+        assert_eq!(clamp_width(700.0, 1280.0), 700.0, "with room again, the saved width comes back");
+        assert_eq!(dragged_width(400.0, -500.0, 900.0), 500.0, "a drag stops where the chat's minimum begins");
     }
 
     #[test]
