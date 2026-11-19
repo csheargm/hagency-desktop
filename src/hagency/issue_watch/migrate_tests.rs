@@ -6,7 +6,7 @@ use serde_json::json;
 fn linked(entries: &[(&str, &[&str])]) -> Rooms {
     Rooms(entries.iter().map(|(room, repos)| ((*room).to_owned(), Ok(RoomState {
         level: Ok(Level::Assist), level_by: String::new(), cleared: vec![], pause: None, pause_name: None, linked: repos.iter().map(|r| (*r).to_owned()).collect(),
-        can_change: false, can_pause: false, can_link: false, maintainer: false,
+        can_change: false, can_pause: false, can_link: false, maintainer: false, as_of: None,
     }))).collect())
 }
 fn none() -> Rooms {

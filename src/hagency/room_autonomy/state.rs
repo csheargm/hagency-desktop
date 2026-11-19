@@ -33,6 +33,9 @@ pub struct RoomState {
     pub can_link: bool,
     /// This account is the room's owner or a maintainer (its Agents deliver).
     pub maintainer: bool,
+    /// The newest server time (ms) among the state events read: the gate
+    /// keeps the newest snapshot by it, never by arrival (GPT review P1).
+    pub as_of: Option<i64>,
 }
 
 /// What this account may do in a room, by the server's power levels.
@@ -48,7 +51,7 @@ pub struct Rights {
 impl RoomState {
     /// The state as the owner API records it.
     pub fn snapshot(&self, room_id: &str) -> AutonomySnapshot {
-        AutonomySnapshot { room_id: room_id.to_owned(), level: self.level.as_ref().ok().copied(), paused: self.pause.is_some(), unread: self.level.is_err(), owner_maintainer: self.maintainer }
+        AutonomySnapshot { room_id: room_id.to_owned(), level: self.level.as_ref().ok().copied(), paused: self.pause.is_some(), unread: self.level.is_err(), owner_maintainer: self.maintainer, as_of: self.as_of }
     }
     /// Whether the loop may start work here now (Assist/Autonomous, not paused).
     pub fn runs(&self) -> Result<(), String> {
@@ -90,6 +93,7 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
         can_pause: rights.pause,
         can_link: rights.link,
         maintainer: rights.maintainer,
+        as_of: events.iter().filter_map(|e| e["origin_server_ts"].as_i64()).max(),
     }
 }
 

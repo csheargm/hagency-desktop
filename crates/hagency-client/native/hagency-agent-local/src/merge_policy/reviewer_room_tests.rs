@@ -41,7 +41,7 @@ fn birds_ledger(dir: &std::path::Path, paused: bool) -> Ledger {
     let mut ledger = ledger_with(dir, &["bird-claude", "bird-codex"]);
     set_room_rules(&mut ledger, SANDBOX, Some(LIVE_RULES));
     ledger.set_may_work(OWNER, "bird-claude", ROOM, true).unwrap();
-    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Assist), paused, unread: false, owner_maintainer: true };
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Assist), paused, unread: false, owner_maintainer: true, as_of: None };
     ledger.set_room_autonomy(OWNER, &snapshot, super::room_rules::unix_now()).unwrap();
     crate::attribution::register_agent_identity("bird-codex", "bird-codex", CODEX_MXID);
     ledger
