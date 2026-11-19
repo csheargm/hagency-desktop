@@ -141,6 +141,7 @@ impl LiveTrack<'_> {
         if let Some(peer) = peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
+        let readiness = super::review_again::noted_unrecorded(readiness, (&reviews, &self.login), &pr.head_sha);
         let readiness = super::review_again::noted_other_owner(readiness, peer.is_some_and(|p| !p.own));
         let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
         let settled = merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now);

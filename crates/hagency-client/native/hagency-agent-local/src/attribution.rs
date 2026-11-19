@@ -22,6 +22,11 @@ pub fn agent_label(agent_id: &str) -> Option<String> {
     IDENTITIES.read().unwrap_or_else(|p| p.into_inner()).get(agent_id).map(|(label, _)| label.clone())
 }
 
+/// The puppet Matrix ID the host registered for Agent `agent_id`.
+pub fn agent_mxid(agent_id: &str) -> Option<String> {
+    IDENTITIES.read().unwrap_or_else(|p| p.into_inner()).get(agent_id).map(|(_, mxid)| mxid.clone()).filter(|m| !m.is_empty())
+}
+
 /// The identity rules for Agent `agent_id`, once the host registered it.
 pub fn identity_instructions(agent_id: &str) -> Option<String> {
     let identities = IDENTITIES.read().unwrap_or_else(|p| p.into_inner());
