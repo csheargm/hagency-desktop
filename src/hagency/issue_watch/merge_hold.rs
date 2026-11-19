@@ -183,9 +183,14 @@ pub(super) fn assist_step() -> String {
     format!("{}-{ASSIST_WORD}", Missing::Autonomy.step())
 }
 
+/// The published hold of a reviewed pull request that only the room's level
+/// holds ([`only_assist`]); a stale or unreadable authority, or a missing
+/// permission, publishes [`Missing::Autonomy`]'s label instead.
+pub const LEVEL_ONLY_HOLD: &str = "a person merges (reviewed and ready)";
+
 /// Whether the room's Assist level is all that holds the merge: every rule,
 /// approval and CI passed (the gate judges autonomy last), so a person merges.
-fn only_assist(missing: &[(Missing, String)]) -> bool {
+pub(crate) fn only_assist(missing: &[(Missing, String)]) -> bool {
     matches!(missing, [(Missing::Autonomy, reason)] if reason == ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON)
 }
 

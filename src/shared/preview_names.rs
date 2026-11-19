@@ -21,7 +21,19 @@ pub fn user_ids_in(body: &str) -> Vec<OwnedUserId> {
     out
 }
 
-/// `body` with each ID of `names` as its pill label.
+/// The longest name a preview writes in, in characters.
+const MAX_NAME_CHARS: usize = 64;
+
+/// A display name as one short line: every run of whitespace or control
+/// characters is one space (GPT review: a name "Payment approved\nAlice"
+/// became the preview's first line). Empty means the caller uses the localpart.
+fn one_line_name(name: &str) -> String {
+    let words: Vec<&str> = name.split(|c: char| c.is_whitespace() || c.is_control()).filter(|w| !w.is_empty()).collect();
+    words.join(" ").chars().take(MAX_NAME_CHARS).collect::<String>().trim_end().to_owned()
+}
+
+/// `body` (Markdown) with each ID of `names` as its pill label, written as
+/// literal text: one line, capped, its punctuation escaped.
 pub fn with_names<'a>(body: &'a str, names: &[(OwnedUserId, Option<String>)]) -> Cow<'a, str> {
     let mut sorted: Vec<_> = names.iter().collect();
     // Longest first, so an ID that begins another is never cut out of it.
@@ -29,7 +41,9 @@ pub fn with_names<'a>(body: &'a str, names: &[(OwnedUserId, Option<String>)]) ->
     let mut out = Cow::Borrowed(body);
     for (id, name) in sorted {
         if out.contains(id.as_str()) {
-            out = Cow::Owned(out.replace(id.as_str(), super::mention_text::user_label(id, name.as_deref())));
+            let name = name.as_deref().map(one_line_name);
+            let label = super::mention_text::user_label(id, name.as_deref());
+            out = Cow::Owned(out.replace(id.as_str(), &super::mention_text::escape_punctuation(label)));
         }
     }
     out
@@ -66,9 +80,29 @@ mod tests {
     fn an_id_becomes_its_name_else_its_localpart() {
         let agent = OwnedUserId::try_from(AGENT).unwrap();
         let body = format!("🔎 Review requested — {AGENT} please review PR #131");
-        assert_eq!(with_names(&body, &[(agent.clone(), Some("yue-claude".into()))]), "🔎 Review requested — yue-claude please review PR #131");
-        assert_eq!(with_names(&body, &[(agent, None)]), "🔎 Review requested — _hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5 please review PR #131");
+        assert_eq!(with_names(&body, &[(agent.clone(), Some("yue-claude".into()))]), "🔎 Review requested — yue\\-claude please review PR #131");
+        assert_eq!(with_names(&body, &[(agent, None)]), "🔎 Review requested — \\_hagency\\_agt\\_01m7k84kgg5a5mtm2epqhbpjb5 please review PR #131", "escaped for the Markdown step");
         assert_eq!(with_names("no ids here", &[]), "no ids here");
+    }
+
+    fn preview(name: &str) -> String {
+        let agent = OwnedUserId::try_from(AGENT).unwrap();
+        let msg = matrix_sdk::ruma::events::room::message::MessageType::text_plain(format!("🔎 Review requested — {AGENT} please review PR #131"));
+        crate::thread_reply_preview::escaped_plain_line(&msg, &[(agent, Some(name.to_owned()))]).unwrap()
+    }
+
+    /// GPT review, Nov 19: names went into the Markdown step unsanitized.
+    #[test]
+    fn a_name_is_one_literal_line_and_never_hides_the_message() {
+        assert_eq!(preview("Payment approved\nAlice"), "🔎 Review requested — Payment approved Alice please review PR #131");
+        assert_eq!(preview("Payment\r\n\t\u{7}approved"), "🔎 Review requested — Payment approved please review PR #131");
+        assert_eq!(preview("**x**"), "🔎 Review requested — **x** please review PR #131");
+        assert_eq!(preview("[a](b)"), "🔎 Review requested — [a](b) please review PR #131");
+        assert_eq!(preview("<b>"), "🔎 Review requested — &lt;b&gt; please review PR #131");
+        assert_eq!(preview("# _y_"), "🔎 Review requested — # _y_ please review PR #131");
+        assert_eq!(preview(" \n\t "), "🔎 Review requested — _hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5 please review PR #131", "an empty name is the localpart");
+        let long = preview(&"n".repeat(200));
+        assert!(long.contains(&format!("— {} please", "n".repeat(MAX_NAME_CHARS))), "{long}");
     }
 
     #[test]

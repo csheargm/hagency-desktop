@@ -185,12 +185,16 @@ pub(crate) fn mentions_as_names(markdown: &str) -> String {
 /// The Markdown pill for one mention: `[label](matrix.to link)`, with the
 /// label's ASCII punctuation escaped so it cannot open other Markdown.
 pub(super) fn mention_link(label: &str, user: &UserId) -> String {
-    let mut output = String::from("[");
-    for c in label.chars() {
+    format!("[{}]({})", escape_punctuation(label), user.matrix_to_uri())
+}
+
+/// `text` with its ASCII punctuation backslash-escaped: literal in Markdown.
+pub(super) fn escape_punctuation(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for c in text.chars() {
         if c.is_ascii_punctuation() { output.push('\\'); }
         output.push(c);
     }
-    output.push_str(&format!("]({})", user.matrix_to_uri()));
     output
 }
 

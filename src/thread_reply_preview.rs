@@ -44,7 +44,7 @@ pub(crate) fn proposal_line(msgtype: &MessageType) -> Option<&'static str> {
 
 /// The first readable line of a text or notice message, HTML-escaped, with
 /// the user IDs of `names` written as names (`shared::preview_names`).
-fn escaped_plain_line(msgtype: &MessageType, names: &[(OwnedUserId, Option<String>)]) -> Option<String> {
+pub(crate) fn escaped_plain_line(msgtype: &MessageType, names: &[(OwnedUserId, Option<String>)]) -> Option<String> {
     // A memory or skill proposal is a card; its fallback body (with a raw Agent id) is never previewed.
     if let Some(line) = proposal_line(msgtype) {
         return Some(htmlize::escape_text(line).into_owned());
