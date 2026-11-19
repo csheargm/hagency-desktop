@@ -55,6 +55,20 @@ impl CreateAgentDialog {
         }
     }
 
+    /// A harness's model probe answered. When that changes the harness shown
+    /// (the listing may have answered first, with the Claude fallback), an
+    /// untyped name follows the shown harness (GPT review, Nov 19).
+    pub(super) fn probe_answered(&mut self, cx: &mut Cx, index: usize, models: Result<Vec<super::super::ModelChoice>, String>) {
+        let before = self.state.runtime();
+        self.state.probes[index] = Some(models);
+        self.refresh_stem(cx);
+        self.render(cx);
+        if self.state.runtime() != before {
+            self.follow_suggestion(cx);
+            self.render_create(cx);
+        }
+    }
+
     /// An untyped name becomes the first free name for the harness shown
     /// (lookup, harness change, display name); a typed one is left alone,
     /// and so is any name once Create is pressed. Nothing is suggested
@@ -193,5 +207,31 @@ mod tests {
         taken.names_loaded = false;
         deliver(&mut taken, &mut cx, &["anna-codex"]);
         assert_eq!(taken.state.name, "anna-codex-2");
+    }
+
+    /// GPT review, Nov 19: the listing answered before the probes, so the
+    /// Claude fallback was suggested; a Codex-only probe then enabled Create
+    /// with "anna-claude".
+    #[test]
+    fn a_probe_after_the_listing_moves_an_untyped_name_to_the_shown_harness() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        for (taken, expected) in [(vec![], "-codex"), (vec!["my-codex"], "-codex-2")] {
+            let mut dialog = codex_only_dialog(&mut cx);
+            dialog.state.probes = std::array::from_fn(|_| None);
+            dialog.state.name.clear();
+            dialog.names_loaded = false;
+            deliver(&mut dialog, &mut cx, &taken);
+            assert!(dialog.state.name.ends_with("-claude"), "the fallback before any probe: {}", dialog.state.name);
+            dialog.probe_answered(&mut cx, 0, Err("provider_models_unavailable".into()));
+            dialog.probe_answered(&mut cx, 1, Ok(parse_models(&serde_json::json!({"models": [{"model": "gpt-5"}]}))));
+            assert_eq!(dialog.state.runtime(), Some(Runtime::Codex));
+            assert!(dialog.state.name.ends_with(expected) && !dialog.state.name.contains("claude"), "{}", dialog.state.name);
+            assert_eq!(dialog.view.text_input(&mut cx, ids!(name)).text(), dialog.state.name);
+        }
+        let mut typed = codex_only_dialog(&mut cx);
+        typed.state.probes = std::array::from_fn(|_| None);
+        typed.name_typed(&mut cx, "mine".into());
+        typed.probe_answered(&mut cx, 1, Ok(parse_models(&serde_json::json!({"models": [{"model": "gpt-5"}]}))));
+        assert_eq!(typed.state.name, "mine", "a typed name is kept");
     }
 }
