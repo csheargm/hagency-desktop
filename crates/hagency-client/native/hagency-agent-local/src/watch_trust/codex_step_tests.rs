@@ -219,4 +219,37 @@ fn a_pr_body_file_comes_only_from_the_own_checkout() {
     for refused in [r.root.join("secret.txt"), app.join(".git/config"), app.join("link.md"), app.join("missing.md"), app.clone()] {
         assert_eq!(r.ledger.trusted_publish(OWNER, &step(&r.root, &pr(&refused)), 11).unwrap(), None, "{}", refused.display());
     }
+    // A second name for an outside file (a hard link) is refused too.
+    std::fs::hard_link(r.root.join("secret.txt"), app.join("hard.md")).unwrap();
+    assert_eq!(r.ledger.trusted_publish(OWNER, &step(&r.root, &pr(&app.join("hard.md"))), 11).unwrap(), None);
+}
+
+/// GPT review (integration, Nov 19): gh reopened the checked body file by
+/// path, so a swap to a link after the check published an outside secret.
+/// The pinned line now carries the text read at check time, never the path.
+#[test]
+fn a_pr_body_file_is_read_once_and_a_later_swap_to_a_link_publishes_nothing_new() {
+    let mut r = cloned();
+    let app = r.root.join("app");
+    let body = app.join("body.md");
+    std::fs::write(&body, "Fixes #1 'quoted' $HOME").unwrap();
+    std::fs::write(r.root.join("secret.txt"), "SECRET_TOKEN_123").unwrap();
+    for option in ["--body-file {}", "--body-file={}", "-F {}"] {
+        let line = format!("gh pr create --repo {REPO} --head fix --title t {}", option.replace("{}", body.to_str().unwrap()));
+        let Some(TrustedStep::Command(pinned)) = r.ledger.trusted_publish(OWNER, &step(&r.root, &line), 11).unwrap() else { panic!("{line}") };
+        assert!(!pinned.contains("body.md") && !pinned.contains("body-file") && !pinned.contains("'-F'"), "{pinned}");
+        // What runs is exactly the checked text, whatever the file becomes.
+        let shown = std::process::Command::new("/bin/sh").arg("-c")
+            .arg(pinned.replacen("GH_HOST='github.com' gh ", "printf '%s|' ", 1)).output().unwrap();
+        let shown = String::from_utf8(shown.stdout).unwrap();
+        assert!(shown.contains("Fixes #1 'quoted' $HOME"), "{shown}");
+    }
+    std::fs::remove_file(&body).unwrap();
+    std::os::unix::fs::symlink(r.root.join("secret.txt"), &body).unwrap();
+    let line = format!("gh pr create --repo {REPO} --head fix --title t --body-file {}", body.display());
+    assert_eq!(r.ledger.trusted_publish(OWNER, &step(&r.root, &line), 11).unwrap(), None, "a link is refused");
+    // `-F -` (stdin) is left for gh to read.
+    let line = format!("gh pr create --repo {REPO} --head fix --title t -F -");
+    let Some(TrustedStep::Command(pinned)) = r.ledger.trusted_publish(OWNER, &step(&r.root, &line), 11).unwrap() else { panic!("stdin") };
+    assert!(pinned.ends_with("'-F' '-'"), "{pinned}");
 }
