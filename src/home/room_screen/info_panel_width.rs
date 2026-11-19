@@ -31,12 +31,57 @@ pub fn clamp_width(width: f64, available: f64) -> f64 {
     width.clamp(INFO_MIN, max).min(available.max(0.0))
 }
 
-/// The room screen width to lay the panel out in: the width it really took
-/// last frame. Beside a docked side region (the Agents panel) the room screen
-/// is a deferred Fill, drawn at a provisional full-row width and shrunk after
-/// the region is placed, so the peeked width is used only before a first frame.
-pub fn layout_width(peeked: f64, drawn: f64) -> f64 {
-    if drawn > 0.0 { drawn } else { peeked }
+/// What room info is laid out as for a room screen `width` wide with the
+/// person's panel width `panel`: beside the chat or not, and how wide.
+pub fn layout_of(width: f64, panel: f64) -> (bool, f64) {
+    (width >= INLINE_MIN, clamp_width(panel, width))
+}
+
+/// The room screen widths room info is laid out for. Beside a docked side
+/// region (the Agents panel) the room screen is a deferred Fill: drawn at a
+/// provisional full-row width and shrunk after the region is placed, so the
+/// peeked width is wrong, and at draw start the Dock has just re-recorded its
+/// draw list, so the screen's area is no longer readable (GPT review). The real
+/// width is read on the frame after a draw, outside any draw, and laid out from.
+#[derive(Debug, Default)]
+pub struct InfoLayout {
+    /// The redraw this layout was made in, and the width it used.
+    used: Option<(u64, f64)>,
+    /// The width the room screen really took, read after its last draw.
+    drawn: Option<f64>,
+    /// The drawn width a corrective redraw was asked for: one per distinct width, never a loop.
+    corrected: Option<f64>,
+    check: NextFrame,
+}
+
+impl InfoLayout {
+    /// The width to lay out this redraw: the real width once one was read,
+    /// else the peek. Fixed for the redraw: a stepped draw resumes later.
+    pub fn width(&mut self, redraw: u64, peeked: f64) -> (f64, bool) {
+        match self.used {
+            Some((at, width)) if at == redraw => (width, false),
+            _ => {
+                let width = self.drawn.unwrap_or(peeked);
+                self.used = Some((redraw, width));
+                (width, true)
+            }
+        }
+    }
+
+    /// Records the width the room screen really took; whether one corrective
+    /// redraw is due: only when that width changes the layout (beside or
+    /// not, or the clamped panel width), and once per distinct drawn width.
+    pub fn settle(&mut self, drawn: f64, panel: f64) -> bool {
+        // No area yet (never drawn, or a hidden tab): keep the last real width.
+        if drawn <= 0.0 { return false }
+        self.drawn = Some(drawn);
+        let Some((_, used)) = self.used else { return false };
+        if layout_of(used, panel) == layout_of(drawn, panel) || self.corrected == Some(drawn) {
+            return false;
+        }
+        self.corrected = Some(drawn);
+        true
+    }
 }
 
 /// The width after dragging the left edge `dx` points from `from`: moving
@@ -46,26 +91,22 @@ pub fn dragged_width(from: f64, dx: f64, available: f64) -> f64 {
 }
 
 impl RoomScreen {
-    /// The width this frame lays the panel out in ([`layout_width`]), read
-    /// once per redraw: a stepped draw resumes inside the room screen's own turtle.
+    /// The width this frame lays room info out in ([`InfoLayout::width`]);
+    /// a new layout asks for the frame after the draw to read the real width.
     pub(super) fn info_layout_width(&mut self, cx: &mut Cx, peeked: f64) -> f64 {
-        match self.info_layout {
-            Some((redraw, width)) if redraw == cx.redraw_id => width,
-            _ => {
-                let width = layout_width(peeked, self.view.area().rect(cx).size.x);
-                self.info_layout = Some((cx.redraw_id, width));
-                self.info_layout_check = cx.new_next_frame();
-                width
-            }
+        let (width, fresh) = self.info_layout.width(cx.redraw_id, peeked);
+        if fresh {
+            self.info_layout.check = cx.new_next_frame();
         }
+        width
     }
 
-    /// The frame after a draw: when the room screen really took another
-    /// width (the Agents panel opened or closed), lay the panel out again.
+    /// The frame after a draw, when the room screen's area is valid: reads
+    /// the width it really took, and redraws once when that changes the layout.
     pub(super) fn check_info_layout_width(&mut self, cx: &mut Cx, event: &Event) {
-        if self.info_layout_check.is_event(event).is_none() { return }
+        if self.info_layout.check.is_event(event).is_none() { return }
         let drawn = self.view.area().rect(cx).size.x;
-        if drawn > 0.0 && self.info_layout.is_some_and(|(_, used)| (used - drawn).abs() > 0.5) {
+        if self.info_layout.settle(drawn, self.info_width()) {
             self.view.redraw(cx);
         }
     }
@@ -149,55 +190,93 @@ mod tests {
         assert_eq!(dragged_width(400.0, -500.0, 900.0), 500.0, "a drag stops where the chat's minimum begins");
     }
 
-    /// Live, Nov 19 05:52: in a 1400-point window with the Agents panel open
-    /// the room screen took ~650 points but was laid out for the provisional
-    /// full-row width, so room info stayed inline beside a 330-point chat.
+    /// GPT review: a 0.5-point tolerance missed 700 → 699.5; and a width that
+    /// does not change the layout, or one already corrected, never redraws again.
     #[test]
-    fn the_room_screens_real_width_decides_inline_or_overlay() {
-        assert_eq!(layout_width(1090.0, 650.0), 650.0, "the width it really took wins over the provisional peek");
-        assert_eq!(layout_width(1090.0, 0.0), 1090.0, "before a first frame only the peek is known");
-        assert!(layout_width(1090.0, 650.0) < INLINE_MIN, "so room info goes over the chat");
+    fn only_a_changed_layout_asks_for_one_corrective_redraw() {
+        let mut layout = InfoLayout::default();
+        assert_eq!(layout.width(1, 1090.0), (1090.0, true), "before a first frame only the peek is known");
+        assert_eq!(layout.width(1, 1.0), (1090.0, false), "fixed for the redraw");
+        assert!(layout.settle(650.0, INFO_DEFAULT), "the Agents panel docked: inline becomes overlay");
+        assert!(!layout.settle(650.0, INFO_DEFAULT), "at most one corrective redraw per drawn width");
+        assert_eq!(layout.width(2, 1090.0), (650.0, true), "laid out from the real width, not the provisional peek");
+        assert!(!layout.settle(650.0, INFO_DEFAULT), "stable: no further redraw");
+        assert!(!layout.settle(660.0, INFO_DEFAULT), "a width that keeps the layout redraws nothing");
+        let mut edge = InfoLayout::default();
+        edge.width(1, INLINE_MIN);
+        assert!(edge.settle(INLINE_MIN - 0.5, INFO_DEFAULT), "700 → 699.5 switches to the overlay");
+        assert_eq!(edge.width(2, INLINE_MIN).0, INLINE_MIN - 0.5);
+        assert!(!edge.settle(INLINE_MIN - 0.5, INFO_DEFAULT));
+        assert!(!InfoLayout::default().settle(0.0, INFO_DEFAULT), "an unreadable area changes nothing");
     }
 
-    /// The same, through the room screen: a 1400-point window, room info
-    /// open, then the Agents panel docks and the room screen really gets 650.
+    /// Live, Nov 19 05:52 (1400-point window): room info open, then the Agents
+    /// panel docks and the room screen really gets 650. Each frame re-records
+    /// the same draw list before the layout is read, as the Dock does, so the
+    /// previous frame's area is gone at draw start (GPT review).
     #[test]
     fn opening_and_closing_the_agents_panel_lays_room_info_out_again() {
-        use super::super::desktop_information_columns_tests::{draw_view, screen};
+        use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+        use super::super::desktop_information_columns_tests::screen;
         let (mut cx, mut screen) = screen();
         screen.chat_info_requested = true;
         screen.room_name_id = Some(crate::utils::RoomNameId::empty(matrix_sdk::ruma::room_id!("!a:server").to_owned()));
-        let frame = |cx: &mut Cx, screen: &mut RoomScreen, real: f64| {
+        let pass = DrawPass::new(&mut cx);
+        pass.set_size(&mut cx, dvec2(1280.0, 900.0));
+        let mut list = DrawList2d::new(&mut cx);
+        let overlay = Overlay {draw_list: DrawList::new(&mut cx)};
+        let mut redraws = 0;
+        let mut frame = |cx: &mut Cx, screen: &mut RoomScreen, real: f64| {
             cx.redraw_id += 1;
             cx.redraw_all();
-            // The peek is the provisional full row whether or not the Agents panel is open.
-            let width = screen.info_layout_width(cx, 1090.0);
-            screen.layout_desktop_chat_info(cx, width);
-            draw_view(cx, screen, real);
+            let event = DrawEvent::default();
+            let mut draw = CxDraw::new(cx, &event);
+            let mut cx2d = Cx2d::new(&mut draw);
+            cx2d.begin_pass(&pass, None); list.begin_always(&mut cx2d); overlay.begin(&mut cx2d);
+            cx2d.begin_root_turtle(dvec2(1280.0, 900.0), Layout::flow_overlay());
+            // Read inside the re-recorded list; the peek is the provisional full row.
+            let width = screen.info_layout_width(&mut cx2d, 1090.0);
+            screen.layout_desktop_chat_info(&mut cx2d, width);
+            screen.view.draw_walk_all(&mut cx2d, &mut Scope::with_data(&mut crate::app::AppState::default()),
+                Walk {width: Size::Fixed(real), height: Size::Fixed(760.0), ..Walk::default()});
+            overlay.end(&mut cx2d); cx2d.end_pass_sized_turtle(); list.end(&mut cx2d); cx2d.end_pass(&pass);
         };
-        let check = |cx: &mut Cx, screen: &mut RoomScreen| {
-            let next = Event::NextFrame(NextFrameEvent { frame: 1, time: 0.0, set: [screen.info_layout_check].into() });
+        let mut check = |cx: &mut Cx, screen: &mut RoomScreen| {
+            let next = Event::NextFrame(NextFrameEvent { frame: 1, time: 0.0, set: [screen.info_layout.check].into() });
+            let before = screen.info_layout.corrected;
             screen.check_info_layout_width(cx, &next);
+            if screen.info_layout.corrected != before { redraws += 1; }
         };
         let inline = |cx: &mut Cx, screen: &RoomScreen| screen.view.view(cx, ids!(desktop_chat_info_panel)).visible();
         let chat = |cx: &mut Cx, screen: &RoomScreen| screen.view.view(cx, ids!(chat_center)).area().rect(cx).size.x;
         frame(&mut cx, &mut screen, 1090.0);
+        check(&mut cx, &mut screen);
         assert!(inline(&mut cx, &screen), "room info beside the chat");
         // The Agents panel docks: this frame still lays out for the old width.
         frame(&mut cx, &mut screen, 650.0);
         check(&mut cx, &mut screen);
         frame(&mut cx, &mut screen, 650.0);
+        check(&mut cx, &mut screen);
         // Too narrow for both: room info gives way (the existing resize-down rule).
         assert!(!inline(&mut cx, &screen), "room info no longer sits beside the chat");
         assert_eq!(chat(&mut cx, &screen), 650.0, "the chat keeps the room screen's whole width");
-        // The Agents panel closes: the chat gets the row back, and room info opens beside it again.
+        for _ in 0..3 {
+            frame(&mut cx, &mut screen, 650.0);
+            check(&mut cx, &mut screen);
+        }
+        // The Agents panel closes: the chat gets the row back; room info opens beside it again.
         frame(&mut cx, &mut screen, 1090.0);
         check(&mut cx, &mut screen);
         frame(&mut cx, &mut screen, 1090.0);
+        check(&mut cx, &mut screen);
         assert_eq!(chat(&mut cx, &screen), 1090.0);
         screen.chat_info_requested = true;
         frame(&mut cx, &mut screen, 1090.0);
+        check(&mut cx, &mut screen);
         assert!(inline(&mut cx, &screen) && chat(&mut cx, &screen) >= CHAT_MIN);
+        drop(frame);
+        drop(check);
+        assert_eq!(redraws, 2, "one corrective redraw when the panel docks, one when it closes; a stable width asks for none");
     }
 
     #[test]
