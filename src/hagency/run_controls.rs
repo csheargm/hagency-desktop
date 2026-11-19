@@ -70,6 +70,45 @@ struct Store {
     edits: Vec<(String, String, String, Card)>,
 }
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
+/// Runs kept at once.
+const MAX_ENTRIES: usize = 256;
+tokio::task_local! {
+    /// Set while admitting cards a timeline loaded from history (`loaded_run_cards`).
+    static HISTORY: bool;
+}
+/// Runs `admit` as the admission of cards loaded from history.
+pub(super) async fn as_history<F: std::future::Future>(admit: F) -> F::Output {
+    HISTORY.scope(true, admit).await
+}
+#[cfg(test)]
+pub(super) fn as_history_sync<T>(admit: impl FnOnce() -> T) -> T {
+    HISTORY.sync_scope(true, admit)
+}
+fn from_history() -> bool {
+    HISTORY.try_with(|history| *history).unwrap_or(false)
+}
+/// A run that may go to make room: settled, with no local input waiting.
+fn evictable(e: &Entry) -> bool {
+    !e.card.state.active() && e.draft.is_empty() && !e.sending && e.pending_drafts.is_empty()
+        && e.recovered_drafts.is_empty() && e.retry.is_none()
+}
+/// Room for one more run: the oldest evictable run goes first. A card from
+/// history never evicts an active run or one with local input; it is skipped.
+fn make_room(entries: &mut Vec<Entry>, history: bool) -> bool {
+    if entries.len() < MAX_ENTRIES {
+        return true;
+    }
+    match entries.iter().position(evictable) {
+        Some(i) => { entries.remove(i); true }
+        None if history => false,
+        None => { entries.remove(0); true }
+    }
+}
+/// The revision of the admitted run card `event` in `room`, if stored.
+pub fn stored_revision(room: &str, event: &str) -> Option<u64> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .find(|e| e.card.room_id == room && e.key == event).map(|e| e.card.revision)
+}
 pub(super) fn reset(generation: u64, owner: &str) {
     *STORE.lock().unwrap_or_else(|e| e.into_inner()) = Store {
         generation,
@@ -194,6 +233,9 @@ pub(super) fn authenticated(
     {
         return false;
     }
+    if !make_room(&mut store.entries, from_history()) {
+        return false;
+    }
     let owner = store.owner.clone();
     let mut entry = Entry {
         key: event.into(),
@@ -226,9 +268,6 @@ pub(super) fn authenticated(
     store
         .edits
         .retain(|(r, t, a, _)| r != room || t != event || a != agent);
-    if store.entries.len() >= 256 {
-        store.entries.remove(0);
-    }
     store.entries.push(entry);
     true
 }

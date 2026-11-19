@@ -730,10 +730,10 @@ pub(super) fn test_serial() -> tokio::sync::MutexGuard<'static, ()> {
 pub(super) fn test_login(owner: &str) -> u64 {
     reset(owner.into())
 }
-/// `accept_event` in a plaintext room, for another module's test.
+/// `accept_event`, for another module's test.
 #[cfg(test)]
-pub(super) fn test_accept(generation: u64, room: &str, server: &str, value: &Value, remote_trusted: bool) -> bool {
-    accept_event(generation, room, server, "Agent", value, None, true, remote_trusted)
+pub(super) fn test_accept(generation: u64, room: &str, server: &str, value: &Value, info: Option<&EncryptionInfo>, plaintext: bool, remote_trusted: bool) -> bool {
+    accept_event(generation, room, server, "Agent", value, info, plaintext, remote_trusted)
 }
 
 fn reset(owner: String) -> u64 {

@@ -5,29 +5,58 @@
 //! never pass through it. The card's own event is still hidden as "drawn by
 //! the card", so the Agent's reply vanished after a restart (Nov 19). The
 //! room timeline hands its loaded cards here; they go through the same
-//! admission boundary as live sync, the card before its edit.
-use matrix_sdk::{Room, deserialized_responses::EncryptionInfo};
+//! admission boundary as live sync, the card before its edit, and as history
+//! they never evict a live run (`run_controls::as_history`).
+use matrix_sdk::{Room, deserialized_responses::EncryptionInfo, ruma::{OwnedEventId, events::AnySyncTimelineEvent, serde::Raw}};
 use matrix_sdk_ui::timeline::{EventTimelineItem, TimelineItem};
 use makepad_widgets::Cx;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// One event to admit, with what the SDK knows about its encryption.
 type Admit = (Value, Option<EncryptionInfo>);
+/// (login generation, card event, latest edit event).
+type Key = (u64, String, String);
 
-/// A loaded run card: its key (card event, latest edit event) and events.
+/// A loaded run card: its own event, and its latest edit as the timeline has it.
 struct Loaded {
-    key: (String, String),
-    events: Vec<Admit>,
+    card: String,
+    original: Admit,
+    edit: Option<Value>,
+}
+impl Loaded {
+    fn edit_id(&self) -> &str {
+        self.edit.as_ref().and_then(|e| e["event_id"].as_str()).unwrap_or_default()
+    }
+    fn key(&self, generation: u64) -> Key {
+        (generation, self.card.clone(), self.edit_id().to_owned())
+    }
+    /// The revision the card has once its latest edit is applied.
+    fn revision(&self) -> u64 {
+        let card = |v: &Value| v["im.hagency.agent_run"]["revision"].as_u64();
+        self.edit.as_ref().and_then(|e| card(&e["content"]["m.new_content"]))
+            .or_else(|| card(&self.original.0["content"])).unwrap_or_default()
+    }
 }
 
-/// (login generation, card event, latest edit event) already handed over.
-static SEEN: LazyLock<Mutex<HashSet<(u64, String, String)>>> = LazyLock::new(Default::default);
+/// Where a loaded card stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Handed {
+    /// Being admitted, after this many failed tries.
+    Admitting(u8),
+    /// Stored with its latest edit: not handed over again.
+    Stored,
+    /// Not stored after this many tries (e.g. an untrusted sender, a full store).
+    Failed(u8),
+}
+static HANDED: LazyLock<Mutex<HashMap<Key, Handed>>> = LazyLock::new(Default::default);
 /// Forgotten past this size; handing a card over again is harmless (admission is idempotent).
-const MAX_SEEN: usize = 2048;
+const MAX_HANDED: usize = 2048;
+/// Tries per card and edit before it waits for the next login.
+const MAX_TRIES: u8 = 3;
 
-fn json(raw: &matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::AnySyncTimelineEvent>) -> Option<Value> {
+fn json(raw: &Raw<AnySyncTimelineEvent>) -> Option<Value> {
     raw.deserialize_as::<Value>().ok()
 }
 
@@ -37,45 +66,82 @@ fn loaded(event: &EventTimelineItem) -> Option<Loaded> {
     cards_of(original, event.latest_edit_json().and_then(json), event.encryption_info().cloned())
 }
 
-/// The edit carries no encryption info of its own here, so it is only
-/// admitted where the room is known to be unencrypted (`accept_event`).
 fn cards_of(original: Value, edit: Option<Value>, info: Option<EncryptionInfo>) -> Option<Loaded> {
     if original["content"]["msgtype"] != ::hagency::agent_run_controls::MSGTYPE {
         return None;
     }
     let card = original["event_id"].as_str()?.to_owned();
-    let edit_id = edit.as_ref().and_then(|e| e["event_id"].as_str()).unwrap_or_default().to_owned();
-    let mut events = vec![(original, info)];
-    events.extend(edit.map(|e| (e, None)));
-    Some(Loaded { key: (card, edit_id), events })
+    Some(Loaded { card, original: (original, info), edit })
 }
 
-/// The events of the cards not yet handed over in `generation`, marked seen.
-fn unseen(generation: u64, cards: Vec<Loaded>) -> Vec<Admit> {
-    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    if seen.len() > MAX_SEEN {
-        seen.clear();
+/// The cards not handed over yet in `generation`, now marked as being admitted.
+fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
+    let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    if handed.len() > MAX_HANDED {
+        handed.retain(|_, state| matches!(state, Handed::Admitting(_)));
     }
-    cards.into_iter()
-        .filter(|c| seen.insert((generation, c.key.0.clone(), c.key.1.clone())))
-        .flat_map(|c| c.events)
-        .collect()
+    cards.into_iter().filter(|c| {
+        let state = handed.entry(c.key(generation)).or_insert(Handed::Failed(0));
+        match *state {
+            Handed::Failed(n) if n < MAX_TRIES => { *state = Handed::Admitting(n); true }
+            _ => false,
+        }
+    }).collect()
+}
+
+/// Marks `card` handed over only once the store holds it with its latest
+/// edit; otherwise a later timeline update tries it again (`MAX_TRIES`).
+fn settle(generation: u64, room: &str, card: &Loaded) {
+    let stored = super::run_controls::stored_revision(room, &card.card).is_some_and(|r| r >= card.revision());
+    let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    let state = handed.entry(card.key(generation)).or_insert(Handed::Failed(0));
+    *state = match *state {
+        _ if stored => Handed::Stored,
+        Handed::Admitting(n) | Handed::Failed(n) => Handed::Failed(n.saturating_add(1)),
+        Handed::Stored => Handed::Failed(1),
+    };
+}
+
+/// The edit to admit: as the event cache has it, with its own encryption
+/// info (the timeline item keeps none for its edit), else the timeline's
+/// JSON without it, which only a known-unencrypted room admits.
+fn edit_to_admit(card: &Loaded, fetched: Option<Admit>) -> Option<Admit> {
+    let id = card.edit_id();
+    fetched.filter(|(v, _)| !id.is_empty() && v["event_id"] == id)
+        .or_else(|| card.edit.clone().map(|e| (e, None)))
+}
+
+async fn fetch_edit(room: &Room, card: &Loaded) -> Option<Admit> {
+    let id = OwnedEventId::try_from(card.edit_id()).ok()?;
+    // A failed lookup falls back to the timeline's JSON; a card left unstored
+    // is retried on the next timeline update (`settle`).
+    let event = room.load_or_fetch_event(&id, None).await.ok()?;
+    Some((json(event.raw())?, event.encryption_info().map(|info| (**info).clone())))
 }
 
 /// Admits the run cards among `items` (a room timeline's loaded items).
 pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
     let cards = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
     let generation = super::pending_questions::generation();
-    let events = unseen(generation, cards);
-    if events.is_empty() {
+    let cards = claim(generation, cards);
+    if cards.is_empty() {
         return;
     }
     let room = room.clone();
-    crate::sliding_sync::spawn_async_task(async move {
-        if super::pending_questions::admit_loaded(generation, &room, events).await {
+    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(async move {
+        let mut changed = false;
+        for card in &cards {
+            let mut events = vec![card.original.clone()];
+            if card.edit.is_some() {
+                events.extend(edit_to_admit(card, fetch_edit(&room, card).await));
+            }
+            changed |= super::pending_questions::admit_loaded(generation, &room, events).await;
+            settle(generation, room.room_id().as_str(), card);
+        }
+        if changed {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
-    });
+    }));
 }
 
 #[cfg(test)]
