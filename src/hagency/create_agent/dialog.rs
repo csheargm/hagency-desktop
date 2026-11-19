@@ -1,7 +1,7 @@
 //! The Create agent dialog widget. Opening it checks which local harnesses
 //! answer with models; Create runs `quick_setup::create_spec` (one-click
 //! defaults plus Model and Thinking) and opens the Agent's private chat.
-use super::{DialogState, default_name, harness_label, parse_models};
+use super::{DialogState, default_name, harness_label, name_stem, parse_models};
 use crate::hagency::{backend::Service, quick_setup};
 use crate::sliding_sync::{current_user_id, spawn_async_task};
 use ::hagency::native_owner::ProviderAction;
@@ -100,6 +100,8 @@ pub struct CreateAgentDialog {
     #[rust] work: Option<work_flow::WorkPlan>,
     /// How many rooms the activity-room list shows; refreshed when it changes.
     #[rust] work_rooms_shown: usize,
+    /// The owner part of the suggested name, fixed for one opening.
+    #[rust] stem: String,
 }
 impl Widget for CreateAgentDialog {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -148,7 +150,9 @@ impl CreateAgentDialog {
     fn open(&mut self, cx: &mut Cx) {
         self.request = next_request();
         self.busy = false;
-        self.state = DialogState::new(|runtime| default_name(&localpart(), runtime));
+        self.stem = owner_stem(cx);
+        let stem = self.stem.clone();
+        self.state = DialogState::new(|runtime| default_name(&stem, runtime));
         self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
         self.view.drop_down(cx, ids!(thinking)).set_selected_item(cx, self.state.thinking);
         self.view.label(cx, ids!(status)).set_text(cx, "");
@@ -186,9 +190,9 @@ impl CreateAgentDialog {
         self.state.harness = index;
         self.state.model = 0;
         if let (Some(before), Some(after)) = (before, self.state.runtime())
-            && self.state.name == default_name(&localpart(), &before)
+            && self.state.name == default_name(&self.stem, &before)
         {
-            self.state.name = default_name(&localpart(), &after);
+            self.state.name = default_name(&self.stem, &after);
             self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
         }
         self.render(cx);
@@ -231,8 +235,14 @@ impl CreateAgentDialog {
     }
 }
 
-fn localpart() -> String {
-    current_user_id().map(|id| id.localpart().to_owned()).unwrap_or_else(|| "my".into())
+/// The display name's slug when the profile cache knows it, else the localpart.
+fn owner_stem(cx: &mut Cx) -> String {
+    let Some(id) = current_user_id() else { return "my".into() };
+    let display = match crate::profile::user_profile_cache::get_user_display_name_for_room(cx, id.clone(), None, true) {
+        crate::profile::user_profile_cache::CachedName::FoundInProfile(name) | crate::profile::user_profile_cache::CachedName::FoundInRoom(name) => name,
+        crate::profile::user_profile_cache::CachedName::NotFound => None,
+    };
+    name_stem(display.as_deref(), id.localpart())
 }
 
 impl CreateAgentDialogRef {
