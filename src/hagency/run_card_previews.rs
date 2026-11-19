@@ -54,7 +54,7 @@ mod tests {
         let msgtype = serde_json::from_value::<matrix_sdk::ruma::events::room::message::RoomMessageEventContent>(content.clone())
             .unwrap().msgtype;
         let sender = matrix_sdk::ruma::UserId::parse(sender).unwrap();
-        crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude").format_with("anna-claude", true)
+        crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: None }).format_with("anna-claude", true)
     }
 
     /// Live, Nov 19 03:23: "anna-claude: Agent run" stayed in the rooms list

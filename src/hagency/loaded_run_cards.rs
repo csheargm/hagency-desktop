@@ -20,6 +20,7 @@ type Admit = (Value, Option<EncryptionInfo>);
 type Key = (u64, String, String);
 
 /// A loaded run card: its own event, and its latest edit as the timeline has it.
+#[derive(Clone)]
 struct Loaded {
     card: String,
     original: Admit,
@@ -189,14 +190,14 @@ fn latest_of(event: Value, info: Option<EncryptionInfo>) -> Option<Latest> {
 }
 
 /// The card to admit for `latest`, its own event as the event cache has it.
-async fn loaded_latest(room: &Room, latest: Latest) -> Option<Loaded> {
+async fn loaded_latest(room: &Room, latest: &Latest) -> Option<Loaded> {
     let (card, edit) = match latest {
-        Latest::Card(card) => return Some(card),
+        Latest::Card(card) => return Some(card.clone()),
         Latest::EditOf { card, edit } => (card, edit),
     };
     let event = room.load_or_fetch_event(&OwnedEventId::try_from(card.as_str()).ok()?, None).await.ok()?;
     let info = event.encryption_info().map(|info| (**info).clone());
-    cards_of(json(event.raw())?, Some(edit), info).filter(|loaded| loaded.card == card)
+    cards_of(json(event.raw())?, Some(edit.clone()), info).filter(|loaded| &loaded.card == card)
 }
 
 /// On screen Nov 19 03:39: rooms not opened since start-up kept "<agent>:
@@ -217,7 +218,8 @@ pub fn admit_latest(room: &Room) {
     }
     let room = room.clone();
     crate::sliding_sync::spawn_async_task(super::run_controls::as_history(async move {
-        let Some(card) = loaded_latest(&room, latest).await else {
+        // Each fetch waits for an admission slot; a failed one is tried again after a pause.
+        let Some(card) = super::admission_queue::with_backoff(&TRIES_AFTER, || loaded_latest(&room, &latest)).await else {
             // Not fetched (or not a card): a later preview update tries again (`MAX_TRIES`).
             return settle_key(key, false);
         };
@@ -254,22 +256,28 @@ impl Drop for Unsettled {
     }
 }
 
-/// Admits the unsettled cards, trying the ones not stored again after a pause.
+/// One try at the unsettled cards, each edit fetched first; whether any changed.
+async fn admit_once(room: &Room, unsettled: &Unsettled) -> bool {
+    let mut changed = false;
+    for card in &unsettled.cards {
+        let mut events = vec![card.original.clone()];
+        if card.edit.is_some() {
+            events.extend(edit_to_admit(card, fetch_edit(room, card).await));
+        }
+        changed |= super::pending_questions::admit_loaded(unsettled.generation, room, events).await;
+    }
+    changed
+}
+
+/// Admits the unsettled cards (one admission slot per try, `admission_queue`),
+/// trying the ones not stored again after a pause.
 async fn admit_with_retries(room: Room, mut unsettled: Unsettled) {
     for pause in TRIES_AFTER {
         tokio::time::sleep(pause).await;
         if super::pending_questions::generation() != unsettled.generation {
             return;
         }
-        let mut changed = false;
-        for card in &unsettled.cards {
-            let mut events = vec![card.original.clone()];
-            if card.edit.is_some() {
-                events.extend(edit_to_admit(card, fetch_edit(&room, card).await));
-            }
-            changed |= super::pending_questions::admit_loaded(unsettled.generation, &room, events).await;
-        }
-        if changed {
+        if super::admission_queue::limited(admit_once(&room, &unsettled)).await {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
         let (done, left): (Vec<_>, Vec<_>) = std::mem::take(&mut unsettled.cards).into_iter()

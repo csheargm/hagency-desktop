@@ -7,17 +7,17 @@
 use std::borrow::Cow;
 use matrix_sdk::ruma::{events::{room::message::MessageType, AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent}, serde::Raw, UserId};
 use matrix_sdk_ui::timeline::{MsgLikeKind, TimelineItemContent};
-use crate::{event_preview::{text_preview_of_message, text_preview_of_timeline_item}, utils};
+use crate::{event_preview::{CardScope, text_preview_of_message, text_preview_of_timeline_item}, utils};
 
 /// Longest preview kept, in characters, before an ellipsis.
 const MAX_PREVIEW_CHARS: usize = 120;
 
 /// The HTML preview (`<b>sender</b>: text`) of a latest reply with `msgtype`.
-pub fn preview_of_message(msgtype: &MessageType, sender_id: &UserId, sender_name: &str) -> String {
+pub fn preview_of_message(msgtype: &MessageType, sender_id: &UserId, sender_name: &str, scope: CardScope<'_>) -> String {
     match escaped_plain_line(msgtype) {
         Some(line) => format!("<b>{}</b>: {}", htmlize::escape_text(sender_name), line),
         None => {
-            let html = text_preview_of_message(msgtype, sender_id, sender_name).format_with(sender_name, true);
+            let html = text_preview_of_message(msgtype, sender_id, sender_name, scope).format_with(sender_name, true);
             match utils::replace_linebreaks_separators(&html, true) {
                 Cow::Borrowed(_) => html,
                 Cow::Owned(replaced) => replaced,
@@ -73,7 +73,7 @@ pub fn reply_quote_line(msgtype: &MessageType, sender_id: &UserId) -> Option<Str
 
 /// The rooms-list preview of a room's latest event: the HTML text shown with
 /// the sender, and the sender-less body used by the direct-chat list.
-pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, sender_name: &str) -> (String, Option<String>) {
+pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, sender_name: &str, scope: CardScope<'_>) -> (String, Option<String>) {
     let line = match content {
         TimelineItemContent::MsgLike(msg_like) => match &msg_like.kind {
             MsgLikeKind::Message(msg) => escaped_plain_line(msg.msgtype()),
@@ -84,13 +84,13 @@ pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, s
     if let Some(line) = line {
         return (format!("<b>{}</b>: {}", htmlize::escape_text(sender_name), line), Some(line));
     }
-    let preview = text_preview_of_timeline_item(content, sender_id, sender_name);
+    let preview = text_preview_of_timeline_item(content, sender_id, sender_name, scope);
     let direct = preview.direct_message_body().map(str::to_owned);
     (preview.format_with(sender_name, true), direct)
 }
 
 /// The preview of a raw latest-reply event, if it is a room message.
-pub fn preview_of_raw_event(raw: &Raw<AnySyncTimelineEvent>, sender_name: &str) -> Option<String> {
+pub fn preview_of_raw_event(raw: &Raw<AnySyncTimelineEvent>, sender_name: &str, scope: CardScope<'_>) -> Option<String> {
     // The raw content still has the proposal key that a parsed notice drops.
     if let Ok(Some(content)) = raw.get_field::<serde_json::Value>("content")
         && let Some(line) = content.as_object().and_then(crate::event_preview::proposal_preview)
@@ -99,7 +99,7 @@ pub fn preview_of_raw_event(raw: &Raw<AnySyncTimelineEvent>, sender_name: &str) 
     }
     match raw.deserialize().ok()? {
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(ev))) =>
-            Some(preview_of_message(&ev.content.msgtype, &ev.sender, sender_name)),
+            Some(preview_of_message(&ev.content.msgtype, &ev.sender, sender_name, scope)),
         _ => None,
     }
 }
@@ -162,12 +162,15 @@ fn truncate(line: &str) -> String {
 mod tests {
     use super::*;
     use matrix_sdk::ruma::user_id;
+    fn scope() -> CardScope<'static> {
+        CardScope { room: matrix_sdk::ruma::room_id!("!r:s"), event: None }
+    }
 
     #[test]
     fn a_bullet_list_reply_previews_its_first_item_not_a_lone_bullet() {
         let body = "- **Checked** the `build` config\n- Fixed [two tests](https://x.test)\n";
         let msg = MessageType::text_markdown(body);
-        let preview = preview_of_message(&msg, user_id!("@ann1-claude:s"), "ann1-claude");
+        let preview = preview_of_message(&msg, user_id!("@ann1-claude:s"), "ann1-claude", scope());
         assert_eq!(preview, "<b>ann1-claude</b>: Checked the build config");
     }
 
@@ -208,7 +211,7 @@ mod tests {
     #[test]
     fn plain_text_is_escaped_and_non_text_messages_keep_the_old_preview() {
         let msg = MessageType::text_plain("a <b> & c");
-        assert_eq!(preview_of_message(&msg, user_id!("@a:s"), "A"), "<b>A</b>: a &lt;b&gt; &amp; c");
+        assert_eq!(preview_of_message(&msg, user_id!("@a:s"), "A", scope()), "<b>A</b>: a &lt;b&gt; &amp; c");
     }
 
     #[test]

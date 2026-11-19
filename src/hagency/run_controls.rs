@@ -291,11 +291,14 @@ fn runs_for(all: &[Entry], room: &RoomId, event: &str, include_thread: bool) -> 
     entries
 }
 /// The admitted card `sender` posted as run `content` (a run card's message
-/// data): what a preview may show. A forged or unadmitted card has none.
-pub fn admitted_card(sender: &str, content: &serde_json::Map<String, Value>) -> Option<Card> {
+/// data) in `room`, and as card event `event` when the caller knows it: what a
+/// preview may show. A forged, unadmitted or replayed card (its run id reused
+/// in another room or event) has none.
+pub fn admitted_card(sender: &str, content: &serde_json::Map<String, Value>, room: &str, event: Option<&str>) -> Option<Card> {
     let id = content.get(::hagency::agent_run_controls::MSGTYPE)?.get("id")?.as_str()?;
     STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
-        .find(|e| e.agent == sender && e.card.id == id).map(|e| e.card.clone())
+        .find(|e| e.agent == sender && e.card.id == id && e.card.room_id == room && event.is_none_or(|ev| e.key == ev))
+        .map(|e| e.card.clone())
 }
 /// Where a reply to run card `event` jumps: the request its admitted card is
 /// drawn on. None for an unadmitted card (its own row is hidden).

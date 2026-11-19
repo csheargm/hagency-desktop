@@ -20,17 +20,20 @@ mod service_invite;
 #[cfg(test)]
 mod usage_preview_tests {
     use super::*;
+    fn scope() -> CardScope<'static> {
+        CardScope { room: matrix_sdk::ruma::room_id!("!r:test"), event: None }
+    }
     #[test]
     fn thread_and_room_previews_hide_only_verified_success_suffix() {
         let body="<Answer>\n\n✅ 本轮处理已结束 · 已运行 3 秒\n本次用量 50 Token（输入 30 / 输出 20；缓存输入 10，推理输出 5）· 工具请求 2 次，已返回 1 次";
         let message=MessageType::text_plain(body);
         let sender=matrix_sdk::ruma::user_id!("@_hagency_agt_01abc:test");
-        let preview=text_preview_of_message(&message,sender,"Agent").format_with("Agent",true);
+        let preview=text_preview_of_message(&message,sender,"Agent",scope()).format_with("Agent",true);
         assert!(preview.contains("&lt;Answer&gt;"));assert!(!preview.contains("Token"));
-        let human=text_preview_of_message(&message,matrix_sdk::ruma::user_id!("@alice:test"),"Alice").format_with("Alice",true);
+        let human=text_preview_of_message(&message,matrix_sdk::ruma::user_id!("@alice:test"),"Alice",scope()).format_with("Alice",true);
         assert!(human.contains("Token"));
         let raw=Raw::<AnySyncTimelineEvent>::from_json(serde_json::value::to_raw_value(&serde_json::json!({"event_id":"$reply:test","sender":sender,"type":"m.room.message","origin_server_ts":123,"content":{"msgtype":"m.text","body":body}})).unwrap());
-        assert!(!text_preview_of_raw_timeline_event(&raw,"Agent").unwrap().format_with("Agent",true).contains("Token"));
+        assert!(!text_preview_of_raw_timeline_event(&raw,"Agent",scope()).unwrap().format_with("Agent",true).contains("Token"));
         // Presentation does not change the SDK message used for copy/forward.
         assert_eq!(message.body(),body);
     }
@@ -38,13 +41,22 @@ mod usage_preview_tests {
     fn chinese_agent_markdown_preview_matches_answer_and_human_plain_stays_literal() {
         let body = "**时间点很重要：**截至\n\n**投票仍在进行**";
         let rich = MessageType::text_markdown(body);
-        let preview = text_preview_of_message(&rich, matrix_sdk::ruma::user_id!("@_hagency_agt_chinese:test"), "Agent").format_with("Agent", true);
+        let preview = text_preview_of_message(&rich, matrix_sdk::ruma::user_id!("@_hagency_agt_chinese:test"), "Agent", scope()).format_with("Agent", true);
         assert!(preview.contains("<strong>时间点很重要：</strong>截至"));
         let plain = MessageType::text_plain(body);
-        let human = text_preview_of_message(&plain, matrix_sdk::ruma::user_id!("@alice:test"), "Alice").format_with("Alice", true);
+        let human = text_preview_of_message(&plain, matrix_sdk::ruma::user_id!("@alice:test"), "Alice", scope()).format_with("Alice", true);
         assert!(human.contains("**时间点很重要：**截至"));
         assert_eq!(rich.body(), body);
     }
+}
+
+/// Where a preview is drawn: its room, and the previewed event's own id when
+/// the caller knows it (a reply quote). A run card's preview shows its answer
+/// only if it is the card admitted there (`run_controls::admitted_card`).
+#[derive(Clone, Copy)]
+pub(crate) struct CardScope<'a> {
+    pub room: &'a matrix_sdk::ruma::RoomId,
+    pub event: Option<&'a matrix_sdk::ruma::EventId>,
 }
 
 /// What should be displayed before the text preview of an event.
@@ -105,11 +117,12 @@ pub fn text_preview_of_timeline_item(
     content: &TimelineItemContent,
     sender_user_id: &UserId,
     sender_username: &str,
+    scope: CardScope<'_>,
 ) -> TextPreview {
     match content {
         TimelineItemContent::MsgLike(msg_like_content) => {
             match &msg_like_content.kind {
-                MsgLikeKind::Message(msg) => text_preview_of_message(msg.msgtype(), sender_user_id, sender_username),
+                MsgLikeKind::Message(msg) => text_preview_of_message(msg.msgtype(), sender_user_id, sender_username, scope),
                 MsgLikeKind::Sticker(sticker) => TextPreview::from((
                     format!("[Sticker]: <i>{}</i>", htmlize::escape_text(&sticker.content().body)),
                     BeforeText::UsernameWithColon,
@@ -256,6 +269,7 @@ pub(crate) fn text_preview_of_message(
     msg: &MessageType,
     sender_user_id: &UserId,
     sender_username: &str,
+    scope: CardScope<'_>,
 ) -> TextPreview {
     // A memory or skill proposal is a card in the room; its fallback body names
     // a raw Agent id, so previews show one plain line instead.
@@ -365,7 +379,7 @@ pub(crate) fn text_preview_of_message(
             // An Agent run status shows its admitted card's answer or state (same words
             // as the run card), escaped; anything else about it is untrusted (GPT review).
             if msg.msgtype() == ::hagency::agent_run_controls::MSGTYPE {
-                return TextPreview::from((htmlize::escape_text(&run_card_preview(sender_user_id, &msg.data())).into_owned(),
+                return TextPreview::from((htmlize::escape_text(&run_card_preview(sender_user_id, &msg.data(), scope)).into_owned(),
                     BeforeText::UsernameWithColon));
             }
             // Never Rust debug output: an unknown msgtype shows its own `body` text.
@@ -382,8 +396,8 @@ pub(crate) fn text_preview_of_message(
 
 /// The plain text a preview shows for a run card: its admitted card's answer
 /// or state, else a neutral placeholder (a forged or not yet admitted card).
-fn run_card_preview(sender: &UserId, data: &serde_json::Map<String, serde_json::Value>) -> String {
-    crate::hagency::run_controls::admitted_card(sender.as_str(), data)
+fn run_card_preview(sender: &UserId, data: &serde_json::Map<String, serde_json::Value>, scope: CardScope<'_>) -> String {
+    crate::hagency::run_controls::admitted_card(sender.as_str(), data, scope.room.as_str(), scope.event.map(|e| e.as_str()))
         .and_then(|card| serde_json::to_value(card).ok())
         .and_then(|card| crate::home::agent_run_card::status_of_message(
             serde_json::json!({::hagency::agent_run_controls::MSGTYPE: card}).as_object()?))
@@ -394,6 +408,7 @@ fn run_card_preview(sender: &UserId, data: &serde_json::Map<String, serde_json::
 pub fn text_preview_of_raw_timeline_event(
     raw_event: &Raw<AnySyncTimelineEvent>,
     sender_username: &str,
+    scope: CardScope<'_>,
 ) -> Option<TextPreview> {
     match raw_event.deserialize().ok()? {
         AnySyncTimelineEvent::MessageLike(
@@ -404,6 +419,7 @@ pub fn text_preview_of_raw_timeline_event(
             &ev.content.msgtype,
             &ev.sender,
             sender_username,
+            scope,
         )),
         AnySyncTimelineEvent::MessageLike(
             AnySyncMessageLikeEvent::RoomMessage(

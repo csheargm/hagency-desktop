@@ -27,7 +27,10 @@ pub mod owner_inbox_model;
 pub mod pending_questions;
 pub mod run_controls;
 pub mod loaded_run_cards;
+mod admission_queue;
 mod run_card_previews;
+#[cfg(test)]
+mod run_card_scope_tests;
 pub mod kill_switch;
 pub mod room_autonomy;
 
