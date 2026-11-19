@@ -3643,7 +3643,14 @@ impl RoomScreen {
                     // drawn on, and nowhere for an unadmitted (possibly forged) one.
                     let run_target = self.tl_state.as_ref().and_then(|tl| replied_run_card_target(tl, details.item_id, related_event_id));
                     let related_event_id = match &run_target {
-                        Some(None) => continue,
+                        Some(None) => {
+                            // A quote whose details failed cannot be placed: fetch them
+                            // again so a later click can (GPT P2, Nov 19).
+                            if let Some(tl) = self.tl_state.as_ref() {
+                                retry_failed_quote(tl, details.item_id);
+                            }
+                            continue
+                        }
                         Some(Some(request)) => request,
                         None => related_event_id,
                     };
@@ -6696,6 +6703,11 @@ fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineIte
 // TODO(R4): move with the Agent run timeline helpers when room_screen splits.
 fn replied_run_card_target(tl: &TimelineUiState, item_id: usize, related: &OwnedEventId) -> Option<Option<OwnedEventId>> {
     let reply = tl.items.get(item_id)?.as_event()?.content().as_msglike()?.in_reply_to.as_ref()?;
+    // The saved row index can be stale (the timeline shifted): a row whose quote is
+    // not `related` cannot place it, so the click does nothing (GPT P2, Nov 19).
+    if !quote_is_for(&reply.event_id, related) {
+        return Some(None);
+    }
     let is_run = |content: &TimelineItemContent| matches!(content, TimelineItemContent::MsgLike(m) if is_agent_run_status(&m.kind));
     let quoted_is_run = match &reply.event {
         TimelineDetails::Ready(replied) => Some(is_run(&replied.content)),
@@ -6705,6 +6717,21 @@ fn replied_run_card_target(tl: &TimelineUiState, item_id: usize, related: &Owned
     let admitted = crate::hagency::run_controls::jump_target(tl.kind.room_id(), related.as_str())
         .and_then(|id| OwnedEventId::try_from(id).ok());
     quote_jump(quoted_is_run, admitted)
+}
+
+/// Whether a row's quote (`reply_target`) is the one clicked (`related`).
+fn quote_is_for(reply_target: &EventId, related: &EventId) -> bool {
+    reply_target == related
+}
+
+/// Fetches again the quote details of the reply at `item_id` when they failed.
+fn retry_failed_quote(tl: &TimelineUiState, item_id: usize) {
+    let Some(event) = tl.items.get(item_id).and_then(|i| i.as_event()) else { return };
+    let failed = event.content().as_msglike().and_then(|m| m.in_reply_to.as_ref())
+        .is_some_and(|r| matches!(r.event, TimelineDetails::Error(_)));
+    if let (true, Some(event_id)) = (failed, event.event_id()) {
+        submit_async_request(MatrixRequest::FetchDetailsForEvent { timeline_kind: tl.kind.clone(), event_id: event_id.to_owned() });
+    }
 }
 
 /// Where a reply quote goes: an admitted run card's request; nowhere for any
@@ -9243,7 +9270,7 @@ mod retention_ui_tests {
 
 #[cfg(test)]
 mod quote_jump_tests {
-    use super::quote_jump;
+    use super::{quote_is_for, quote_jump};
     use matrix_sdk::ruma::OwnedEventId;
 
     /// GPT P2 (Nov 19): a quote whose target is loading or failed never jumps
@@ -9256,5 +9283,15 @@ mod quote_jump_tests {
         assert_eq!(quote_jump(Some(true), None), Some(None), "unadmitted run card: nowhere");
         assert_eq!(quote_jump(Some(true), Some(request.clone())), Some(Some(request)));
         assert_eq!(quote_jump(Some(false), None), None, "an ordinary message: jump to it");
+    }
+
+    /// GPT P2 (Nov 19): a stale row index can point at another reply; its
+    /// quote is not the clicked one, so the click cannot be placed from it.
+    #[test]
+    fn a_stale_row_whose_quote_is_another_event_is_not_used() {
+        let clicked: OwnedEventId = "$clicked:test".try_into().unwrap();
+        let other: OwnedEventId = "$other:test".try_into().unwrap();
+        assert!(quote_is_for(&clicked, &clicked));
+        assert!(!quote_is_for(&other, &clicked));
     }
 }
