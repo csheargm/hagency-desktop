@@ -564,10 +564,10 @@ pub enum RoomPreviewResponseMode {
     RoomPreviewCache,
 }
 
-/// The timeline event filter: the SDK's default, web mini-app cards, plus (with the `agent_chat`
+/// The timeline event filter: the SDK's default, web mini-app cards, Agent run cards, plus (with the `agent_chat`
 /// feature) the `com.agentchat.approval.*` msgtypes, which the default filter
 /// would drop as unknown custom message types.
-fn robrix_timeline_event_filter(
+pub(crate) fn robrix_timeline_event_filter(
     event: &AnySyncTimelineEvent,
     rules: &matrix_sdk::ruma::room_version_rules::RoomVersionRules,
 ) -> bool {
@@ -575,7 +575,8 @@ fn robrix_timeline_event_filter(
     if crate::agent_chat::is_approval_timeline_event(event) {
         return true;
     }
-    crate::mini_app::is_timeline_event(event) || crate::forwarding::is_timeline_event(event) || default_event_filter(event, rules)
+    crate::mini_app::is_timeline_event(event) || crate::forwarding::is_timeline_event(event)
+        || crate::hagency::loaded_run_cards::is_timeline_event(event) || default_event_filter(event, rules)
 }
 
 /// The set of requests for async work that can be made to the worker thread.
