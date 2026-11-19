@@ -1744,7 +1744,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                     // A repo step's owner card answered (e2e 8, Nov 18; see `repo_cards`).
                     answer = repo_cards::next(&mut repo_running), if !repo_running.cards.is_empty() && !controls.holds_answers() => {
                         if let Some(answer) = answer {
-                            repo_cards::decided(ledger, &repo_turn, answer, &mut repo_running);
+                            repo_cards::decided(ledger, &repo_turn, answer, &mut repo_running).await;
                         }
                         continue;
                     }
