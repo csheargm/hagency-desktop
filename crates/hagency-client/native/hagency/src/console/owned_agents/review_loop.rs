@@ -5,7 +5,7 @@
 //! merge gate stay the authority.
 use hagency_agent_local::merge_policy::github::{commit_sha, GhCli};
 use hagency_agent_local::merge_policy::gate::{GhPr, Kind};
-use hagency_agent_local::merge_policy::review_loop::{merge_readiness, HOLD_STEP};
+use hagency_agent_local::merge_policy::review_loop::{merge_readiness_counted, HOLD_STEP};
 use hagency_agent_local::merge_policy::step_resend::StepDue;
 use hagency_agent_local::merge_policy::{reason_kind, Decision, CI_PENDING};
 use hagency_agent_local::{Error, Ledger, Result};
@@ -155,11 +155,12 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         let command = GhPr { dir: std::env::temp_dir(), number: ask.number, repo: Some(ask.repo.clone()), head: None, kind: Kind::Merge, body: String::new() };
         // Read as the Agent, the same login its own gh uses (GPT review, Nov 16).
         let token = crate::github_access::TokenStore::current().runtime_environment(agent).unwrap_or_default().agent_github_token();
-        let judged = runtime.block_on(merge_readiness(ledger, &command, (agent, &ask.room), &GhCli { token }));
-        reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision)| (view.head_sha.as_str(), decision)));
-        if let Some((view, _)) = &judged {
-            // Unverified: only tells "no review yet" (wait) from "a person must decide".
-            reply["readiness"]["approvers"] = ledger.agent_reviewers_count(&view.url, &view.head_sha, &ask.room)?.into();
+        let judged = runtime.block_on(merge_readiness_counted(ledger, &command, (agent, &ask.room), &GhCli { token }));
+        reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision, _)| (view.head_sha.as_str(), decision)));
+        // The approvals the judge itself counted (never the PR's author Agents or
+        // the merger, round-2 GPT review): tells "no review yet" from "a person must decide".
+        if let Some((_, _, counted)) = &judged {
+            reply["readiness"]["approvers"] = (*counted).into();
         }
     }
     Ok(reply)

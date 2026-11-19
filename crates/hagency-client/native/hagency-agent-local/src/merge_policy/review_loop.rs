@@ -35,10 +35,6 @@ impl Ledger {
     pub fn claim_loop_step(&mut self, agent: &str, step: &str, pr: &str, head: &str) -> Result<bool> {
         Ok(self.db.execute("INSERT OR IGNORE INTO review_loop_sent VALUES (?,?,?,?)", (agent, step, pr, head))? == 1)
     }
-    /// How many of this device's Agents approved `pr` at `head` in `room` (unverified).
-    pub fn agent_reviewers_count(&self, pr: &str, head: &str, room: &str) -> Result<usize> {
-        Ok(self.agent_reviewers_in(pr, head, Some(room))?.len())
-    }
     pub fn loop_step_taken(&self, agent: &str, step: &str, pr: &str, head: &str) -> Result<bool> {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?)", (agent, step, pr, head), |r| r.get(0))?)
     }
@@ -69,11 +65,18 @@ pub(crate) async fn approvers(command: &GhPr, repo: &str, view: &PrView, trusted
 /// `room` count, as for the gate's own answer (integration GPT review: an
 /// approval from another room passed here, then the gate refused the merge).
 /// `None` when GitHub or a policy cannot be read (the loop then waits and the owner decides).
-pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(PrView, Decision)> {
+pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, who: (&str, &str), source: &impl PrSource) -> Option<(PrView, Decision)> {
+    merge_readiness_counted(ledger, command, who, source).await.map(|(view, decision, _)| (view, decision))
+}
+
+/// [`merge_readiness`], with how many approvals the judge counted (never
+/// the pull request's author Agents or the merger: round-2 GPT review, a
+/// self-verdict made readiness say 1 while the judge saw 0).
+pub async fn merge_readiness_counted(ledger: &mut Ledger, command: &GhPr, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(PrView, Decision, usize)> {
     let view = source.pull_request(command).await?;
     let repo = repo_of_url(&view.url, command.number)?.to_owned();
-    let decision = judge(ledger, command, &repo, &view, (merger, room), source).await?;
-    Some((view, decision))
+    let (decision, counted) = judge_counted(ledger, command, &repo, &view, (merger, room), source).await?;
+    Some((view, decision, counted))
 }
 
 /// This device's Agents that approved `view`'s head, counted for a merge from
@@ -100,16 +103,23 @@ impl Ledger {
 /// The merge decision for `view` under every policy that applies (the
 /// room's rules, required, and the owner's; each can only tighten).
 /// `room` is the merge's room: its rules judge, and only approvals given there count.
-pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, &str), source: &impl PrSource) -> Option<Decision> {
+pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, who: (&str, &str), source: &impl PrSource) -> Option<Decision> {
+    judge_counted(ledger, command, repo, view, who, source).await.map(|(decision, _)| decision)
+}
+
+/// [`judge`], with the number of approvals it counted ([`super::counted_approvals`]).
+async fn judge_counted(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(Decision, usize)> {
     let judged = super::work::judged(ledger, (merger, room), command, repo, view, source).await?;
-    if let Some(reason) = judged.author_reason {
-        return Some(Decision::NeedsHuman(reason));
-    }
     let local = local_approvers(ledger, repo, command.number, view, Some(room)).ok()?;
+    // Decided before the approvals: those of this device's Agents but the merger.
+    let early = super::counted_approvals(&local, merger).len();
+    if let Some(reason) = judged.author_reason {
+        return Some((Decision::NeedsHuman(reason), early));
+    }
     // The room's rules are required (ADR 0029).
     let room_rules = match &judged.room {
         super::room_rules::RoomRules::Rules(policy) => policy,
-        super::room_rules::RoomRules::Missing(reason) => return Some(Decision::NeedsHuman((*reason).to_owned())),
+        super::room_rules::RoomRules::Missing(reason) => return Some((Decision::NeedsHuman((*reason).to_owned()), early)),
     };
     // Without the owner's rules: another of this device's Agents than the
     // merger, local only. With them, the approvals the owner's rules count
@@ -122,16 +132,21 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
             (approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?, judged.excluded.clone())
         }
     };
+    let counted = super::counted_approvals(&approvers, &excluded).len();
     for policy in std::iter::once(room_rules).chain(judged.rules.iter()) {
         if let decision @ Decision::NeedsHuman(_) = evaluate(policy, &view.facts, &approvers, &excluded) {
-            return Some(decision);
+            return Some((decision, counted));
         }
     }
     // The room's autonomy level (ADR 0030): only an Autonomous, running room
     // delivers without a person, and only by an Agent that may work there.
     let delivered = ledger.loop_may_deliver(merger, room);
-    Some(delivered.map_or_else(|reason| Decision::NeedsHuman(reason.to_owned()), |()| Decision::Merge))
+    Some((delivered.map_or_else(|reason| Decision::NeedsHuman(reason.to_owned()), |()| Decision::Merge), counted))
 }
+
+#[cfg(test)]
+#[path = "review_loop/readiness_tests.rs"]
+mod readiness_tests;
 
 #[cfg(test)]
 pub(crate) mod tests;

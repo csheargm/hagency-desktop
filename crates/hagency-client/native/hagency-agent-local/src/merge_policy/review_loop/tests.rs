@@ -8,7 +8,7 @@ use crate::merge_policy::work::{OwnerRules, Role, MAX_WORK_LIMIT};
 use crate::merge_policy::{gate, ChangedFile, Check, PrFacts};
 use std::path::Path;
 
-const A: &str = "csheargm/hagency-demo-sandbox";
+pub(crate) const A: &str = "csheargm/hagency-demo-sandbox";
 const B: &str = "csheargm/other";
 const OWNER: &str = "@owner:example.org";
 const ROOM: &str = "!r:x";
@@ -39,10 +39,10 @@ impl PrSource for Src {
     }
 }
 
-fn rules(repo: &str, role: Role) -> OwnerRules {
+pub(crate) fn rules(repo: &str, role: Role) -> OwnerRules {
     OwnerRules { repo: repo.into(), role, room_id: ROOM.into(), trusted_authors: vec!["betty".into()], any_path: true, ..Default::default() }
 }
-fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
+pub(crate) fn anna(dir: &Path, work: Vec<OwnerRules>) -> Ledger {
     let mut ledger = ledger_with(dir, &["anna"]);
     ledger.allow_loop(OWNER, "anna", true);
     ledger.set_work(OWNER, "anna", work.clone()).unwrap();
@@ -218,11 +218,11 @@ async fn readiness_counts_only_approvals_given_in_the_watch_room() {
     let command = GhPr { dir: temp.path().into(), number: 7, repo: Some(A.into()), head: None, kind: gate::Kind::Merge, body: String::new() };
     let review = gate::auto_answer(&mut ledger, OWNER, &bash(&line("review", A), temp.path(), "anna"), "rv", 11, &src).await;
     ledger.settle_agent_review("rv", review == Some(true)).unwrap();
-    let (view, other) = merge_readiness(&mut ledger, &command, ("anna", "!elsewhere:x"), &src).await.unwrap();
+    let (_, other) = merge_readiness(&mut ledger, &command, ("anna", "!elsewhere:x"), &src).await.unwrap();
     assert!(matches!(other, Decision::NeedsHuman(_)), "another room's approval never counts");
-    assert_eq!(ledger.agent_reviewers_count(&view.url, HEAD, "!elsewhere:x").unwrap(), 0);
+    assert_eq!(merge_readiness_counted(&mut ledger, &command, ("anna", "!elsewhere:x"), &src).await.unwrap().2, 0);
     assert_eq!(merge_readiness(&mut ledger, &command, ("anna", "!r:x"), &src).await.unwrap().1, Decision::Merge);
-    assert_eq!(ledger.agent_reviewers_count(&view.url, HEAD, "!r:x").unwrap(), 1);
+    assert_eq!(merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &src).await.unwrap().2, 1);
 }
 
 #[tokio::test]

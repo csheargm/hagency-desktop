@@ -25,6 +25,9 @@ use crate::{key, Error, Ledger, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod merge_room;
+pub use merge_room::NOT_READ_MERGE_REASON;
+
 /// The room state event type of a room's autonomy level.
 pub const ROOM_AUTONOMY_STATE_TYPE: &str = "io.hagency.room_autonomy";
 /// The room state event type of one member's pause (state key: their Matrix ID).
@@ -235,22 +238,6 @@ impl Ledger {
             Ok(Some(false)) => Err(NOT_MAINTAINER_REASON),
             _ => Err(UNREAD_REASON),
         }
-    }
-    /// Whether a merge from `room` is refused outright: the room is a project
-    /// room ([`Ledger::project_room`]) and no fresh, readable snapshot says
-    /// this owner is its owner or a maintainer (fail closed, GPT review). A
-    /// room this device knows nothing project-like about (a private chat)
-    /// leaves it to the card.
-    pub fn merge_refused(&self, room: &str, now: i64) -> Result<bool> {
-        Ok(self.project_room(room)? && self.owner_maintainer_at(room, now)? != Some(true))
-    }
-    /// Whether this device's owner is the room's owner or a maintainer, by
-    /// the fresh, readable snapshot of `room` (`None`: none to go by).
-    pub fn owner_maintainer_at(&self, room: &str, now: i64) -> Result<Option<bool>> {
-        use rusqlite::OptionalExtension;
-        let row: Option<(i64, i64, i64)> = self.db.query_row("SELECT maintainer, unread, read_at FROM room_autonomy WHERE room=?", [room], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
-        let fresh = |read_at: i64| now.saturating_sub(read_at) <= ROOM_RULES_TTL_SECS && read_at <= now.saturating_add(ROOM_RULES_TTL_SECS);
-        Ok(row.filter(|(_, unread, read_at)| *unread == 0 && fresh(*read_at)).map(|(m, _, _)| m == 1))
     }
 }
 

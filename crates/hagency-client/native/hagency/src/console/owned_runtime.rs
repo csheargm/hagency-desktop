@@ -790,6 +790,10 @@ impl OwnedRuntime {
             thread: "runtime-profile-validation".into(),
         };
         local(ledger.register_binding(device.owner_mxid(), &scope))?;
+        // The merge gate knows the Agent's private chat only from the server's
+        // binding kind, never from membership (round-2 GPT review).
+        // TODO(R4): owned_runtime.rs is over budget; split start-up checks into owned_runtime/start.rs.
+        local(ledger.set_owner_direct(device.owner_mxid(), &scope, config.owner_direct))?;
         match local(ledger.model_profile(&scope))? {
             Some(p)
                 if p.model == config.profile.model

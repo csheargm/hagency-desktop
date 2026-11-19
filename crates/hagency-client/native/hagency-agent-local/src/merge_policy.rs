@@ -132,14 +132,20 @@ pub fn evaluate(policy: &MergePolicy, facts: &PrFacts, approvers: &[String], mer
     if let Some(reason) = file_reason(policy, facts).or_else(|| ci_reason(policy, facts)) {
         return Decision::NeedsHuman(reason);
     }
-    let mut others: Vec<&String> = approvers.iter().filter(|a| a.as_str() != merger).collect();
-    others.sort();
-    others.dedup();
+    let others = counted_approvals(approvers, merger);
     let required = policy.required_agent_approvals.max(MIN_AGENT_APPROVALS) as usize;
     if others.len() < required {
         return Decision::NeedsHuman(format!("needs {required} {APPROVALS_REASON}, has {}", others.len()));
     }
     Decision::Merge
+}
+
+/// The approvals that count toward a merge by `merger`: every distinct approver but the merger.
+pub(crate) fn counted_approvals<'a>(approvers: &'a [String], merger: &str) -> Vec<&'a String> {
+    let mut others: Vec<&String> = approvers.iter().filter(|a| a.as_str() != merger).collect();
+    others.sort();
+    others.dedup();
+    others
 }
 
 /// Why `facts` is not a low-risk change under `policy` (open, files inside

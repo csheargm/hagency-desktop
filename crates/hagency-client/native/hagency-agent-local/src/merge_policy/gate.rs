@@ -190,8 +190,10 @@ fn is_shell(program: &str) -> bool {
 }
 
 /// One shell line: a single command, or one in-workspace `cd <dir> &&` then one command.
+/// A newline is left to [`shell::parse`], the reader the review post uses
+/// too: text inside quotes (a multi-line verdict), refused outside them.
 fn shell_words(line: &str, cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
-    let always = SHELL_METACHARACTERS.iter().filter(|c| !CHAINING.contains(c)).any(|c| line.contains(*c));
+    let always = SHELL_METACHARACTERS.iter().filter(|c| !CHAINING.contains(c) && **c != '\n').any(|c| line.contains(*c));
     if always || chains_unquoted(line) {
         return None;
     }
@@ -278,10 +280,11 @@ pub(crate) fn repo_name(text: &str) -> Option<&str> {
 /// counts only after that call succeeds (an empty id never counts).
 pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, call: &str, now: i64, source: &impl PrSource) -> Option<bool> {
     let command = parse_command(proposal)?;
-    // Only Agents of the room's owner or a maintainer merge (ADR 0030): in a
-    // project room, anything but a fresh read saying this owner is one refuses
-    // the merge outright, card or not, in the background too (fail closed, GPT reviews).
-    if command.kind == Kind::Merge && ledger.merge_refused(&proposal.scope.room, super::room_rules::unix_now()).unwrap_or(true) {
+    // Only Agents of the room's owner or a maintainer merge (ADR 0030): a
+    // merge goes on only in a room freshly read as one, or in the Agent's own
+    // private chat with its owner; anywhere else it is refused outright, card
+    // or not, in the background too (fail closed, GPT reviews).
+    if command.kind == Kind::Merge && ledger.merge_refusal(&proposal.scope, super::room_rules::unix_now()).map_or(true, |r| r.is_some()) {
         return Some(false);
     }
     // A background call's launch result is not the command's outcome, so it

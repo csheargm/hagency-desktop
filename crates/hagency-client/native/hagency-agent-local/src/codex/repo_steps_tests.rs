@@ -240,13 +240,10 @@ mod room_repo_reads {
     }
 }
 
-
-/// Live PR #105 (Nov 18): bird-codex's verdict "… table-of-contents link; no
-/// issues found." carried a `;` inside its quoted body. The gate refused any
-/// `;` in the line, so push trust posted the verdict on GitHub and nothing
-/// recorded it: the loop held the PR. A quoted `;` or `|` is body text.
-#[tokio::test]
-async fn a_verdict_with_a_semicolon_in_its_quoted_body_is_recorded() {
+/// `command`, a verdict on PR #50 sent as a repo step by bird in the watch
+/// room, is judged by the gate and recorded once it ran; each of `chained`
+/// (the verdict plus a second command) is never the gate's.
+async fn verdict_recorded_and_chains_refused(command: &str, chained: &[String]) {
     let mut r = run_under(ToolPolicy::AskOwner);
     r.ledger.allow_loop(OWNER, "bird", true);
     let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: REPO.into(), room_id: ROOM.into(), event_id: Some("$r".into()), sender: Some("@admin:x".into()), policy: Some(crate::merge_policy::tests::POLICY.into()), unread: false };
@@ -255,18 +252,38 @@ async fn a_verdict_with_a_semicolon_in_its_quoted_body_is_recorded() {
     let workspace = r.root.to_string_lossy().into_owned();
     let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true };
     let mut running = Running::default();
-    let url = format!("https://github.com/{REPO}/pull/50");
-    let command = format!("gh pr review 50 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - Scoped README addition with a matching link; no issues found | ok.\"");
-    let p = super::proposal(&r.ledger, &turn, &command).unwrap();
+    let p = super::proposal(&r.ledger, &turn, command).unwrap();
     let key = running.key(turn.dispatch);
-    let step = gated_review(&mut r.ledger, &turn, &p, &command, &key, &Pr50 { opened_by: None }).await;
+    let step = gated_review(&mut r.ledger, &turn, &p, command, &key, &Pr50 { opened_by: None }).await;
     assert!(matches!(step, Some(TrustedStep::Command(_))), "the gate judges it: {step:?}");
     running.outcomes.lock().unwrap().push((key, true));
     running.settle(&mut r.ledger).unwrap();
-    assert_eq!(r.ledger.agent_reviewers_in(&url, H50, Some(ROOM)).unwrap(), ["bird"]);
-    // An unquoted `;` or `|` still chains a second command: never the gate's.
-    for chained in [format!("{command}; echo x"), format!("{command} | cat")] {
-        let p = super::proposal(&r.ledger, &turn, &chained).unwrap();
-        assert!(gated_review(&mut r.ledger, &turn, &p, &chained, &running.key("d"), &Pr50 { opened_by: None }).await.is_none(), "{chained}");
+    assert_eq!(r.ledger.agent_reviewers_in(&format!("https://github.com/{REPO}/pull/50"), H50, Some(ROOM)).unwrap(), ["bird"]);
+    for chained in chained {
+        let p = super::proposal(&r.ledger, &turn, chained).unwrap();
+        assert!(gated_review(&mut r.ledger, &turn, &p, chained, &running.key("d"), &Pr50 { opened_by: None }).await.is_none(), "{chained}");
     }
+}
+
+/// Live PR #105 (Nov 18): bird-codex's verdict "… table-of-contents link; no
+/// issues found." carried a `;` inside its quoted body. The gate refused any
+/// `;` in the line, so push trust posted the verdict on GitHub and nothing
+/// recorded it: the loop held the PR. A quoted `;` or `|` is body text; an
+/// unquoted one still chains a second command.
+#[tokio::test]
+async fn a_verdict_with_a_semicolon_in_its_quoted_body_is_recorded() {
+    let command = format!("gh pr review 50 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - Scoped README addition with a matching link; no issues found | ok.\"");
+    verdict_recorded_and_chains_refused(&command, &[format!("{command}; echo x"), format!("{command} | cat")]).await;
+}
+
+/// Round-2 GPT review: a verdict whose quoted body spans lines posts (the
+/// review post reader accepts it), so the gate must read and record it too;
+/// a newline outside the quotes starts a second command, refused by both.
+#[tokio::test]
+async fn a_multiline_quoted_verdict_is_recorded_and_an_unquoted_newline_is_refused() {
+    let command = format!("gh pr review 50 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50}\n\n- Scoped README addition\n- No issues found.\"");
+    let chained = format!("{command}\necho x");
+    assert!(crate::watch_trust::review_post::ReviewPost::parse(&command).is_some(), "the post reader accepts it");
+    assert!(crate::watch_trust::review_post::ReviewPost::parse(&chained).is_none(), "the post reader refuses it");
+    verdict_recorded_and_chains_refused(&command, &[chained]).await;
 }
