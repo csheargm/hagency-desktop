@@ -23,7 +23,7 @@ fn dev_room(dir: &std::path::Path) -> Ledger {
 }
 
 fn room_at(ledger: &mut Ledger, level: Option<Level>, paused: bool) {
-    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level, paused, unread: false, owner_maintainer: true, as_of: None };
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level, paused, unread: false, owner_maintainer: true, as_of: crate::room_autonomy::as_of::next_for_test() };
     ledger.set_room_autonomy(OWNER, &snapshot, crate::merge_policy::room_rules::unix_now()).unwrap();
 }
 
@@ -126,7 +126,7 @@ fn pausing_the_room_stops_a_push_at_the_last_check() {
     let push = super::tests::admitted_by(&mut ledger, owner, push);
     let still = ledger.push_trust_recheck(&push, fix_flow_tests::REPO);
     assert!(still(), "running: the push goes ahead");
-    let paused = crate::room_autonomy::AutonomySnapshot { room_id: fix_flow_tests::ROOM.into(), level: Some(crate::room_autonomy::Level::Autonomous), paused: true, unread: false, owner_maintainer: true, as_of: None };
+    let paused = crate::room_autonomy::AutonomySnapshot { room_id: fix_flow_tests::ROOM.into(), level: Some(crate::room_autonomy::Level::Autonomous), paused: true, unread: false, owner_maintainer: true, as_of: crate::room_autonomy::as_of::next_for_test() };
     ledger.set_room_autonomy(owner, &paused, crate::merge_policy::room_rules::unix_now()).unwrap();
     assert!(!still(), "paused: refused right before it publishes");
     let mut own = push.clone();
