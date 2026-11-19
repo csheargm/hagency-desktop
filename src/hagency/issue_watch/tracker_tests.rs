@@ -103,9 +103,10 @@ impl TrackIo for Fake {
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
         Ok(self.merged_link.borrow().get(&track.number).copied())
     }
-    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<i64>), String> {
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<Issue>), String> {
         let fact = self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())?;
-        Ok((fact, self.created.borrow().get(&number).copied().unwrap_or(Some(T0))))
+        let created = self.created.borrow().get(&number).copied().unwrap_or(Some(T0));
+        Ok((fact, created.map(|created_at| Issue { created_at, ..issue(number) })))
     }
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String> {
         Ok(self.cannot_fix.borrow().contains(&track.number))
@@ -259,12 +260,13 @@ fn joining_a_room_never_adopts_an_issue_opened_before_the_work_list_entry() {
     assert!(out.lines.iter().all(|l| !l.contains("#31")) && fake.handed.borrow().is_empty(), "{:?}", out.lines);
 }
 
-/// GPT batch review: an old issue beyond the open listing's page cap is looked
-/// up alone; its creation date (or an unreadable one) keeps it from advancing.
+/// GPT batch review: an issue beyond the open listing's page cap is looked up
+/// alone; one opened before the entry (or of unknown age) is not advanced, a
+/// newer one is handed off again like a listed one.
 #[test]
-fn an_old_issue_beyond_the_open_listing_is_not_advanced_either() {
+fn an_issue_beyond_the_open_listing_is_judged_by_its_own_creation_date() {
     let later = T0 + 100 * HANDOFF_TIMEOUT_SECS;
-    for (created, advanced) in [(Some(T0 - 2 * 86_400), false), (None, false), (Some(T0 + 1), true)] {
+    for (created, handed) in [(Some(T0 - 2 * 86_400), false), (None, false), (Some(T0 + 1), true)] {
         let fake = Fake::default();
         first_hand_off(&fake, 31);
         fake.closed.borrow_mut().insert(31, IssueFact::Open);
@@ -272,8 +274,8 @@ fn an_old_issue_beyond_the_open_listing_is_not_advanced_either() {
         let (tracks, seen) = (fake.tracks(), HashSet::from([31]));
         let inputs = Inputs { repo: REPO, now: later, tracks: &tracks, seen: &seen, since: T0, open_issues: &[], own_pulls: &[] };
         let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
-        let touched = out.lines.iter().chain(&out.errors).any(|l| l.contains("#31"));
-        assert_eq!(touched, advanced, "{created:?}: {:?} {:?}", out.lines, out.errors);
+        assert!(out.errors.is_empty(), "{created:?}: {:?}", out.errors);
+        assert_eq!(!fake.handed.borrow().is_empty(), handed, "{created:?}: {:?}", out.lines);
     }
 }
 

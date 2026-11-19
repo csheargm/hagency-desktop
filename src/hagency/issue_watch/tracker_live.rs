@@ -184,15 +184,15 @@ impl TrackIo for LiveTrack<'_> {
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
         super::merged_link::find(self.worker, (self.repo, &self.login), track).await
     }
-    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<i64>), String> {
-        let (state, reason, created) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<Issue>), String> {
+        let (state, reason, issue) = fetch_issue_state(self.worker.client, GITHUB_API, self.repo, number, self.worker.token).await.map_err(|e| e.to_string())?;
         let fact = match (state.as_str(), reason.as_str()) {
             ("open", _) => IssueFact::Open,
             ("closed", "completed") => IssueFact::Done,
             ("closed", _) => IssueFact::ClosedOther,
             _ => return Err(format!("unknown issue state {state:?}")),
         };
-        Ok((fact, created))
+        Ok((fact, issue))
     }
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String> {
         let comments = fetch_comments(self.worker.client, GITHUB_API, self.repo, track.number, self.worker.token).await.map_err(|e| e.to_string())?;

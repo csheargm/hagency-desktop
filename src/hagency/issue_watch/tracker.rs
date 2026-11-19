@@ -64,8 +64,8 @@ pub(crate) trait TrackIo {
     /// its current hand-off, for a record that never saw one open (opened and merged between two checks).
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String>;
     /// A tracked issue missing from the open list: GitHub's own answer, and
-    /// when it was opened (`None`: unreadable).
-    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<i64>), String>;
+    /// the issue itself (`None`: unreadable).
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<Issue>), String>;
     /// The Agent's cannot-fix comment during the current attempt.
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
@@ -129,15 +129,8 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     if track.state.is_terminal() {
         return Ok(terminal_line(track));
     }
-    let issue = inputs.open_issues.iter().find(|i| i.number == track.number && !i.is_pr);
-    let fact = match issue {
-        Some(_) => IssueFact::Open,
-        None => match io.closed_state(track.number).await? {
-            // Beyond the open list, older than the entry (or of unknown age): never advanced (GPT batch review).
-            (IssueFact::Open, created) if created.unwrap_or(i64::MIN) < inputs.since => return Ok(None),
-            (fact, _) => fact,
-        },
-    };
+    let Some((fact, issue)) = issue_of(io, inputs, track.number).await? else { return Ok(None) };
+    let issue = issue.as_ref();
     let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
     // A run that already ended without a pull request is retried now (e2e, Nov 17).
@@ -177,6 +170,19 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
         Action::AnnounceFixed => announce(io, &track.repo, track).await.map(|_| None),
         Action::Close => io.record(change(json!({"state": "closed"}))).await.map(|_| None),
     }
+}
+
+/// The tracked issue as GitHub has it: from the open list, else looked up
+/// alone (beyond the list's page cap, or closed). `None`: open but opened
+/// before the work-list entry, or of unknown age, so never advanced (GPT batch review).
+async fn issue_of(io: &impl TrackIo, inputs: &Inputs<'_>, number: i64) -> Result<Option<(IssueFact, Option<Issue>)>, String> {
+    if let Some(open) = inputs.open_issues.iter().find(|i| i.number == number && !i.is_pr) {
+        return Ok(Some((IssueFact::Open, Some(open.clone()))));
+    }
+    Ok(match io.closed_state(number).await? {
+        (IssueFact::Open, issue) if issue.as_ref().map_or(i64::MIN, |i| i.created_at) < inputs.since => None,
+        found => Some(found),
+    })
 }
 
 pub(super) fn change_of(repo: &str, number: i64, extra: Value) -> Value {

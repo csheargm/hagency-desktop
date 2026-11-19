@@ -207,19 +207,20 @@ pub async fn fetch_issue_done(client: &Client, api: &str, repo: &str, number: u6
     Ok(value["state"] == "closed" && value["state_reason"] == "completed")
 }
 
-/// Issue `number`'s `(state, state_reason, created_at)` as GitHub reports
-/// them ("open"/"closed", "completed"/"not_planned"/"", Unix seconds or
-/// `None` when unreadable), for the issue loop's tracker (ADR 0020), which
-/// must tell a closed issue from one that only fell off the open listing, and
-/// an issue opened before its work-list entry from a new one (GPT batch review).
-pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<(String, String, Option<i64>), FetchError> {
+/// Issue `number`'s `(state, state_reason, issue)` as GitHub reports them
+/// ("open"/"closed", "completed"/"not_planned"/"", the issue as the open
+/// listing reads it, `None` when unreadable), for the issue loop's tracker
+/// (ADR 0020), which must tell a closed issue from one that only fell off the
+/// open listing, and hand off or skip one beyond its page cap by its creation
+/// date like a listed one (GPT batch review).
+pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<(String, String, Option<Issue>), FetchError> {
     pulls_url(api, repo)?;
     let body = get(client, &format!("{api}/repos/{repo}/issues/{number}"), token).await?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     let text = |k: &str| value[k].as_str().unwrap_or_default().to_owned();
-    // The open listing's own parser reads the creation date the same way.
-    let created = parse_issues(&format!("[{body}]")).ok().and_then(|issues| issues.first().map(|i| i.created_at));
-    Ok((text("state"), text("state_reason"), created))
+    // The open listing's own parser reads it the same way.
+    let issue = parse_issues(&format!("[{body}]")).ok().and_then(|issues| issues.into_iter().next());
+    Ok((text("state"), text("state_reason"), issue))
 }
 
 /// The login that merged pull request `number` of `repo` ("" when GitHub names none), if it was merged.

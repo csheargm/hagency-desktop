@@ -102,5 +102,8 @@ async fn an_issue_looked_up_alone_carries_its_creation_date() {
     });
     let state = fetch_issue_state(&new_client(), &api, "owner/repo", 31, "t").await.unwrap();
     server.await.unwrap();
-    assert_eq!(state, ("open".to_owned(), String::new(), Some(1_794_787_200)));
+    let (open, reason, issue) = state;
+    assert_eq!((open.as_str(), reason.as_str()), ("open", ""));
+    let issue = issue.expect("the issue itself");
+    assert_eq!((issue.number, issue.title.as_str(), issue.created_at), (31, "Old", 1_794_787_200));
 }
