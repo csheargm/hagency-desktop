@@ -3,7 +3,7 @@
 //! spaced) before any hold; a draft whose fixer's run ended is asked to be
 //! readied once per head; the merge line names the Agent and the room rules.
 use super::super::loop_notice::{DRAFT_STEP, LoopNotice, Target};
-use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, UNRECORDED_VERDICT, ask_again, ask_ready, asks_again, noted_other_owner, noted_unrecorded, ready_draft, ready_moved, unrecorded_verdict};
+use super::{Again, DRAFT_WAIT_SECS, REREVIEW_STEPS, REREVIEW_WAIT_SECS, ask_again, ask_ready, asks_again, ready_draft, ready_moved, unrecorded_verdict};
 use super::super::review_loop::LoopIo;
 use super::super::run_end::RunEnd;
 use super::super::tracker::Followed;
@@ -113,19 +113,6 @@ fn pr_115_the_reviewer_is_asked_again_once_then_the_hold_may_follow() {
     assert_eq!(run(ask_again(&room, &moved, &codex(), None)), Ok(Again::Asked));
 }
 
-/// The hold line says plainly what is missing: a verdict on GitHub that
-/// Hagency never recorded, not merely "no approval".
-#[test]
-fn pr_115_the_hold_line_names_the_unrecorded_verdict() {
-    let verdict = vec![("csheargm".to_owned(), APPROVE_VERDICT.to_owned(), HEAD.to_owned())];
-    let said = noted_unrecorded(no_approval(), (&verdict, "csheargm"), HEAD);
-    assert!(said["reason"].as_str().unwrap().ends_with(&format!("; {UNRECORDED_VERDICT}")), "{said}");
-    assert_eq!(noted_unrecorded(no_approval(), (&[], "csheargm"), HEAD), no_approval(), "no verdict on GitHub: nothing to add");
-    let mut recorded = no_approval();
-    recorded["recorded"] = 1.into();
-    assert_eq!(noted_unrecorded(recorded.clone(), (&verdict, "csheargm"), HEAD), recorded, "a recorded review is not unrecorded");
-}
-
 /// GPT batch-3 review: a 2-approval rule with one recorded approval still
 /// asks again and names a second, unrecorded verdict of this head.
 #[test]
@@ -135,7 +122,6 @@ fn a_second_unrecorded_verdict_under_a_two_approval_rule_is_asked_again() {
     assert!(!unrecorded_verdict(&half, (&[one.clone()], "csheargm"), HEAD), "the one verdict on GitHub is the recorded one");
     let two = vec![one.clone(), one];
     assert!(unrecorded_verdict(&half, (&two, "csheargm"), HEAD), "a second verdict the ledger never recorded");
-    assert!(noted_unrecorded(half.clone(), (&two, "csheargm"), HEAD)["reason"].as_str().unwrap().ends_with(UNRECORDED_VERDICT));
     let room = Room::default();
     assert_eq!(run(asks_again(&room, &target(116), (&half, &two, "csheargm"), &codex(), T0)), Ok(true));
     assert_eq!(room.posted.borrow().len(), 1, "the reviewer is asked again once");
@@ -278,16 +264,4 @@ fn a_pull_request_readied_at_a_moved_head_waits_until_the_fixers_run_ended() {
     asked.draft = false;
     assert!(!ready_moved(&asked.url, &asked.head_sha, false));
     assert!(!ready_moved(&asked.url, &"3".repeat(40), false), "forgotten once done");
-}
-
-/// Round-2 GPT review (P2): another owner's reviewer posts its verdict as
-/// that owner's GitHub login, which this device does not know; the hold line says so.
-#[test]
-fn the_hold_line_says_when_the_reviewers_github_login_is_unknown() {
-    let noted = noted_other_owner(no_approval(), true);
-    let reason = noted["reason"].as_str().unwrap();
-    assert!(reason.starts_with("needs 1 approval(s) from another Agent, has 0; the reviewer is another owner's Agent"), "{reason}");
-    assert_eq!(noted_other_owner(no_approval(), false), no_approval(), "this owner's own reviewer: its login is this owner's");
-    let ci = json!({"kind": "ci", "approvers": 0, "reason": "CI is red"});
-    assert_eq!(noted_other_owner(ci.clone(), true), ci, "only a missing approval");
 }

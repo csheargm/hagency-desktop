@@ -140,11 +140,11 @@ impl LiveTrack<'_> {
         let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         // A verdict on GitHub the gate never recorded: ask the reviewer again before holding (PR #105).
-        if let Some(peer) = peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
+        if let Some(peer) = super::approval_note::asked_again(peer) && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
-        let readiness = super::review_again::noted_unrecorded(readiness, (&reviews, &self.login), &pr.head_sha);
-        let readiness = super::review_again::noted_other_owner(readiness, peer.is_some_and(|p| !p.own));
+        let reviewer = super::approval_note::reviewer_of(&self.peers, peer, &self.room).await;
+        let readiness = super::approval_note::for_hold(readiness, (&reviews, &self.login), reviewer.as_ref());
         let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
         let settled = merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now);
         merge_hold::follow_gate(io, target, &readiness, ctx, settled).await

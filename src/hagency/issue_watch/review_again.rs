@@ -172,35 +172,6 @@ pub async fn ask_ready(io: &impl LoopIo, target: &Target, fixer: &OwnedUserId, n
     post_then_claim(io, &notice, key, due.again).await
 }
 
-/// Said in the hold line when the reviewer's verdict of this head is on
-/// GitHub but was never recorded, after it was asked again (live PR #115).
-pub const UNRECORDED_VERDICT: &str = "a \"Hagency verdict: APPROVE\" of this head is on GitHub, but Hagency did not record it (it was not posted through the merge gate), so it does not count";
-
-/// `readiness` for the hold line: an unrecorded GitHub verdict of `head`
-/// ([`unrecorded_verdict`]) is named plainly as what is missing.
-pub fn noted_unrecorded(mut readiness: Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> Value {
-    if unrecorded_verdict(&readiness, (reviews, login), head) {
-        let reason = readiness["reason"].as_str().unwrap_or("no approval").to_owned();
-        readiness["reason"] = format!("{reason}; {}", crate::i18n::tr(UNRECORDED_VERDICT)).into();
-    }
-    readiness
-}
-
-/// Said in the hold line when the reviewer is another owner's Agent: its
-/// GitHub login is not known here, so only this owner's login's verdict is
-/// matched (round-2 GPT review). It claims no verdict and no retry history.
-pub const OTHER_OWNER_VERDICT: &str = "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it may have posted on GitHub cannot be matched here";
-
-/// `readiness` for the hold line: a missing approval from `other_owner`'s
-/// reviewer says why no unrecorded GitHub verdict was asked for again.
-pub fn noted_other_owner(mut readiness: Value, other_owner: bool) -> Value {
-    if other_owner && readiness["kind"] == "approvals" && readiness["approvers"].as_u64() == Some(0) {
-        let reason = readiness["reason"].as_str().unwrap_or("no approval").to_owned();
-        readiness["reason"] = format!("{reason}; {}", crate::i18n::tr(OTHER_OWNER_VERDICT)).into();
-    }
-    readiness
-}
-
 #[cfg(test)]
 #[path = "review_again_tests.rs"]
 mod tests;

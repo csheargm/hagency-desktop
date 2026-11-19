@@ -13,6 +13,7 @@ mod digest_live;
 mod digest_tests;
 #[cfg(test)]
 mod digest_window_tests;
+mod approval_note;
 mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;

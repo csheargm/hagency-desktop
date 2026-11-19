@@ -4,6 +4,7 @@
 //! facts moved), or posts ONE "cannot be merged yet" notice per head and set
 //! of missing things, naming each one and how to fix it. The status line
 //! says the same. The merge gate (`readiness`) stays the only judge.
+use super::approval_note;
 use super::loop_notice::{LoopNotice, Target};
 use super::notice::quoted_title;
 use super::review_loop::{self, LoopCtx, LoopIo, can_merge};
@@ -69,7 +70,8 @@ impl Missing {
     fn line(self, reason: &str, repo: &str) -> String {
         let said = quoted_title(reason);
         match self {
-            Self::Approval => crate::i18n::format(APPROVAL_LINE, &[("said", said)]),
+            // Already plain words (`approval_note`): never the gate's reason (PR #121).
+            Self::Approval => reason.to_owned(),
             Self::Ci => format!("green CI (the merge gate says {said}). Fix or re-run the checks, or merge it yourself."),
             Self::Rules => format!("a person: the repo rules say {said}. Review and merge it yourself."),
             Self::Autonomy => format!("a person: the room's setting says {said}. Merge it yourself, or the room's owner or a maintainer can change the level in Room info → Status."),
@@ -77,10 +79,6 @@ impl Missing {
         }
     }
 }
-
-/// The missing-approval line: Codex and Claude verdicts are both recorded;
-/// an unrecorded one was already asked for again ([`super::review_again`]).
-pub const APPROVAL_LINE: &str = "an Agent approval of this head (the merge gate says {said}). A reviewer Agent's verdict (Codex or Claude) posted through Hagency counts, a plain GitHub comment does not; Hagency asks the reviewer again when its verdict was not recorded, and none is recorded for this head yet. Review and merge it yourself.";
 
 /// What the merge step does for one head this check.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,13 +146,25 @@ pub fn gate_of(target: &Target, readiness: &Value, permission: Option<&str>, set
             if kind == Missing::Approval && !settled {
                 return Gate::WaitReview;
             }
-            missing.push((kind, readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned()));
+            let reason = match kind {
+                Missing::Approval => approval_reason(readiness),
+                _ => readiness["reason"].as_str().unwrap_or("the merge could not be judged").to_owned(),
+            };
+            missing.push((kind, reason));
         }
     }
     if !can_merge(permission) {
         missing.push((Missing::Permission, String::new()));
     }
     if missing.is_empty() { Gate::Merge } else { Gate::Hold(missing) }
+}
+
+/// The missing approval in plain words: the tracker's line, else one with no reviewer named.
+fn approval_reason(readiness: &Value) -> String {
+    match readiness[approval_note::APPROVAL_LINE_KEY].as_str() {
+        Some(line) => line.to_owned(),
+        None => approval_note::approval_line(None, false, readiness["approvers"].as_u64().unwrap_or(0)),
+    }
 }
 
 /// The once-per-set step: `hold-` and the missing words in a fixed order.
@@ -196,7 +206,8 @@ pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, c
         Gate::Hold(missing) => {
             // Its own step: an earlier `hold-autonomy` notice of the same head never hides it (GPT batch review).
             let notice = if only_assist(missing) {
-                LoopNotice::AwaitsPerson { target: target.clone(), step: format!("{}-{ASSIST_WORD}", hold_step(missing)) }
+                let reviewer = readiness[approval_note::REVIEWED_BY_KEY].as_str().map(str::to_owned);
+                LoopNotice::AwaitsPerson { target: target.clone(), step: format!("{}-{ASSIST_WORD}", hold_step(missing)), reviewer }
             } else {
                 LoopNotice::Held { target: target.clone(), step: hold_step(missing), missing: missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect() }
             };
