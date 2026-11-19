@@ -11,7 +11,7 @@ use crate::watch_trust::{room_scope, TrustedStep};
 const FILE: &str = "gh issue create --repo csheargm/hagency-demo-sandbox --title 'Add a dark mode' --body 'As agreed in the room: a toggle in Settings.'";
 
 fn room(ledger: &mut crate::Ledger, level: Level, paused: bool) {
-    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(level), paused, unread: false, owner_maintainer: false, as_of: crate::room_autonomy::as_of::next_for_test() };
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(level), paused, unread: false, owner_maintainer: false, as_of: crate::room_autonomy::as_of::next_for_test(), sticky: false };
     ledger.set_room_autonomy(OWNER, &snapshot, crate::merge_policy::room_rules::unix_now()).unwrap();
 }
 

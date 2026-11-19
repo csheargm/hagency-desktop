@@ -10,14 +10,14 @@ fn ledger(dir: &std::path::Path) -> Ledger {
     Ledger::open(dir.join("local.db"), OWNER).unwrap()
 }
 fn record(ledger: &mut Ledger, level: Option<Level>, paused: bool, unread: bool, at: i64) {
-    ledger.set_room_autonomy(OWNER, &AutonomySnapshot { room_id: ROOM.into(), level, paused, unread, owner_maintainer: true, as_of: None }, at).unwrap();
+    ledger.set_room_autonomy(OWNER, &AutonomySnapshot { room_id: ROOM.into(), level, paused, unread, owner_maintainer: true, as_of: None, sticky: false }, at).unwrap();
 }
 
 impl Ledger {
     /// Test helper: `agent` may work in `room`, recorded Autonomous now.
     pub(crate) fn allow_loop_in(&mut self, owner: &str, agent: &str, room: &str) {
         self.set_may_work(owner, agent, room, true).unwrap();
-        let snapshot = AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None };
+        let snapshot = AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None, sticky: false };
         self.set_room_autonomy(owner, &snapshot, unix_now()).unwrap();
     }
     /// Test helper: `agent` may work in every room it is bound to, each
@@ -29,7 +29,7 @@ impl Ledger {
         };
         for room in rooms {
             self.set_may_work(owner, agent, &room, on).unwrap();
-            let snapshot = AutonomySnapshot { room_id: room, level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None };
+            let snapshot = AutonomySnapshot { room_id: room, level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None, sticky: false };
             self.set_room_autonomy(owner, &snapshot, unix_now()).unwrap();
         }
     }
@@ -125,7 +125,7 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = ledger(temp.path());
     ledger.set_may_work(OWNER, "anna", ROOM, true).unwrap();
-    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: as_of::next_for_test() };
+    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: as_of::next_for_test(), sticky: false };
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now()).unwrap();
     assert_eq!(ledger.loop_may_deliver("anna", ROOM), Ok(()));
     ledger.set_room_autonomy(OWNER, &snapshot(false), unix_now()).unwrap();
@@ -144,7 +144,7 @@ fn an_older_read_arriving_later_never_replaces_a_newer_pause() {
     let dir = tempfile::tempdir().unwrap();
     let mut ledger = ledger(dir.path());
     let now = unix_now();
-    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of };
+    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of, sticky: false };
     ledger.set_room_autonomy(OWNER, &snap(true, Some(2_000)), now).unwrap();
     ledger.set_room_autonomy(OWNER, &snap(false, Some(1_000)), now + 1).unwrap();
     assert_eq!(ledger.room_autonomy_at(ROOM, now + 1).unwrap(), Autonomy::Paused, "the stale poll is dropped");
@@ -179,7 +179,7 @@ fn a_tie_or_an_untimed_snapshot_never_loosens_the_gate() {
     let dir = tempfile::tempdir().unwrap();
     let mut ledger = ledger(dir.path());
     let now = unix_now();
-    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of };
+    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of, sticky: false };
     let stored_as_of = |ledger: &Ledger| ledger.db.query_row("SELECT as_of FROM room_autonomy_as_of WHERE room=?", [ROOM], |r| r.get::<_, i64>(0)).unwrap();
     ledger.set_room_autonomy(OWNER, &snap(true, Some(2_000)), now).unwrap();
     ledger.set_room_autonomy(OWNER, &snap(false, Some(2_000)), now).unwrap();
@@ -194,8 +194,37 @@ fn a_tie_or_an_untimed_snapshot_never_loosens_the_gate() {
     assert_eq!(stored_as_of(&ledger), 3_000, "and keeps the stored time");
     ledger.set_room_autonomy(OWNER, &snap(false, None), now + 2 * as_of::UNTIMED_GUARD_SECS).unwrap();
     assert_eq!(ledger.room_autonomy_at(ROOM, now + 2 * as_of::UNTIMED_GUARD_SECS).unwrap(), Autonomy::Paused, "untimed looser never replaces a timed row");
-    let other = |paused| AutonomySnapshot { room_id: "!u:x".into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of: None };
+    let other = |paused| AutonomySnapshot { room_id: "!u:x".into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of: None, sticky: false };
     ledger.set_room_autonomy(OWNER, &other(true), now).unwrap();
     ledger.set_room_autonomy(OWNER, &other(false), now + 1).unwrap();
     assert_eq!(ledger.room_autonomy_at("!u:x", now + 1).unwrap(), Autonomy::Paused, "untimed over untimed: never looser within the window");
+}
+
+/// GPT review round 4 (P1): a sticky restriction (pushed the moment it was
+/// saved) refuses every looser snapshot for two poll intervals on the
+/// ledger's own clock, whatever its source time; after that, a looser read
+/// counts only if it was read after the saved event.
+#[test]
+fn a_sticky_restriction_holds_against_any_stale_or_future_dated_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ledger = ledger(dir.path());
+    let now = unix_now();
+    let snap = |level, paused, as_of, sticky| AutonomySnapshot { room_id: ROOM.into(), level: Some(level), paused, unread: false, owner_maintainer: true, as_of, sticky };
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(1_000), false), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, true, Some(5_000), true), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(i64::MAX), false), now + 1).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 1).unwrap(), Autonomy::Paused, "a future-dated read within the hold is refused");
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, true, Some(900), false), now + 2).unwrap();
+    let late = now + as_of::STICKY_HOLD_SECS;
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(4_999), false), late).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, late).unwrap(), Autonomy::Paused, "a stricter read kept the restriction; a read before the Pause never lifts it");
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(5_000), false), late).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, late).unwrap(), Autonomy::Level(Level::Autonomous), "a fresh read after the hold, read after the Pause, counts");
+    // An untimed sticky Off: a timed Autonomous within the hold is refused; after it, the hold alone decides.
+    ledger.set_room_autonomy(OWNER, &snap(Level::Off, false, None, true), late).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(9_000), false), late + 1).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, late + 1).unwrap(), Autonomy::Level(Level::Off), "a timed Autonomous over a sticky untimed Off within the hold");
+    let later = late + as_of::STICKY_HOLD_SECS;
+    ledger.set_room_autonomy(OWNER, &snap(Level::Autonomous, false, Some(9_000), false), later).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, later).unwrap(), Autonomy::Level(Level::Autonomous));
 }
