@@ -15,6 +15,7 @@ use matrix_sdk_ui::timeline::{self, AnyOtherStateEventContentChange, EncryptedMe
 use crate::utils;
 // TODO(R4): event_preview.rs is over budget; split per event kind (state events into event_preview/state.rs).
 mod power_levels;
+mod service_invite;
 
 #[cfg(test)]
 mod usage_preview_tests {
@@ -716,6 +717,10 @@ pub fn text_preview_of_room_membership_change(
         Some(r) => format!(": {r}."),
         None => String::from("."),
     };
+    // TODO(R4): this function is over 50 lines; split the membership-change match out with the state.rs split.
+    if let Some(line) = service_invite::is_invite(change.change(), membership).then(|| service_invite::service_invite_line(sender, crate::sliding_sync::current_user_id().as_deref(), &change_user_id)).flatten() {
+        return TextPreview::from((line, BeforeText::Nothing));
+    }
     let text = match change.change() {
         Some(MembershipChange::Joined) =>
             tr("joined this room.").to_owned(),

@@ -3,7 +3,7 @@
 //! Agent is bound into each ticked room through the Add agent path
 //! (`bring_agent::bind_into_rooms` → `Service::invite_agent_to_room`).
 use super::CreateAgentDialog;
-use crate::hagency::bring_agent::{self, MAX_ROOM_CHOICES, room_choices, ticked_rooms};
+use crate::hagency::bring_agent::{self, MAX_ROOM_CHOICES, room_choices};
 use crate::sliding_sync::{get_client, spawn_async_task};
 use crate::utils::RoomNameId;
 use makepad_widgets::*;
@@ -88,17 +88,26 @@ impl CreateAgentDialog {
         self.view.redraw(cx);
     }
 
-    /// After creation: bind the new Agent into every ticked room.
+    /// After creation: the ticked rooms are the owner's choice, so the new
+    /// Agent is allowed in group rooms and bound into each, asking nothing more.
     pub(super) fn bind_ticked(&self, created: &Value) {
-        let Some(puppet) = created["creation"]["agent"]["puppetMxid"].as_str() else { return };
-        bring_agent::bind_into_rooms(self.state.name.trim().to_owned(), puppet.to_owned(), ticked_rooms(&self.state.rooms));
+        let Some((id, puppet)) = created_agent(created) else { return };
+        let rooms = self.work.as_ref().map(|plan| plan.rooms.clone()).unwrap_or_default();
+        bring_agent::allow_then_bind_into_rooms(id, self.state.name.trim().to_owned(), puppet, rooms);
     }
+}
+
+/// The new Agent's id and puppet from the creation reply.
+fn created_agent(created: &Value) -> Option<(String, String)> {
+    let agent = &created["creation"]["agent"];
+    Some((agent["id"].as_str()?.to_owned(), agent["puppetMxid"].as_str()?.to_owned()))
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hagency::bring_agent::ticked_rooms;
 
     fn dialog(cx: &mut Cx) -> CreateAgentDialog {
         cx.with_vm(|vm| {
@@ -218,5 +227,29 @@ mod tests {
         assert!(dialog.view.widget(&mut cx, ids!(room_7)).visible());
         assert!(ticked_rooms(&dialog.state.rooms).is_empty(), "no open room, nothing pre-ticked");
         assert_eq!(dialog.view.label(&mut cx, ids!(rooms_hint)).text(), "Add it to other rooms later with Add agent in each room.");
+    }
+
+    /// Regression (Nov 18 screen pass): ticking "dev room" then Create asked a
+    /// second time ("test-helper is private … Allow in group rooms?"). The
+    /// ticked rooms are the owner's choice: the reply's agent id is what the
+    /// allow is recorded for, before the bind, so no prompt follows.
+    #[test]
+    fn a_ticked_room_allows_the_new_agent_by_its_id_before_binding() {
+        let reply = serde_json::json!({"creation":{"agent":{"id":"agt_9","puppetMxid":"@test-helper:s"}}});
+        assert_eq!(created_agent(&reply), Some(("agt_9".to_owned(), "@test-helper:s".to_owned())));
+        assert_eq!(created_agent(&serde_json::json!({"creation":{"agent":{"puppetMxid":"@x:s"}}})), None, "no id: nothing to allow or bind");
+    }
+
+    /// GPT review: Create clicked before the checklist loaded binds nothing,
+    /// even when the list arrives (open room pre-ticked) while creating.
+    #[test]
+    fn rooms_are_the_ones_ticked_when_create_was_clicked() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = dialog(&mut cx);
+        dialog.state.current_room = Some("!r0:s".into());
+        let plan = dialog.work_plan(&mut cx).unwrap();
+        dialog.apply_rooms(&mut cx, rooms(2));
+        assert_eq!(ticked_rooms(&dialog.state.rooms).len(), 1, "the late list pre-ticks the open room");
+        assert!(plan.rooms.is_empty(), "but Create saw no ticks: {:?}", plan.rooms);
     }
 }

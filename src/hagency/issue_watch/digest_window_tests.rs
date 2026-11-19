@@ -97,5 +97,5 @@ fn cards_behind_heavy_traffic_are_posted_once_the_gate_is_known() {
     let known = Fake { gate_unknown: false, log: fake.log.clone(), ..Fake::default() };
     assert!(run(send_due(&known, &saved(&known, &[]), Some(w))).is_empty());
     let posts = known.posts.borrow();
-    assert!(posts[0].1.contains("0 fixed, 0 merged, 30 need you"), "{:?}", posts);
+    assert!(posts[0].1.contains("Today: 0 merged, 30 need you"), "{:?}", posts);
 }

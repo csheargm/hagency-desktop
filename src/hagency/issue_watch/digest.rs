@@ -1,13 +1,13 @@
 //! The daily digest of one issue watch (ADR 0028), pure: which day's window
-//! is due, and what the tracker ledger says about it — "Today: N fixed,
-//! N merged, N need you", then one line per moved or waiting issue, with a
+//! is due, and what the tracker ledger says about it — "Today: N
+//! merged, N need you, N in progress", then one line per moved or waiting issue, with a
 //! link for each that needs the owner. Each moment belongs to exactly one
 //! day's window (yesterday's send hour up to today's), so nothing is counted
 //! twice or missed while the app runs every day. A day without moves says
 //! nothing. Sending and the once-a-day record are in `digest_live`; the
 //! gate's current holds are in `digest_gate`.
 use ::hagency::issue_watch::issue_track::digest::{TrackStep, UnansweredCard};
-use ::hagency::issue_watch::issue_track::{State, Track};
+use ::hagency::issue_watch::issue_track::{MAX_ATTEMPTS, State, Track};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, WatchMode};
 use chrono::{DateTime, Days, NaiveDate, TimeZone};
 use serde_json::Value;
@@ -17,8 +17,14 @@ pub const SEND_HOUR: u32 = 18;
 /// Issue lines shown before "And N more".
 pub const MAX_ITEMS: usize = 8;
 
-pub const HEADLINE: &str = "📋 {repo} daily digest — Today: {fixed} fixed, {merged} merged, {need} need you";
-const MORE: &str = "And {count} more";
+/// The headline before its counts, which are joined with ", ".
+pub const HEADLINE: &str = "📋 {repo} daily digest — Today: {counts}";
+const MERGED: &str = "{count} merged";
+/// Only when it differs from the merged count (one PR can fix several issues).
+const FIXED: &str = "{count} issues fixed";
+const NEED: &str = "{count} need you";
+const PROGRESS: &str = "{count} in progress";
+const MORE: &str = "And {count} more on {url}";
 
 /// One day's digest window, in Unix seconds: `[start, end)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +63,8 @@ pub struct Digest {
     pub merged: usize,
     /// Held pull requests, failed issues and unanswered approval cards.
     pub need: usize,
+    /// Moved today, still open and waiting on nobody: the Agent is on them.
+    pub progress: usize,
     pub items: Vec<String>,
 }
 
@@ -124,7 +132,9 @@ pub fn summarize(repo: &str, inputs: &Inputs, window: &Window) -> Option<Digest>
     shown.sort_by_key(|(number, _)| *number);
     let mut items: Vec<String> = shown.into_iter().map(|(_, line)| line).collect();
     items.extend(cards.iter().map(|n| crate::i18n::format("#{number} approval card unanswered: {url}", &[("number", n.to_string()), ("url", issue_url(repo, *n))])));
-    Some(Digest { fixed: fixed.len(), merged: prs.len(), need: waiting.len() + failed + cards.len(), items })
+    // Waiting on the owner (held, or an unanswered card) is "need you", never also in progress.
+    let progress = moved.iter().filter(|t| !t.state.is_terminal() && !waiting.iter().any(|w| w.number == t.number) && !cards.contains(&t.number)).count();
+    Some(Digest { fixed: fixed.len(), merged: prs.len(), need: waiting.len() + failed + cards.len(), progress, items })
 }
 
 /// One issue's line: "#33 → PR #41 merged", with the link a person needs.
@@ -133,8 +143,9 @@ fn item(repo: &str, track: &Track, held: bool) -> String {
     let issue = ("url", issue_url(repo, track.number));
     let Some(pr) = track.pr else {
         return match track.state {
-            State::Failed => crate::i18n::format("#{number} gave up: {url}", &[number, issue]),
-            State::NeedsHuman => crate::i18n::format("#{number} needs a person: {url}", &[number, issue]),
+            State::Failed if tries(track) == 1 => crate::i18n::format("#{number} needs a person: no pull request after 1 try — {url}", &[number, issue]),
+            State::Failed => crate::i18n::format("#{number} needs a person: no pull request after {tries} tries — {url}", &[number, ("tries", tries(track).to_string()), issue]),
+            State::NeedsHuman => crate::i18n::format("#{number} needs a person: the agent said it cannot fix it — {url}", &[number, issue]),
             State::Closed | State::Merged => crate::i18n::format("#{number} closed", &[number]),
             _ => crate::i18n::format("#{number} handed off", &[number]),
         };
@@ -150,13 +161,29 @@ fn item(repo: &str, track: &Track, held: bool) -> String {
     crate::i18n::format(template, &args)
 }
 
-/// The notice: the headline, then at most [`MAX_ITEMS`] lines.
+/// The attempts a given-up record made (the ledger's count, else the cap).
+fn tries(track: &Track) -> u32 {
+    if track.attempts == 0 { MAX_ATTEMPTS } else { track.attempts }
+}
+
+/// "7 merged, 5 need you, 2 in progress": each count says something
+/// different; issues fixed shows only when it is not the merged count.
+fn counts(digest: &Digest) -> String {
+    let count = |template: &str, n: usize| crate::i18n::format(template, &[("count", n.to_string())]);
+    let mut parts = vec![count(MERGED, digest.merged)];
+    if digest.fixed != digest.merged { parts.push(count(FIXED, digest.fixed)); }
+    parts.push(count(NEED, digest.need));
+    if digest.progress > 0 { parts.push(count(PROGRESS, digest.progress)); }
+    parts.join(crate::i18n::tr(", "))
+}
+
+/// The notice: the headline, then at most [`MAX_ITEMS`] lines, then where the rest are.
 pub fn text(repo: &str, digest: &Digest) -> String {
-    let counts = [("repo", repo.to_owned()), ("fixed", digest.fixed.to_string()), ("merged", digest.merged.to_string()), ("need", digest.need.to_string())];
-    let mut lines = vec![crate::i18n::format(HEADLINE, &counts)];
+    let mut lines = vec![crate::i18n::format(HEADLINE, &[("repo", repo.to_owned()), ("counts", counts(digest))])];
     lines.extend(digest.items.iter().take(MAX_ITEMS).map(|line| format!("• {line}")));
     if digest.items.len() > MAX_ITEMS {
-        lines.push(crate::i18n::format(MORE, &[("count", (digest.items.len() - MAX_ITEMS).to_string())]));
+        let url = format!("https://github.com/{repo}/issues");
+        lines.push(crate::i18n::format(MORE, &[("count", (digest.items.len() - MAX_ITEMS).to_string()), ("url", url)]));
     }
     lines.join("\n")
 }
