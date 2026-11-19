@@ -54,3 +54,39 @@ async fn a_failed_try_backs_off_without_holding_a_slot_and_a_later_try_succeeds(
     let none = with_backoff(&[Duration::ZERO, Duration::from_millis(10)], || async { None::<()> }).await;
     assert_eq!(none, None, "out of tries: no value");
 }
+
+/// GPT review P2 (round 2): a slot covered a whole room's batch. Each card
+/// takes its own slot, so rooms with many cards interleave; the peak stays 4.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn rooms_with_many_cards_interleave_and_the_peak_stays_at_the_limit() {
+    let _serial = SERIAL.lock().await;
+    const ROOMS: usize = 6;
+    const CARDS: usize = 5;
+    let (running, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rooms: Vec<_> = (0..ROOMS).map(|room| {
+        let (running, peak, order) = (running.clone(), peak.clone(), order.clone());
+        tokio::spawn(async move {
+            let cards: Vec<usize> = (0..CARDS).collect();
+            each_limited(&cards, |_| {
+                let (running, peak, order) = (running.clone(), peak.clone(), order.clone());
+                async move {
+                    peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    order.lock().unwrap().push(room);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    running.fetch_sub(1, Ordering::SeqCst);
+                    true
+                }
+            }).await
+        })
+    }).collect();
+    for room in rooms {
+        assert!(room.await.unwrap(), "every room's cards are admitted");
+    }
+    let order = order.lock().unwrap().clone();
+    assert_eq!(order.len(), ROOMS * CARDS, "every card completes");
+    assert_eq!(peak.load(Ordering::SeqCst), MAX_ADMISSIONS, "the limit holds and is used");
+    let first_finish = (0..ROOMS).map(|r| order.iter().rposition(|&o| o == r).unwrap()).min().unwrap();
+    let last_start = (0..ROOMS).map(|r| order.iter().position(|&o| o == r).unwrap()).max().unwrap();
+    assert!(last_start < first_finish, "every room starts before any room finishes: {order:?}");
+}

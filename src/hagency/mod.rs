@@ -28,7 +28,7 @@ pub mod pending_questions;
 pub mod run_controls;
 pub mod loaded_run_cards;
 mod admission_queue;
-mod run_card_previews;
+pub(crate) mod run_card_previews;
 #[cfg(test)]
 mod run_card_scope_tests;
 pub mod kill_switch;

@@ -50,9 +50,10 @@ mod usage_preview_tests {
     }
 }
 
-/// Where a preview is drawn: its room, and the previewed event's own id when
-/// the caller knows it (a reply quote). A run card's preview shows its answer
-/// only if it is the card admitted there (`run_controls::admitted_card`).
+/// Where a preview is drawn: its room, and the run card event the previewed
+/// event shows (its own id, or an edit's target). A run card's preview shows
+/// its answer only if it is the card admitted there; with no event known it
+/// shows the placeholder (`run_controls::admitted_card`).
 #[derive(Clone, Copy)]
 pub(crate) struct CardScope<'a> {
     pub room: &'a matrix_sdk::ruma::RoomId,
