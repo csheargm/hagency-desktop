@@ -229,3 +229,42 @@ async fn a_write_is_still_refused_and_says_not_to_retry_offline() {
     }
     assert!(cards.try_recv().is_err(), "no card for a write");
 }
+
+/// e2e scenario 8 (Nov 18, 20:02 and 22:23): Codex wrote its final answer
+/// while the verdict's card waited, its turn ended and the call came back
+/// `turn_ended`; the card went with it. Now the card stays up after the
+/// model's call is gone, the owner's approval runs the pinned post once (no
+/// token here: it stops at the token check, after the approval is spent),
+/// and the room gets one line of what came of it.
+#[tokio::test]
+async fn a_verdicts_card_outlives_the_turn_and_its_answer_becomes_one_room_line() {
+    for approve in [true, false] {
+        let db = tempfile::tempdir().unwrap();
+        let (mut ledger, scope) = ledger_under(db.path(), ToolPolicy::AskOwner);
+        let (queue, mut cards) = crate::codex::approval_queue(4).unwrap();
+        let workspace = db.path().to_string_lossy().into_owned();
+        let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: Some(&queue) };
+        let mut running = Running::default();
+        drop(send(&mut ledger, &turn, &verdict(), &mut running).await);
+        let card = cards.recv().await.expect("the owner gets a card");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!card.is_closed(), "the card stays up after the turn's call is gone");
+        card.decide(approve);
+        let lines = outlive_turn_with(&mut ledger, &turn, &mut running, &mut None, &AtHead(HEAD)).await;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let target = format!("{REPO}#107");
+        let consumed: i64 = ledger.db.query_row("SELECT count(*) FROM approvals WHERE consumed=1", [], |r| r.get(0)).unwrap();
+        if approve {
+            assert!(lines[0].contains(&target) && lines[0].contains(crate::watch_trust::step_env::NO_TOKEN), "the pinned post ran: {lines:?}");
+            assert_eq!(consumed, 1, "the owner's approval is spent once");
+        } else {
+            assert!(lines[0].contains(&target) && lines[0].contains("did not approve"), "{lines:?}");
+            assert_eq!(consumed, 0, "nothing runs without the owner's approval");
+        }
+        assert!(running.cards.is_empty() && running.reports.is_empty() && cards.try_recv().is_err(), "nothing else waits or asks");
+    }
+    let posted = room_line("o/r#1", (r#"{"html_url":"https://github.com/o/r/pull/1#pullrequestreview-9"}"#.into(), false));
+    assert!(posted.starts_with("Hagency posted") && posted.ends_with("pullrequestreview-9"), "{posted}");
+}

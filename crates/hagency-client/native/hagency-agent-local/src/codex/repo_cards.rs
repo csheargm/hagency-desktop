@@ -13,12 +13,18 @@
 //!
 //! The card waits off the turn's loop ([`Running::cards`]); the loop takes
 //! each answer ([`decided`]), records the approval in the ledger and runs
-//! the step. A turn that ends drops the waits, and with them the cards.
+//! the step. A verdict's card outlives the model's call and its turn
+//! ([`outlive_turn`]): Codex ends a turn whose code cell still waits on the
+//! call (e2e scenario 8, Nov 18, 20:02 and 22:23: final answer, then
+//! `turn_ended`, and the card went with it), so the turn's host side waits
+//! for the owner and the room gets one line of what came of it.
 use super::repo_steps::{Call, Launch, Running, Turn, launch, refuse};
 use crate::merge_policy::{gate, github::PrSource};
 use crate::watch_trust::{TrustedStep, read_only, review_post::ReviewPost};
+use crate::run_controls::{Action, Outcome, Stream};
 use crate::{Ledger, ToolPolicy, ToolProposal};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// How long the owner's card waits: inside the proposal's own lifetime
 /// (`repo_steps::PROPOSAL_LIFETIME_SECS`), so an approval still validates.
@@ -69,10 +75,16 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
     cards.spawn(async move {
         let _waiting = waiting;
         let mut call = call;
-        let allowed = tokio::select! {
-            answer = tokio::time::timeout(CARD_WAIT, receiver) => matches!(answer, Ok(Ok(true))),
-            // Given up (the MCP wait expired): the card goes away unanswered.
-            () = call.reply.closed() => false,
+        let answer = tokio::time::timeout(CARD_WAIT, receiver);
+        let allowed = if post.is_some() {
+            // A verdict's card stays up for its lifetime, the model's call gone or not.
+            matches!(answer.await, Ok(Ok(true)))
+        } else {
+            tokio::select! {
+                answer = answer => matches!(answer, Ok(Ok(true))),
+                // Given up (the MCP wait expired): the card goes away unanswered.
+                () = call.reply.closed() => false,
+            }
         };
         Decided { call, proposal, step, card, allowed, withdraws, post }
     });
@@ -116,6 +128,10 @@ pub(super) async fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decide
 /// [`decided`], reading the pull request's head through `source`.
 pub(super) async fn decided_with(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, running: &mut Running, source: &impl PrSource) {
     let Decided { call, proposal, step, card, allowed, withdraws, post } = answer;
+    let call = match &post {
+        Some(post) => adopt(call, post, running),
+        None => call,
+    };
     if call.reply.is_closed() {
         return;
     }
@@ -151,6 +167,76 @@ pub(super) async fn decided_with(ledger: &mut Ledger, turn: &Turn<'_>, answer: D
     }
     launch(ledger, turn, Launch { call, step, proposal, key, slot }, running);
 }
+
+/// `call` answered through a relay ([`Running::reports`]): the outcome goes
+/// to the model while its call still waits, else it becomes one room line.
+/// Every path of [`decided_with`] answers the relay exactly once.
+fn adopt(call: Call, post: &ReviewPost, running: &mut Running) -> Call {
+    let (reply, outcome) = oneshot::channel();
+    let model = call.reply;
+    let target = format!("{}#{}", post.repo, post.number);
+    running.reports.spawn(async move {
+        // Dropped unanswered: the turn was stopped, nothing to report.
+        let outcome = outcome.await.ok()?;
+        if model.is_closed() {
+            return Some(room_line(&target, outcome));
+        }
+        model.send(outcome).err().map(|outcome| room_line(&target, outcome))
+    });
+    Call { command: call.command, reply }
+}
+
+/// The plain room line for a verdict post's outcome on `target`.
+fn room_line(target: &str, (text, failed): (String, bool)) -> String {
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok();
+    if !failed {
+        let url = json.as_ref().and_then(|v| v["html_url"].as_str()).map(|u| format!(": {u}")).unwrap_or_default();
+        return format!("Hagency posted this Agent's review verdict on {target} after its owner approved it{url}");
+    }
+    let why = json.as_ref().and_then(|v| v["reason"].as_str()).unwrap_or(&text);
+    let why: String = why.lines().next().unwrap_or_default().chars().take(MAX_REASON_CHARS).collect();
+    format!("Hagency did not post this Agent's review verdict on {target}: {why}")
+}
+/// The most of a failure reason one room line carries.
+const MAX_REASON_CHARS: usize = 300;
+
+/// The turn's answer is in, but a verdict's card or its approved post still
+/// waits: wait for them (the card for its lifetime), act on each answer and
+/// return the room lines of what came of them. A Stop takes the cards down
+/// unanswered; a post already running finishes.
+pub(super) async fn outlive_turn(ledger: &mut Ledger, turn: &Turn<'_>, running: &mut Running, stream: &mut Option<Stream>) -> Vec<String> {
+    let github = crate::merge_policy::github::GhCli { token: turn.token.clone() };
+    outlive_turn_with(ledger, turn, running, stream, &github).await
+}
+
+/// [`outlive_turn`], reading the pull request's head through `source`.
+pub(super) async fn outlive_turn_with(ledger: &mut Ledger, turn: &Turn<'_>, running: &mut Running, stream: &mut Option<Stream>, source: &impl PrSource) -> Vec<String> {
+    let mut lines = Vec::new();
+    while !running.cards.is_empty() || !running.reports.is_empty() {
+        tokio::select! { biased;
+            pending = crate::run_controls::next(stream) => {
+                if !matches!(pending.action, Action::Interrupt) {
+                    pending.reply(Outcome::Unavailable);
+                    continue;
+                }
+                pending.reply(Outcome::Accepted);
+                if !running.cards.is_empty() {
+                    running.cards = tokio::task::JoinSet::new();
+                    lines.push(STOPPED.to_owned());
+                }
+            }
+            Some(line) = running.reports.join_next(), if !running.reports.is_empty() => lines.extend(line.ok().flatten()),
+            Some(answer) = running.cards.join_next(), if !running.cards.is_empty() => {
+                if let Ok(answer) = answer {
+                    decided_with(ledger, turn, answer, running, source).await;
+                }
+            }
+        }
+    }
+    lines
+}
+/// The room line when a Stop takes down a verdict's card still waiting.
+const STOPPED: &str = "Stopped: a review verdict still waiting for its owner's card was not posted";
 
 /// `Ok` unless `post` approves and the pull request's head is not the
 /// commit its body names ([`gate::review_names_head`]), or cannot be read.

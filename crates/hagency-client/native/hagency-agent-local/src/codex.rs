@@ -1592,6 +1592,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             // unanswered request keeps the process from being used again.
             let overdue = controls.stop_overdue();
             if tree.is_complete() && (controls.settled() || overdue) {
+                // A verdict's card outlives the turn (e2e 8, Nov 18; see `repo_cards::outlive_turn`).
+                // TODO(R4): part of the run_inner split into codex/turn.rs (see `unavailable`).
+                if !overdue {
+                    for line in repo_cards::outlive_turn(ledger, &repo_turn, &mut repo_running, &mut stream).await {
+                        collected.push(&line, false);
+                    }
+                    repo_running.settle(ledger)?;
+                }
                 self.recover_native_usage(&mut tree).await;
                 let mut status = root_status
                     .take()
