@@ -44,12 +44,19 @@ impl CreateAgentDialog {
             let Some(loaded) = action.downcast_ref::<NamesLoaded>() else { continue };
             if loaded.request != self.request || self.busy { continue; }
             self.taken = loaded.names.clone();
-            if self.name_edited { continue; }
-            let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
-            self.state.name = self.suggested(&runtime);
-            self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
+            self.follow_suggestion(cx);
             self.render_create(cx);
         }
+    }
+
+    /// An untyped name becomes the first free name for the harness shown
+    /// (lookup, harness change, display name); a typed one is left alone,
+    /// and so is any name once Create is pressed.
+    pub(super) fn follow_suggestion(&mut self, cx: &mut Cx) {
+        if self.name_edited || self.busy { return; }
+        let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
+        self.state.name = self.suggested(&runtime);
+        self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
     }
 }
 
@@ -99,6 +106,35 @@ mod tests {
         dialog.name_typed(&mut cx, "anna-codex".into());
         deliver(&mut dialog, &mut cx, &["anna-codex"]);
         assert_eq!(dialog.state.name, "anna-codex");
+    }
+
+    /// The same rule on a harness change: Codex → Claude.
+    #[test]
+    fn a_harness_change_moves_only_an_untyped_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.state.probes[0] = Some(Ok(parse_models(&serde_json::json!({"models": [{"model": "sonnet"}]}))));
+        dialog.taken = vec!["anna-claude".into()];
+        dialog.choose_harness(&mut cx, 0);
+        assert_eq!(dialog.state.runtime(), Some(Runtime::Claude));
+        assert_eq!(dialog.state.name, "anna-claude-2");
+        dialog.name_typed(&mut cx, "anna-codex".into());
+        dialog.choose_harness(&mut cx, 1);
+        assert_eq!(dialog.state.name, "anna-codex", "typed: kept even though it equals a suggestion");
+    }
+
+    /// And on a display-name refresh (tests have no signed-in user: stem "my").
+    #[test]
+    fn a_display_name_refresh_moves_only_an_untyped_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.taken = vec!["my-codex".into()];
+        dialog.refresh_stem(&mut cx);
+        assert_eq!(dialog.state.name, "my-codex-2", "anna-claude was untyped: follows the shown harness");
+        let mut typed = codex_only_dialog(&mut cx);
+        typed.name_typed(&mut cx, "anna-codex".into());
+        typed.refresh_stem(&mut cx);
+        assert_eq!(typed.state.name, "anna-codex");
     }
 
     #[test]

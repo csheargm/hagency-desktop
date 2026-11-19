@@ -196,26 +196,18 @@ impl CreateAgentDialog {
     }
 
     /// The display name may arrive after opening (a profile-cache miss): an
-    /// untouched suggestion then follows it (GPT review).
+    /// untyped name then follows it (GPT review).
     fn refresh_stem(&mut self, cx: &mut Cx) {
         let stem = owner_stem(cx, false);
-        let Some(runtime) = self.state.runtime() else { return };
-        if stem == self.stem || self.state.name != self.suggested(&runtime) { return; }
+        if stem == self.stem { return; }
         self.stem = stem;
-        self.state.name = self.suggested(&runtime);
-        self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
+        self.follow_suggestion(cx);
     }
 
     fn choose_harness(&mut self, cx: &mut Cx, index: usize) {
-        let before = self.state.runtime();
         self.state.harness = index;
         self.state.model = 0;
-        if let (Some(before), Some(after)) = (before, self.state.runtime())
-            && self.state.name == self.suggested(&before)
-        {
-            self.state.name = self.suggested(&after);
-            self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
-        }
+        self.follow_suggestion(cx);
         self.render(cx);
     }
 
