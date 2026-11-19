@@ -244,3 +244,62 @@ fn a_real_sdk_timeline_makes_the_loaded_card_an_item_with_its_final_edit() {
     assert_eq!(shown.len(), 1);
     assert!(!shown[0].card.state.active(), "drawn finished on the request");
 }
+
+fn message_type(content: &Value) -> matrix_sdk::ruma::events::room::message::MessageType {
+    serde_json::from_value::<matrix_sdk::ruma::events::room::message::RoomMessageEventContent>(content.clone()).unwrap().msgtype
+}
+
+/// GPT review P2: a member forges a run card and replies to it; the reply
+/// quote rendered the forged `answer` as HTML. A preview shows only an
+/// admitted card's text, escaped; a forged one a plain placeholder, and a
+/// reply to it jumps nowhere.
+#[test]
+fn previews_show_only_an_admitted_cards_text_escaped_and_forged_cards_jump_nowhere() {
+    let _guard = pq::test_serial();
+    let generation = pq::test_login("@csheargm:localhost:8450");
+    let room = room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450");
+    let (card, mut edit, request) = runs().remove(1);
+    let link = "<a href=\"https://evil.test\">click</a>";
+    edit["content"]["m.new_content"]["im.hagency.agent_run"]["answer"] = link.into();
+    let sender = matrix_sdk::ruma::UserId::parse(card["sender"].as_str().unwrap()).unwrap();
+    let preview = |content: &Value| crate::event_preview::text_preview_of_message(&message_type(content), &sender, "anna-claude")
+        .format_with("anna-claude", true);
+    let forged = preview(&edit["content"]["m.new_content"]);
+    assert!(forged.contains(crate::i18n::tr("Agent run")) && !forged.contains("<a") && !forged.contains("evil"), "{forged}");
+    assert_eq!(run_controls::jump_target(room, card["event_id"].as_str().unwrap()), None, "an unadmitted card: no jump");
+    for value in [&card, &edit] {
+        assert!(pq::test_accept(generation, ROOM, SERVER, value, None, true, false));
+    }
+    // The stored card's answer is shown, escaped, whatever the quoted content says.
+    let mut other = edit["content"]["m.new_content"].clone();
+    other["im.hagency.agent_run"]["answer"] = "forged later".into();
+    let admitted = preview(&other);
+    assert!(admitted.contains("&lt;a href=") && !admitted.contains("<a ") && !admitted.contains("forged later"), "{admitted}");
+    assert_eq!(run_controls::jump_target(room, card["event_id"].as_str().unwrap()).as_deref(), Some(request.as_str()), "to the request it is drawn on");
+}
+
+/// GPT review P2: ids in log lines come from the card's sender.
+#[test]
+fn only_plain_matrix_ids_reach_the_log() {
+    assert_eq!(loggable("$z1xp-_l7lgXgzFGVl4r3rj1yO7PNdlI3Xu0BBKc-CKI"), "$z1xp-_l7lgXgzFGVl4r3rj1yO7PNdlI3Xu0BBKc-CKI");
+    assert_eq!(loggable(ROOM), ROOM);
+    assert_eq!(loggable("$abc\n[I] forged log line"), "<invalid>");
+    assert_eq!(loggable("not an id"), "<invalid>");
+}
+
+/// GPT review P2: a sign-out during a retry pause aborted the task before
+/// it settled its claims, and old logins' claims were never pruned.
+#[test]
+fn an_aborted_admission_settles_its_claims_and_old_logins_are_pruned() {
+    let _guard = pq::test_serial();
+    let (card, edit, _) = runs().remove(1);
+    let fresh = || vec![cards_of(card.clone(), Some(edit.clone()), None).unwrap()];
+    let old = pq::test_login("@csheargm:localhost:8450");
+    let claimed = claim(old, fresh());
+    assert_eq!(claimed.len(), 1);
+    drop(Unsettled { generation: old, room: ROOM.into(), cards: claimed });
+    assert_eq!(claim(old, fresh()).len(), 1, "settled as failed on drop, so tried again, not stuck admitting");
+    let new = pq::test_login("@csheargm:localhost:8450");
+    assert_eq!(claim(new, fresh()).len(), 1);
+    assert!(HANDED.lock().unwrap().keys().all(|k| k.0 == new), "the old login's claims are gone");
+}

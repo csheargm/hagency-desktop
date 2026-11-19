@@ -32,10 +32,6 @@ impl Loaded {
     fn key(&self, generation: u64) -> Key {
         (generation, self.card.clone(), self.edit_id().to_owned())
     }
-    /// The request the run answers (the card is drawn on it).
-    fn request(&self) -> &str {
-        self.original.0["content"]["im.hagency.agent_run"]["eventId"].as_str().unwrap_or_default()
-    }
     /// The revision the card has once its latest edit is applied.
     fn revision(&self) -> u64 {
         let card = |v: &Value| v["im.hagency.agent_run"]["revision"].as_u64();
@@ -78,14 +74,11 @@ fn json(raw: &Raw<AnySyncTimelineEvent>) -> Option<Value> {
     raw.deserialize_as::<Value>().ok()
 }
 
-/// Agent items not taken as cards, named in the ingest log line.
-const MAX_LOGGED_SKIPS: usize = 8;
-
-/// Why an Agent's item is no run card: its id, raw JSON present, msgtype.
-fn skip_reason(event: &EventTimelineItem) -> String {
-    let original = event.original_json().and_then(json);
-    let msgtype = original.as_ref().and_then(|v| v["content"]["msgtype"].as_str().map(str::to_owned));
-    format!("{} json={} msgtype={msgtype:?}", event.event_id().map_or("local", |id| id.as_str()), original.is_some())
+/// `id` for a log line when it is a plain Matrix event or room ID, else
+/// `<invalid>`: a card's ids come from its sender and must not inject log text.
+fn loggable(id: &str) -> &str {
+    let valid = OwnedEventId::try_from(id).is_ok() || matrix_sdk::ruma::RoomId::parse(id).is_ok();
+    if valid && id.chars().all(|c| c.is_ascii_graphic()) { id } else { "<invalid>" }
 }
 
 /// The card and its latest edit, if `event` is an Agent run status event.
@@ -105,6 +98,8 @@ fn cards_of(original: Value, edit: Option<Value>, info: Option<EncryptionInfo>) 
 /// The cards not handed over yet in `generation`, now marked as being admitted.
 fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
     let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    // An older login's claims never apply again (its tasks end on sign-out).
+    handed.retain(|key, _| key.0 == generation);
     if handed.len() > MAX_HANDED {
         handed.retain(|_, state| matches!(state, Handed::Admitting(_)));
     }
@@ -143,32 +138,23 @@ async fn fetch_edit(room: &Room, card: &Loaded) -> Option<Admit> {
     let id = OwnedEventId::try_from(card.edit_id()).ok()?;
     // A failed lookup falls back to the timeline's JSON; a card left unstored
     // is retried on the next timeline update (`settle`).
-    let event = match room.load_or_fetch_event(&id, None).await {
-        Ok(event) => event,
-        Err(e) => {
-            makepad_widgets::log!("Loaded run cards: edit {id} not in the event cache ({e}); using the timeline's copy");
-            return None;
-        }
-    };
+    let event = room.load_or_fetch_event(&id, None).await.ok()?;
     Some((json(event.raw())?, event.encryption_info().map(|info| (**info).clone())))
 }
 
 /// Admits the run cards among `items` (a room timeline's loaded items).
 pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
     let cards: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
-    let skipped: Vec<_> = items.iter().filter_map(|i| i.as_event())
-        .filter(|e| ::hagency::agent_questions::is_agent(e.sender().as_str()) && loaded(e).is_none())
-        .take(MAX_LOGGED_SKIPS).map(skip_reason).collect();
     let generation = super::pending_questions::generation();
     let found = cards.len();
     let cards = claim(generation, cards);
-    makepad_widgets::log!("Loaded run cards: ingest {} with {} items: {found} run cards, {} to admit (generation {generation}); agent items skipped: {skipped:?}",
-        room.room_id(), items.len(), cards.len());
     if cards.is_empty() {
         return;
     }
+    makepad_widgets::log!("Loaded run cards: {} has {found} run cards, admitting {}", loggable(room.room_id().as_str()), cards.len());
+    let unsettled = Unsettled { generation, room: room.room_id().to_string(), cards };
     let room = room.clone();
-    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(admit_with_retries(room, generation, cards)));
+    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(admit_with_retries(room, unsettled)));
 }
 
 /// Pauses before each try: a card can fail at start-up while the room's
@@ -181,38 +167,50 @@ fn stored(room: &str, card: &Loaded) -> bool {
     super::run_controls::stored_revision(room, &card.card).is_some_and(|r| r >= card.revision())
 }
 
-/// Admits `cards`, trying the ones not stored again after a pause.
-async fn admit_with_retries(room: Room, generation: u64, mut cards: Vec<Loaded>) {
-    let room_id = room.room_id().to_owned();
-    for (attempt, pause) in TRIES_AFTER.iter().enumerate() {
-        tokio::time::sleep(*pause).await;
-        if super::pending_questions::generation() != generation {
-            break;
+/// Claimed cards not settled yet. Dropping it settles them, so a task ended
+/// early (sign-out aborts account tasks) leaves no claim stuck as admitting.
+struct Unsettled {
+    generation: u64,
+    room: String,
+    cards: Vec<Loaded>,
+}
+impl Drop for Unsettled {
+    fn drop(&mut self) {
+        for card in &self.cards {
+            if !stored(&self.room, card) {
+                makepad_widgets::log!("Loaded run cards: card {} in {} not admitted", loggable(&card.card), loggable(&self.room));
+            }
+            settle(self.generation, &self.room, card);
+        }
+    }
+}
+
+/// Admits the unsettled cards, trying the ones not stored again after a pause.
+async fn admit_with_retries(room: Room, mut unsettled: Unsettled) {
+    for pause in TRIES_AFTER {
+        tokio::time::sleep(pause).await;
+        if super::pending_questions::generation() != unsettled.generation {
+            return;
         }
         let mut changed = false;
-        for card in &cards {
+        for card in &unsettled.cards {
             let mut events = vec![card.original.clone()];
             if card.edit.is_some() {
                 events.extend(edit_to_admit(card, fetch_edit(&room, card).await));
             }
-            changed |= super::pending_questions::admit_loaded(generation, &room, events).await;
-            makepad_widgets::log!("Loaded run cards: try {} {} (edit {}) stored_revision={:?}, wanted {}, shown on request {}: {} card(s)",
-                attempt + 1, card.card, card.edit_id(), super::run_controls::stored_revision(room_id.as_str(), &card.card),
-                card.revision(), card.request(), super::run_controls::for_event(&room_id, card.request(), true).len());
+            changed |= super::pending_questions::admit_loaded(unsettled.generation, &room, events).await;
         }
-        makepad_widgets::log!("Loaded run cards: {room_id} try {} done, changed={changed}{}", attempt + 1,
-            if changed { ", PendingQuestionsChanged posted" } else { "" });
         if changed {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
-        let (done, left): (Vec<_>, Vec<_>) = cards.into_iter().partition(|c| stored(room_id.as_str(), c));
-        done.iter().for_each(|c| settle(generation, room_id.as_str(), c));
-        cards = left;
-        if cards.is_empty() {
+        let (done, left): (Vec<_>, Vec<_>) = std::mem::take(&mut unsettled.cards).into_iter()
+            .partition(|c| stored(&unsettled.room, c));
+        done.iter().for_each(|c| settle(unsettled.generation, &unsettled.room, c));
+        unsettled.cards = left;
+        if unsettled.cards.is_empty() {
             return;
         }
     }
-    cards.iter().for_each(|c| settle(generation, room_id.as_str(), c));
 }
 
 #[cfg(test)]

@@ -362,11 +362,11 @@ pub(crate) fn text_preview_of_message(
                 .then(|| htmlize::escape_text(msg.body()).to_string());
             #[cfg(not(feature = "agent_chat"))]
             let agent_chat_body: Option<String> = None;
-            // An Agent run status shows its localized state (same words as the run card).
-            if msg.msgtype() == ::hagency::agent_run_controls::MSGTYPE
-                && let Some(status) = crate::home::agent_run_card::status_of_message(&msg.data())
-            {
-                return TextPreview::from((status.to_owned(), BeforeText::UsernameWithColon));
+            // An Agent run status shows its admitted card's answer or state (same words
+            // as the run card), escaped; anything else about it is untrusted (GPT review).
+            if msg.msgtype() == ::hagency::agent_run_controls::MSGTYPE {
+                return TextPreview::from((htmlize::escape_text(&run_card_preview(sender_user_id, &msg.data())).into_owned(),
+                    BeforeText::UsernameWithColon));
             }
             // Never Rust debug output: an unknown msgtype shows its own `body` text.
             let _ = custom;
@@ -378,6 +378,16 @@ pub(crate) fn text_preview_of_message(
         ),
     };
     TextPreview::from((text, BeforeText::UsernameWithColon))
+}
+
+/// The plain text a preview shows for a run card: its admitted card's answer
+/// or state, else a neutral placeholder (a forged or not yet admitted card).
+fn run_card_preview(sender: &UserId, data: &serde_json::Map<String, serde_json::Value>) -> String {
+    crate::hagency::run_controls::admitted_card(sender.as_str(), data)
+        .and_then(|card| serde_json::to_value(card).ok())
+        .and_then(|card| crate::home::agent_run_card::status_of_message(
+            serde_json::json!({::hagency::agent_run_controls::MSGTYPE: card}).as_object()?))
+        .unwrap_or_else(|| tr("Agent run").to_owned())
 }
 
 /// Returns a preview of the given raw timeline event.
