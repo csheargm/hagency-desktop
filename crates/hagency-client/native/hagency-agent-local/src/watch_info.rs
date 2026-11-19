@@ -144,6 +144,17 @@ pub fn render_own(entries: &[WatchEntry], room: &str, owner: &str) -> String {
     lines.join("\n")
 }
 
+/// The Agent's own run context: its watch block, plus the planner rule
+/// ([`hagency_runtime::PLAN_ON_GO_BUILD`], ADR 0030 "Go build this") when its
+/// owner lets it work in this room and the room links repositories to file on.
+pub fn render_context(entries: &[WatchEntry], room: &str, owner: &str, may_work: bool, linked: &[String]) -> String {
+    let block = render_own(entries, room, owner);
+    if may_work && !linked.is_empty() {
+        return format!("{block}\n\n{}", hagency_runtime::PLAN_ON_GO_BUILD);
+    }
+    block
+}
+
 /// What the Agent's own block may show in this turn: only the watches that
 /// report to this room, whoever asks, because the answer is posted to the
 /// room (GPT review: an owner's question in a shared room is still shared).

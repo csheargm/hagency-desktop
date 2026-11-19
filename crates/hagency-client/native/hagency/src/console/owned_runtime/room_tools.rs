@@ -225,8 +225,8 @@ impl Host {
             let memory_block = memory::block(&*state.source).await;
             let skill_index = skills::index(&*state.source).await;
             let memory_block = hagency_runtime::room_context::join(memory_block, skill_index);
-            let memory_block = hagency_runtime::room_context::join(memory_block, watches::own_block(&state.source).await);
             repo_status::record_read_scope(&state.source).await;
+            let memory_block = hagency_runtime::room_context::join(memory_block, watches::own_block(&state.source).await);
             // Native warm and cold sessions own their conversation history.
             // Leave earlier room pages for explicit reads instead of appending
             // the same recent transcript to every new user turn.
