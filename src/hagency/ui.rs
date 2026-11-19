@@ -5610,6 +5610,9 @@ mod tests {
     }
     #[test]
     fn agent_empty_state_requires_a_successful_list_and_creation_placeholder_tracks_kind() {
+        // TODO(R4): ui.rs is over budget; these panel tests belong in ui_tests.rs.
+        // An empty listing sets the process-wide presence flag the rail reads.
+        let _presence = crate::hagency::agent_presence::test_serial();
         let mut cx = Cx::new(Box::new(|_, _| {}));
         let mut panel = cx.with_vm(|vm| {
             makepad_widgets::script_mod(vm); crate::app::register_widgets(vm);

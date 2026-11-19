@@ -235,6 +235,10 @@ fn explore_rooms_keeps_chats_marked() {
 }
 #[test]
 fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_changes() {
+    // The dot also shows for a first Agent (a process-wide flag other tests
+    // set); pin it to "has an Agent" so only the approval alert decides.
+    let _presence = crate::hagency::agent_presence::test_serial();
+    crate::hagency::agent_presence::set_has_agent(true);
     let (mut cx, mut bar) = rail();
     cx.with_vm(|vm| vm.bx.captured_errors = Some(Vec::new()));
     bar.apply_view_mode(ViewModeOverride::ForceNarrow);
@@ -274,4 +278,5 @@ fn approval_alert_waits_for_the_agent_icon_and_reapplies_after_layout_and_theme_
     // Waiting approvals are counted on the rail.
     bar.apply_approval_alert_count(&mut cx, true, 2);
     assert!(bar.view.label(&mut cx, ids!(agent_button.label)).text().ends_with(" 2 ●"));
+    crate::hagency::agent_presence::reset();
 }
