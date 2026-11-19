@@ -92,3 +92,26 @@ fn an_automatic_accept_is_marked_for_the_account_that_made_it_only() {
     TEST_ME.with(|t| *t.borrow_mut() = Some("@someone:s".into()));
     assert!(!auto::was_auto(&room("!auto-acct:s"), "p-acct"), "another account's manual accept is not labelled automatic");
 }
+
+/// GPT P2, Nov 19: a failed Agent listing read was retried on every card's
+/// clock tick (each second). Now no read starts within the backoff, which
+/// doubles from 30 s to a 5 min cap and clears on success.
+#[test]
+fn a_failed_listing_read_is_not_retried_within_the_backoff() {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut backoff = auto::Backoff::new();
+    assert!(backoff.allows(start), "the first read starts at once");
+    backoff.failed(start);
+    assert!(!backoff.allows(start + Duration::from_secs(1)), "not on the next tick");
+    assert!(!backoff.allows(start + Duration::from_secs(29)));
+    assert!(backoff.allows(start + Duration::from_secs(30)));
+    backoff.failed(start);
+    assert!(!backoff.allows(start + Duration::from_secs(59)), "the wait doubles");
+    for _ in 0..20 {
+        backoff.failed(start);
+    }
+    assert!(backoff.allows(start + Duration::from_secs(5 * 60)), "capped at 5 min");
+    backoff.succeeded();
+    assert!(backoff.allows(start), "a success clears it");
+}
