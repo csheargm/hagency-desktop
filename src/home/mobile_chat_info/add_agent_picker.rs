@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn add_agent_dialog_uses_plain_words() {
         let mut cx = Cx::new(Box::new(|_, _| {}));
-        let mut info = cx.with_vm(|vm| {
+        let info = cx.with_vm(|vm| {
             makepad_widgets::script_mod(vm);vm.bx.captured_errors=Some(Vec::new());crate::app::register_widgets(vm);
             let value = script_eval!(vm, {mod.widgets.MobileChatInfo {}});
             MobileChatInfo::script_from_value(vm, value)
