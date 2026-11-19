@@ -102,6 +102,8 @@ pub(crate) async fn advance_merge(io: &impl LoopIo, target: &Target, ctx: &LoopC
 }
 
 use super::merge_hold::Missing;
+#[path = "peer_review.rs"]
+pub(crate) mod peer_review;
 
 /// The merge step's notice, or `None` to wait (CI running, no review yet, or the head moved).
 pub(crate) fn merge_notice(target: &Target, readiness: &Value, ctx: &LoopCtx<'_>) -> Option<LoopNotice> {

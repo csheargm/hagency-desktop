@@ -55,8 +55,13 @@ impl Peers {
     /// [`pick`] among the candidates not `passed` over: they never answered
     /// this head's review request (GPT batch review: a paused remote Codex
     /// Agent kept every re-send).
+    /// Once another owner's Agent was passed over, only this owner's own
+    /// are asked: no other owner's verdict is recorded here (live PR #121,
+    /// bird-claude was asked after bird-codex).
     pub(crate) fn pick(&self, passed: &[String]) -> Option<Pick> {
-        let left: Vec<Candidate> = self.candidates.iter().filter(|c| !passed.iter().any(|p| p == c.puppet.as_str())).cloned().collect();
+        let is_passed = |c: &Candidate| passed.iter().any(|p| p == c.puppet.as_str());
+        let own_only = self.candidates.iter().any(|c| !c.own && is_passed(c));
+        let left: Vec<Candidate> = self.candidates.iter().filter(|c| !is_passed(c) && (c.own || !own_only)).cloned().collect();
         pick(self.author, &left, self.prefer_different, self.complete)
     }
 }

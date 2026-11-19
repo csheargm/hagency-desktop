@@ -178,6 +178,11 @@ fn hold_step(missing: &[(Missing, String)]) -> String {
 /// The last word of the Assist notice's hold step (`hold-autonomy-assist`).
 const ASSIST_WORD: &str = "assist";
 
+/// The Assist notice's hold step: once taken for a head, the loop is done with it (`peer_review`).
+pub(super) fn assist_step() -> String {
+    format!("{}-{ASSIST_WORD}", Missing::Autonomy.step())
+}
+
 /// Whether the room's Assist level is all that holds the merge: every rule,
 /// approval and CI passed (the gate judges autonomy last), so a person merges.
 fn only_assist(missing: &[(Missing, String)]) -> bool {
@@ -207,7 +212,7 @@ pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, c
             // Its own step: an earlier `hold-autonomy` notice of the same head never hides it (GPT batch review).
             let notice = if only_assist(missing) {
                 let reviewer = readiness[approval_note::REVIEWED_BY_KEY].as_str().map(str::to_owned);
-                LoopNotice::AwaitsPerson { target: target.clone(), step: format!("{}-{ASSIST_WORD}", hold_step(missing)), reviewer }
+                LoopNotice::AwaitsPerson { target: target.clone(), step: assist_step(), reviewer }
             } else {
                 LoopNotice::Held { target: target.clone(), step: hold_step(missing), missing: missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect() }
             };

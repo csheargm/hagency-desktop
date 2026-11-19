@@ -67,7 +67,7 @@ pub fn approval_line(reviewer: Option<&Reviewer>, verdict: bool, counted: u64) -
 
 /// Whether one more approval would leave only the room's Assist level: the
 /// gate's `oneMore` answer, for the same head.
-fn only_assist_left(readiness: &Value) -> bool {
+pub(super) fn only_assist_left(readiness: &Value) -> bool {
     let more = &readiness["oneMore"];
     more["decision"] == "human" && more["reason"] == ASSIST_REASON && more["head"] == readiness["head"]
 }

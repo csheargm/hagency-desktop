@@ -23,6 +23,16 @@ pub(crate) struct Due {
 /// hold step is only looked up; a dispatched step may be given back, and the
 /// round's line is said here (acknowledged once the room accepted it).
 pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str, to: Option<&OwnedUserId>) -> Result<Due, String> {
+    due_with(io, target, step, to, None).await
+}
+
+/// The `review` step for another owner's Agent `to`, named `label` in the
+/// room: never judged by this device's runs, said once when it never answered.
+pub(crate) async fn due_remote(io: &impl LoopIo, target: &Target, to: &OwnedUserId, label: &str) -> Result<Due, String> {
+    due_with(io, target, "review", Some(to), Some(label)).await
+}
+
+async fn due_with(io: &impl LoopIo, target: &Target, step: &str, to: Option<&OwnedUserId>, remote: Option<&str>) -> Result<Due, String> {
     let key = json!({"step": step, "pr": target.url, "head": target.head});
     let (true, Some(to)) = (DISPATCHED_STEPS.contains(&step), to) else {
         return Ok(Due { taken: io.review(json!({"stepTaken": key})).await?["taken"] == true, again: 0 });
@@ -31,9 +41,12 @@ pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str, to: Optio
     ask["requester"] = io.requester().into();
     ask["to"] = to.as_str().into();
     ask["room"] = io.room().into();
+    if remote.is_some() {
+        ask["remote"] = true.into();
+    }
     let due = io.review(json!({"stepDue": ask})).await?["due"].clone();
     let again = due["again"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-    if let Some((notice, round)) = line_of(target, step, &due["say"]) {
+    if let Some((notice, round)) = line_of(target, step, &due["say"], remote) {
         // A fixed id per round: a line re-offered after a lost ack is dropped as a duplicate.
         io.post(&notice, 0).await?;
         let mut said = key;
@@ -43,11 +56,15 @@ pub(crate) async fn due(io: &impl LoopIo, target: &Target, step: &str, to: Optio
     Ok(Due { taken: due["taken"] == true, again })
 }
 
-/// The round's line from the ledger's `say`, keyed by its round.
-fn line_of(target: &Target, step: &str, say: &Value) -> Option<(LoopNotice, u64)> {
+/// The round's line from the ledger's `say`, keyed by its round; `remote`:
+/// the reviewer's room label, when it is another owner's Agent.
+fn line_of(target: &Target, step: &str, say: &Value, remote: Option<&str>) -> Option<(LoopNotice, u64)> {
     let why = say["why"].as_str()?.to_owned();
     let round = say["round"].as_u64().unwrap_or(0);
     let step_key = format!("not-started-{step}-{round}");
+    if let Some(reviewer) = remote.filter(|_| why == "unanswered") {
+        return Some((LoopNotice::Unanswered { target: target.clone(), reviewer: reviewer.to_owned(), step: step_key }, round));
+    }
     Some((LoopNotice::NotStarted { target: target.clone(), what: step.to_owned(), why, gave_up: say["gaveUp"] == true, step: step_key }, round))
 }
 

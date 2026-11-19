@@ -127,9 +127,9 @@ impl LiveTrack<'_> {
     fn agent_id(&self) -> &str {
         self.worker.agent["id"].as_str().unwrap_or_default()
     }
-    /// The gate's answer for `pr` and the step it leads to; every GitHub read
+    /// The gate's answer for `pr` and the step it leads to (a `settled` head is never re-asked); every GitHub read
     /// (the owner API's own, and the reviews) fails here, never silently.
-    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, (pr, peer): (&PullRequest, Option<&Pick>), fixer: &OwnedUserId) -> Result<Gate, String> {
+    async fn merge_step(&self, io: &LiveLoop<'_>, target: &super::loop_notice::Target, (pr, peer, settled): (&PullRequest, Option<&Pick>, bool), fixer: &OwnedUserId) -> Result<Gate, String> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
@@ -140,7 +140,7 @@ impl LiveTrack<'_> {
         let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         // A verdict on GitHub the gate never recorded: ask the reviewer again before holding (PR #105).
-        if let Some(peer) = super::approval_note::asked_again(peer) && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
+        if let Some(peer) = super::approval_note::asked_again(peer).filter(|_| !settled) && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
         let reviewer = super::approval_note::reviewer_of(&self.peers, peer, &self.room).await;
@@ -224,12 +224,10 @@ impl TrackIo for LiveTrack<'_> {
         }
         // The peer only reviews. The merge step is judged and addressed for
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
-        if let Some(peer) = &peer {
-            review_loop::advance(&io, &target, &LoopCtx { agent: &peer.reviewer, name: "", maintainer: false, permission: None }).await?;
-        }
+        let settled = review_loop::peer_review::advance(&io, &target, peer.as_ref(), &review_loop::peer_review::LiveFacts { worker: self.worker, peers: &self.peers, room: &self.room }).await?;
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
         // Everyone passed over: nobody is asked, but a late verdict still merges (GPT review).
-        let gate = match self.merge_step(&io, &target, (pr, peer.as_ref()), &fixer).await {
+        let gate = match self.merge_step(&io, &target, (pr, peer.as_ref(), settled), &fixer).await {
             Ok(Gate::Unreadable(error)) | Err(error) => Err(error),
             Ok(gate) => Ok(gate),
         };
