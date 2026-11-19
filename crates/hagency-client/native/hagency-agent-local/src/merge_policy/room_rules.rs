@@ -212,27 +212,6 @@ impl Ledger {
         }
         Ok(false)
     }
-    /// Whether this device knows `room` as a project room: the desktop
-    /// recorded its autonomy level (it snapshots every joined room with linked
-    /// repositories or a level) or its merge rules, an Agent may work there,
-    /// or a watch or work list entry (active or not) reports to it. Absence of
-    /// a snapshot then never reads as a private chat (batch GPT review).
-    pub fn project_room(&self, room: &str) -> Result<bool> {
-        let recorded: bool = self.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM room_autonomy WHERE room=?1) OR EXISTS(SELECT 1 FROM room_merge_rules WHERE room=?1) OR EXISTS(SELECT 1 FROM room_work WHERE room=?1)",
-            [room],
-            |r| r.get(0),
-        )?;
-        if recorded {
-            return Ok(true);
-        }
-        for agent in self.watching_agents()? {
-            if self.watch_entries(&agent)?.iter().any(|e| e.room_id == room) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
     /// The room rules a merge (or review) of `repo` from `room` is judged by
     /// now: that room's own rules, and only when `repo` is linked to it, so
     /// the rules, the autonomy level, the role and the approvals all refer to

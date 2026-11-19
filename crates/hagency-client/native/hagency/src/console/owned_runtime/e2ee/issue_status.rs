@@ -99,10 +99,15 @@ fn power_levels_of(room: &matrix_sdk::Room, state: &[Value]) -> Option<matrix_sd
 }
 
 /// The room's own linked repositories a card-free issue may be filed on for
-/// `asker`, by the server's `state` and `levels`: the asker and the list's
-/// sender are joined, the asker is the room's owner or a maintainer and the
-/// sender may still link them ([`may_file_issues`]). Else none.
+/// `asker`, by the server's `state` and `levels`: the room is not encrypted
+/// (a public issue would publish its private discussion; the card stays,
+/// round-2 GPT review), the asker and the list's sender are joined, the asker
+/// is the room's owner or a maintainer and the sender may still link them
+/// ([`may_file_issues`]). Else none.
 pub(in crate::console) fn issue_grant(state: &[Value], levels: Option<&matrix_sdk::ruma::events::room::power_levels::RoomPowerLevels>, asker: &matrix_sdk::ruma::UserId) -> Vec<String> {
+    if state_event(state, "m.room.encryption", "").is_some() {
+        return Vec::new();
+    }
     let joined = |user: &str| state_event(state, "m.room.member", user).is_some_and(|m| m["content"]["membership"] == "join");
     let Some(list) = state_event(state, ROOM_REPOS_STATE_TYPE, "") else { return Vec::new() };
     let sender = list["sender"].as_str().unwrap_or_default();
@@ -157,5 +162,17 @@ mod tests {
         assert!(issue_grant(&[member("@own:x", "leave"), member("@mo:x", "join"), list], Some(&levels()), &mo).is_empty(), "the list's sender left");
         assert!(issue_grant(&[member("@own:x", "join"), member("@mo:x", "join")], Some(&levels()), &mo).is_empty(), "no list");
         assert!(issue_grant(&[], Some(&levels()), &mo).is_empty(), "the server's state unread");
+    }
+
+    /// Round-2 GPT review: an encrypted room never grants card-free issue
+    /// filing, whatever its linked list and levels say (a public issue would
+    /// publish private discussion); the card stays.
+    #[test]
+    fn an_encrypted_room_never_grants_card_free_issues() {
+        let member = |id: &str| serde_json::json!({"type": "m.room.member", "state_key": id, "content": {"membership": "join"}});
+        let list = serde_json::json!({"type": ROOM_REPOS_STATE_TYPE, "state_key": "", "sender": "@own:x", "content": {"repos": ["acme/app"]}});
+        let encryption = serde_json::json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}});
+        let mo = OwnedUserId::try_from("@mo:x").unwrap();
+        assert!(issue_grant(&[member("@own:x"), member("@mo:x"), list, encryption], Some(&levels()), &mo).is_empty());
     }
 }

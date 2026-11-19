@@ -72,10 +72,14 @@ said (status line, hold notice).
 - Gate (agent-local): reviews and readying need the Agent to "may work" in
   the room and the room to run; a merge without a person needs Autonomous,
   and the owner of this device's Agents must be the room's owner or a
-  maintainer (`ownerMaintainer`, from the server's power levels). In a loop
-  room (one with a snapshot) anything but a fresh read saying the owner is one
-  refuses the merge outright, card or not ("only agents of the room owner or
-  maintainers merge here"); Assist holds it ("room is in Assist — a person
+  maintainer (`ownerMaintainer`, from the server's power levels). A merge
+  goes on (to the gate or the owner's card) only in a room with a fresh
+  snapshot saying the owner is one, or in the Agent's own private chat with
+  its owner (known from the server's binding, `scope_kind: owner_direct`,
+  never from membership or the sync store). Anywhere else it is refused
+  outright, card or not ("only agents of the room owner or maintainers merge
+  here", or, with no fresh read, "merges happen only in a project room …");
+  Assist holds it ("room is in Assist — a person
   delivers"). Merge commands the gate does not recognize keep the ordinary
   tool policy (a follow-up could enforce the role at the GitHub write itself).
 - Push trust (fix steps, ADR 0022's pinned steps) runs for an Agent that may
@@ -84,7 +88,8 @@ said (status line, hold notice).
 - Filing issues ("@agent go build this"): `gh issue create --repo <a repo the
   room links> --title … --body …` runs without a card when the request comes
   from the room's owner or a maintainer (power level at least 50, read from the
-  server when the turn starts) while the room runs (exactly those three
+  server when the turn starts) in an unencrypted room (an encrypted room's
+  discussion is private, so its requests keep the card) while the room runs (exactly those three
   options, each once, bounded lengths, rebuilt as single-quoted words on
   github.com). The asked Agent only files issues; other Agents pick them up
   through the normal claim, so no Agent assigns work to another. A plain

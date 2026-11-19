@@ -397,6 +397,7 @@ impl Ledger {
         db.execute_batch(merge_policy::review_loop::SCHEMA)?;
         db.execute_batch(merge_policy::work::SCHEMA)?;
         db.execute_batch(room_autonomy::SCHEMA)?;
+        db.execute_batch(room_autonomy::merge_room::SCHEMA)?;
         db.execute_batch(merge_policy::room_rules::SCHEMA)?;
         db.execute_batch(plans::SCHEMA)?;
         issue_track::ensure_schema(&db)?;

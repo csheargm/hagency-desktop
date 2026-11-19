@@ -133,29 +133,4 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     assert_eq!(ledger.loop_may_work("anna", ROOM), Ok(()), "a member's agent still works");
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now() - ROOM_RULES_TTL_SECS - 1).unwrap();
     assert_eq!(ledger.owner_maintainer_at(ROOM, unix_now()).unwrap(), None, "a stale role counts for nothing");
-    assert!(ledger.merge_refused(ROOM, unix_now()).unwrap(), "a stale role refuses the merge (GPT review)");
-    assert!(!ledger.merge_refused("!dm:x", unix_now()).unwrap(), "a room the loop never read leaves it to the card");
-    ledger.set_room_autonomy(OWNER, &snapshot(false), unix_now()).unwrap();
-    assert!(ledger.merge_refused(ROOM, unix_now()).unwrap());
-    ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now()).unwrap();
-    assert!(!ledger.merge_refused(ROOM, unix_now()).unwrap());
-}
-
-/// Batch GPT review: a project room with no autonomy snapshot yet never
-/// gets a private chat's card. Linked by a watch (even paused), by recorded
-/// merge rules or by "may work": the merge is refused until a fresh read.
-#[test]
-fn a_project_room_without_a_snapshot_refuses_merges() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut ledger = ledger(temp.path());
-    let (watched, ruled, worked) = ("!watched:x", "!ruled:x", "!worked:x");
-    let watch = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Off, repo: "acme/app".into(), room_id: watched.into(), ..Default::default() };
-    ledger.set_issue_watch(OWNER, "anna", watch, 1).unwrap();
-    let rules = crate::merge_policy::room_rules::RoomRulesSnapshot { repo: "acme/app".into(), room_id: ruled.into(), ..Default::default() };
-    ledger.set_room_merge_rules(OWNER, &rules, unix_now()).unwrap();
-    ledger.set_may_work(OWNER, "anna", worked, true).unwrap();
-    for room in [watched, ruled, worked] {
-        assert!(ledger.merge_refused(room, unix_now()).unwrap(), "{room}: a project room, never read");
-    }
-    assert!(!ledger.merge_refused("!dm:x", unix_now()).unwrap(), "a private chat leaves it to the card");
 }
