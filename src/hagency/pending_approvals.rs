@@ -266,9 +266,19 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
             PopupKind::Info,
             Some(20.0),
         );
-        crate::jit_compat::show_notification(cx, &title, &summary);
+        notify(cx, &p.row, false);
     }
     changed
+}
+
+/// The desktop notification for `row`: generic wording only (see
+/// `approval_text::notification_text`), the room by its name when known.
+fn notify(cx: &mut Cx, row: &Value, expired: bool) {
+    let room = row["approval"]["roomId"].as_str().and_then(|id| matrix_sdk::ruma::OwnedRoomId::try_from(id).ok())
+        .and_then(|id| cx.get_global_ref::<crate::home::rooms_list::RoomsListRef>()?.get_room_name(&id))
+        .map(|name| name.to_string());
+    let (title, body) = super::approval_text::notification_text(row, room.as_deref(), expired);
+    crate::jit_compat::show_notification(cx, &title, &body);
 }
 
 /// Remember why a reading failed, so the inbox can say so. Returns true when
@@ -312,7 +322,7 @@ pub fn announce_expired(cx: &mut Cx) {
         let (title, summary) = describe(&row);
         let heading = crate::i18n::format("Expired, not answered: {title}", &[("title", title)]);
         enqueue_popup_notification(format!("{heading}\n{summary}"), PopupKind::Warning, Some(20.0));
-        crate::jit_compat::show_notification(cx, &heading, &summary);
+        notify(cx, &row, true);
     }
 }
 

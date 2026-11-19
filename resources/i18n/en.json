@@ -3879,5 +3879,10 @@
   "#{number} needs a person: the agent said it cannot fix it — {url}": "#{number} needs a person: the agent said it cannot fix it — {url}",
   "{count} merged": "{count} merged",
   "Hagency ({server}) added {invitee} to this room.": "Hagency ({server}) added {invitee} to this room.",
-  "#{number} needs a person: no pull request after 1 try — {url}": "#{number} needs a person: no pull request after 1 try — {url}"
+  "#{number} needs a person: no pull request after 1 try — {url}": "#{number} needs a person: no pull request after 1 try — {url}",
+  "a room": "a room",
+  "Approval needed": "Approval needed",
+  "Approval request expired": "Approval request expired",
+  "{agent} asks for approval in {room}": "{agent} asks for approval in {room}",
+  "{agent}'s approval request in {room} expired.": "{agent}'s approval request in {room} expired."
 }

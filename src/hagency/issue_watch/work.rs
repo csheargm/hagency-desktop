@@ -37,6 +37,9 @@ pub(crate) struct Worker<'a> {
     pub epoch: u64,
     /// Every active Agent of this owner: the tracker asks another one to review.
     pub peers: &'a [Value],
+    /// Rooms whose merge rules this check could not record: reviews and
+    /// claims go on there, merges wait (their recorded rules may be superseded).
+    pub merge_held: &'a HashSet<String>,
 }
 
 /// Run every repository of `saved["work"]`.
@@ -199,7 +202,7 @@ async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<
     // Merging follows the owner's own GitHub permission, read with the
     // owner's own token and never cached across owners.
     let permission = fetch_permission(worker.client, GITHUB_API, &entry.repo, login, worker.token).await.ok();
-    let can_merge = review_loop::can_merge(permission.as_deref());
+    let can_merge = review_loop::can_merge(permission.as_deref()) && merges_run(worker.merge_held, &entry.room_id);
     let agent = puppet(worker.agent)?;
     let name = worker.agent["displayName"].as_str().unwrap_or_default().to_owned();
     let io = LiveLoop::new(worker, &entry.room_id)?;
@@ -212,6 +215,12 @@ async fn review(worker: &Worker<'_>, entry: &OwnerRules, login: &str) -> Result<
         merge_own(worker, entry, &own, &io, &LoopCtx { agent: &agent, name: &name, maintainer: true, permission: permission.as_deref() }).await?;
     }
     Ok(())
+}
+
+/// Whether this check may merge in `room_id`: not when its room merge rules
+/// could not be recorded (`held`; the gate would judge by superseded ones).
+pub(crate) fn merges_run(held: &HashSet<String>, room_id: &str) -> bool {
+    !held.contains(room_id)
 }
 
 /// The owner's own pull requests (from claimed or planned issues) go to the

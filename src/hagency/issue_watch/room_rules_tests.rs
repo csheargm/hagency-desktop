@@ -148,3 +148,30 @@ async fn read_judges_by_the_servers_levels_not_a_stale_sync_store() {
     assert!(may_set_rules(&stale_levels, &UserId::parse(MODERATOR).unwrap()), "the store is stale on purpose");
     assert_eq!(read(&room).await.unwrap(), RoomRead::Refused(REFUSED_SENDER));
 }
+
+/// GPT integration review: every room's snapshot went in one save, which the
+/// owner API refused past 16 KiB, so every room kept superseded rules. Saves
+/// now stay under the limit, keep every room in order, and a snapshot too big
+/// alone is sent withdrawn (fail closed).
+#[test]
+fn room_rule_saves_are_batched_under_the_owner_api_body_limit() {
+    let policy = format!("low_risk_paths: [{}]\n", (0..300).map(|i| format!("\"docs/{i:04}/**\"")).collect::<Vec<_>>().join(", "));
+    assert!(policy.len() > 4 * 1024 && policy.len() <= MAX_POLICY_BYTES);
+    let snap = |i: usize, policy: String| RoomRulesSnapshot {
+        repo: "a/b".into(), room_id: format!("!r{i}:x"), event_id: Some("$e".into()), sender: Some("@admin:x".into()), policy: Some(policy), unread: false,
+    };
+    let mut all: Vec<RoomRulesSnapshot> = (0..12).map(|i| snap(i, policy.clone())).collect();
+    all.push(snap(12, "x".repeat(OWNER_API_MAX_BODY_BYTES)));
+    let one = serde_json::to_vec(&save_body(&all)).unwrap().len();
+    assert!(one > OWNER_API_MAX_BODY_BYTES, "the old single save was refused: {one}");
+    let batches = batches(all.clone());
+    assert!(batches.len() > 1);
+    for batch in &batches {
+        let size = serde_json::to_vec(&save_body(batch)).unwrap().len();
+        assert!(size <= OWNER_API_MAX_BODY_BYTES, "{size}");
+    }
+    let sent: Vec<RoomRulesSnapshot> = batches.into_iter().flatten().collect();
+    assert_eq!(sent.iter().map(|s| &s.room_id).collect::<Vec<_>>(), all.iter().map(|s| &s.room_id).collect::<Vec<_>>());
+    assert_eq!(&sent[..12], &all[..12], "the ones that fit go unchanged");
+    assert!(sent[12].unread && sent[12].policy.is_none(), "too big alone: withdrawn");
+}

@@ -265,7 +265,7 @@ pub(crate) fn pinned_line(line: &str, root: &Path, repo: &str) -> Option<Trusted
         }
         ["git", "-C", dir, rest @ ..] => git::fix_step(&checkout(root, dir)?, rest, heredoc, repo),
         ["git", rest @ ..] => git::fix_step(&toplevel(root)?, rest, heredoc, repo),
-        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.allowed(root, repo).then(|| TrustedStep::Command(gh::pinned_command(&words))),
+        ["gh", "pr", verb, rest @ ..] => gh::PrCommand::parse(verb, rest)?.pinned(&words, root, repo).map(TrustedStep::Command),
         _ => None,
     }
 }

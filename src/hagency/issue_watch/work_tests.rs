@@ -74,3 +74,13 @@ fn a_truncated_issue_listing_fails_the_cap_closed() {
     assert!(super::listing_truncated(1000));
     assert!(!super::listing_truncated(999));
 }
+
+/// GPT integration review: a failed room-rules save left the gate on the old
+/// rules while the check still merged. That room's merges wait; others run.
+#[test]
+fn a_room_whose_rules_were_not_recorded_runs_no_merge_this_check() {
+    let held: std::collections::HashSet<String> = ["!held:x".to_owned()].into();
+    assert!(!super::super::work::merges_run(&held, "!held:x"));
+    assert!(super::super::work::merges_run(&held, "!fresh:x"));
+    assert!(super::super::work::merges_run(&std::collections::HashSet::new(), "!held:x"));
+}
