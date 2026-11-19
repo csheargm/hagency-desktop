@@ -40,9 +40,7 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
     }
     let message = event.content().as_message()?;
     let agent = first_agent(message.mentions()?.user_ids.iter())?;
-    // Unknown until the Agent listing is read: the line shows (GPT batch review).
-    let own_agent = crate::home::agent_ask_badge::is_own_agent(event.sender(), agent).unwrap_or(false);
-    if waits_for_no_card(event.sender().as_str(), message.body(), own_agent) {
+    if is_own_loop_notice(room, event.sender(), agent, message.body()) {
         return None;
     }
     let age = age(now_ms(), u64::from(event.timestamp().0))?;
@@ -118,6 +116,30 @@ fn waits_for_no_card(sender: &str, body: &str, own_agent: bool) -> bool {
     own_agent && ::hagency::issue_watch::automated_requests::is_automated(sender, sender, body)
 }
 
+/// Whether the viewer's own message is its loop's notice to one of its own
+/// Agents. Unknown until this account's Agent listing is read: the line shows
+/// meanwhile (GPT batch review) and the listing is asked for, since nothing
+/// else reads it unless the member list opened (bird's window, Nov 19: the
+/// line counted on after bird-codex had reviewed). The card's clock tick
+/// re-populates the row, so the line goes once the listing arrives.
+fn is_own_loop_notice(room: &OwnedRoomId, sender: &UserId, agent: &UserId, body: &str) -> bool {
+    let (hide, read_listing) = own_notice_decision(sender.as_str(), body, || crate::home::agent_ask_badge::is_own_agent(sender, agent));
+    if read_listing {
+        crate::home::room_memory::auto::load_roster(room);
+    }
+    hide
+}
+
+/// (hide the line, read the Agent listing) for a message: only the viewer's
+/// loop notices consult `own_agent`, and an unknown answer asks for the listing.
+fn own_notice_decision(sender: &str, body: &str, own_agent: impl FnOnce() -> Option<bool>) -> (bool, bool) {
+    if !waits_for_no_card(sender, body, true) {
+        return (false, false);
+    }
+    let own = own_agent();
+    (own == Some(true), own.is_none())
+}
+
 /// The first Agent a message mentions.
 fn first_agent<'a>(mut mentioned: impl Iterator<Item = &'a OwnedUserId>) -> Option<&'a OwnedUserId> {
     mentioned.find(|user| ::hagency::agent_questions::is_agent(user.as_str()))
@@ -174,6 +196,26 @@ mod tests {
         let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
         assert!(waits_for_no_card("@csheargm:localhost:8450", &notice, true), "{notice}");
         assert!(!waits_for_no_card("@csheargm:localhost:8450", "@yue-claude please review PR #109", true), "a typed request still waits");
+    }
+
+    /// Bird's window, Nov 19: the notice to bird-codex (a Codex Agent) kept
+    /// "⏳ Waiting for bird-codex to start…" because nothing read the listing.
+    #[test]
+    fn the_own_codex_agents_review_notice_hides_once_the_listing_is_read() {
+        use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+        let bird = OwnedUserId::try_from("@bird:localhost:8452").unwrap();
+        let codex = OwnedUserId::try_from("@_hagency_bird_bird-codex:localhost:8452").unwrap();
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into() };
+        let notice = LoopNotice::ReviewRequested { target, reviewer: codex.clone() }.body();
+        assert!(notice.starts_with(&format!("🔎 Review requested — {codex} please review PR #132")), "{notice}");
+        let index = crate::home::agent_ask_badge::puppet_index(&serde_json::json!([
+            {"id": "agt_bird_codex", "puppetMxid": codex.as_str(), "ownerMxid": bird.as_str(), "harness": "codex"}]), &bird);
+        assert!(index.contains_key(&codex), "a Codex Agent is an own Agent like any other");
+        let sender = bird.as_str();
+        assert_eq!(own_notice_decision(sender, &notice, || None), (false, true), "unknown: the line shows and the listing is read");
+        assert_eq!(own_notice_decision(sender, &notice, || Some(index.contains_key(&codex))), (true, false), "then it goes");
+        assert_eq!(own_notice_decision(sender, &notice, || Some(false)), (false, false), "another owner's Agent posts its card");
+        assert_eq!(own_notice_decision(sender, "@bird-codex please review PR #132", || panic!("not consulted")), (false, false), "a typed request still waits");
     }
 
     /// GPT batch review: the loop's review request to another owner's Agent

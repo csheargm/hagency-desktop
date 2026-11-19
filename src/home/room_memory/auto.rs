@@ -151,7 +151,8 @@ fn own_agent(room: &RoomId, me: Option<&str>, author: &str) -> Option<bool> {
 }
 
 /// Reads this account's Agent listing once, then re-checks the room's cards.
-fn load_roster(room: &RoomId) {
+/// The requester's waiting line asks for it too (`agent_run_requester`).
+pub(crate) fn load_roster(room: &RoomId) {
     if ROSTER_LOADING.swap(true, Ordering::SeqCst) {
         return;
     }
