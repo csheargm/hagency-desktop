@@ -103,21 +103,27 @@ fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
     if handed.len() > MAX_HANDED {
         handed.retain(|_, state| matches!(state, Handed::Admitting(_)));
     }
-    cards.into_iter().filter(|c| {
-        let state = handed.entry(c.key(generation)).or_insert(Handed::Failed(0));
-        match *state {
-            Handed::Failed(n) if n < MAX_TRIES => { *state = Handed::Admitting(n); true }
-            _ => false,
-        }
-    }).collect()
+    cards.into_iter().filter(|c| claim_key(&mut handed, c.key(generation))).collect()
+}
+
+/// Marks `key` as being admitted unless it is stored, being admitted, or out of tries.
+fn claim_key(handed: &mut HashMap<Key, Handed>, key: Key) -> bool {
+    let state = handed.entry(key).or_insert(Handed::Failed(0));
+    match *state {
+        Handed::Failed(n) if n < MAX_TRIES => { *state = Handed::Admitting(n); true }
+        _ => false,
+    }
 }
 
 /// Marks `card` handed over only once the store holds it with its latest
 /// edit; otherwise a later timeline update tries it again (`MAX_TRIES`).
 fn settle(generation: u64, room: &str, card: &Loaded) {
-    let stored = stored(room, card);
+    settle_key(card.key(generation), stored(room, card));
+}
+
+fn settle_key(key: Key, stored: bool) {
     let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
-    let state = handed.entry(card.key(generation)).or_insert(Handed::Failed(0));
+    let state = handed.entry(key).or_insert(Handed::Failed(0));
     *state = match *state {
         _ if stored => Handed::Stored,
         Handed::Admitting(n) | Handed::Failed(n) => Handed::Failed(n.saturating_add(1)),
@@ -155,6 +161,69 @@ pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
     let unsettled = Unsettled { generation, room: room.room_id().to_string(), cards };
     let room = room.clone();
     crate::sliding_sync::spawn_async_task(super::run_controls::as_history(admit_with_retries(room, unsettled)));
+}
+
+/// A room's rooms-list latest event, when it is a run card or a card's edit.
+enum Latest {
+    Card(Loaded),
+    /// The SDK's latest event is the card's latest edit; the card is fetched.
+    EditOf { card: String, edit: Value },
+}
+impl Latest {
+    fn key(&self, generation: u64) -> Key {
+        match self {
+            Latest::Card(card) => card.key(generation),
+            Latest::EditOf { card, edit } => (generation, card.clone(), edit["event_id"].as_str().unwrap_or_default().to_owned()),
+        }
+    }
+}
+
+fn latest_of(event: Value, info: Option<EncryptionInfo>) -> Option<Latest> {
+    let relates = &event["content"]["m.relates_to"];
+    if relates["rel_type"] != "m.replace" {
+        return cards_of(event, None, info).map(Latest::Card);
+    }
+    let card = relates["event_id"].as_str()?.to_owned();
+    let is_card = event["content"]["m.new_content"]["msgtype"] == ::hagency::agent_run_controls::MSGTYPE;
+    is_card.then_some(Latest::EditOf { card, edit: event })
+}
+
+/// The card to admit for `latest`, its own event as the event cache has it.
+async fn loaded_latest(room: &Room, latest: Latest) -> Option<Loaded> {
+    let (card, edit) = match latest {
+        Latest::Card(card) => return Some(card),
+        Latest::EditOf { card, edit } => (card, edit),
+    };
+    let event = room.load_or_fetch_event(&OwnedEventId::try_from(card.as_str()).ok()?, None).await.ok()?;
+    let info = event.encryption_info().map(|info| (**info).clone());
+    cards_of(json(event.raw())?, Some(edit), info).filter(|loaded| loaded.card == card)
+}
+
+/// On screen Nov 19 03:39: rooms not opened since start-up kept "<agent>:
+/// Agent run" in the rooms list, as only an open room's timeline handed its
+/// cards to `ingest`. A room whose latest event is a run card (or its edit)
+/// has exactly that card admitted, once per card and edit per login
+/// (`claim_key`), through the same admission boundary; admission then
+/// refreshes the room's preview (`run_card_previews::after_admission`).
+pub fn admit_latest(room: &Room) {
+    use matrix_sdk::latest_events::LatestEventValue;
+    let LatestEventValue::Remote(event) = std::ops::Deref::deref(room).latest_event() else { return };
+    let Some(value) = json(event.raw()) else { return };
+    let Some(latest) = latest_of(value, event.encryption_info().map(|info| (**info).clone())) else { return };
+    let generation = super::pending_questions::generation();
+    let key = latest.key(generation);
+    if !claim_key(&mut HANDED.lock().unwrap_or_else(|e| e.into_inner()), key.clone()) {
+        return;
+    }
+    let room = room.clone();
+    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(async move {
+        let Some(card) = loaded_latest(&room, latest).await else {
+            // Not fetched (or not a card): a later preview update tries again (`MAX_TRIES`).
+            return settle_key(key, false);
+        };
+        let unsettled = Unsettled { generation, room: room.room_id().to_string(), cards: vec![card] };
+        admit_with_retries(room, unsettled).await;
+    }));
 }
 
 /// Pauses before each try: a card can fail at start-up while the room's
@@ -216,3 +285,6 @@ async fn admit_with_retries(room: Room, mut unsettled: Unsettled) {
 #[cfg(test)]
 #[path = "loaded_run_cards_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "loaded_run_cards_latest_tests.rs"]
+mod latest_tests;
