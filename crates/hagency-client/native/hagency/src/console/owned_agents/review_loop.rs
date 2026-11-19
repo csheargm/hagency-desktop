@@ -5,7 +5,7 @@
 //! merge gate stay the authority.
 use hagency_agent_local::merge_policy::github::{commit_sha, GhCli};
 use hagency_agent_local::merge_policy::gate::{GhPr, Kind};
-use hagency_agent_local::merge_policy::review_loop::{merge_readiness_counted, HOLD_STEP};
+use hagency_agent_local::merge_policy::review_loop::{merge_readiness_full, HOLD_STEP};
 use hagency_agent_local::merge_policy::step_resend::StepDue;
 use hagency_agent_local::merge_policy::{reason_kind, Decision, CI_PENDING};
 use hagency_agent_local::{Error, Ledger, Result};
@@ -162,15 +162,17 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         let command = GhPr { dir: std::env::temp_dir(), number: ask.number, repo: Some(ask.repo.clone()), head: None, kind: Kind::Merge, body: String::new() };
         // Read as the Agent, the same login its own gh uses (GPT review, Nov 16).
         let token = crate::github_access::TokenStore::current().runtime_environment(agent).unwrap_or_default().agent_github_token();
-        let judged = runtime.block_on(merge_readiness_counted(ledger, &command, (agent, &ask.room), &GhCli { token }));
-        reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision, _)| (view.head_sha.as_str(), decision)));
+        let judged = runtime.block_on(merge_readiness_full(ledger, &command, (agent, &ask.room), &GhCli { token }));
+        reply["readiness"] = readiness_json(judged.as_ref().map(|r| (r.view.head_sha.as_str(), &r.decision)));
         // The approvals the judge itself counted (never the PR's author Agents or
         // the merger, round-2 GPT review): tells "no review yet" from "a person must decide".
-        if let Some((view, _, counted)) = &judged {
-            reply["readiness"]["approvers"] = (*counted).into();
+        if let Some(judged) = &judged {
+            reply["readiness"]["approvers"] = judged.counted.into();
             // Recorded reviews of this head in this room that could count (never an
             // author's or the merger's, GPT P2-4): one never asks again (PR #109).
-            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(view, ask.number, (agent, &ask.room))?.into();
+            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(&judged.view, ask.number, (agent, &ask.room))?.into();
+            // What one more approval would leave (PR #121): the desktop's room line only, never a merge.
+            reply["readiness"]["oneMore"] = readiness_json(Some((judged.view.head_sha.as_str(), &judged.one_more)));
         }
     }
     Ok(reply)
