@@ -271,6 +271,7 @@ fn room_server(client: &Client, room: &Room) -> Option<String> {
         .or_else(|| client.user_id().map(|u| u.server_name().to_string()))
 }
 
+// TODO(split): card admission (consider/accept_event) and the retry queue belong in their own modules.
 /// Takes one timeline event if it is a card or a card's edit an executor
 /// could have posted. Returns whether the shown cards changed. `may_fetch`
 /// is false inside the sync event handler: no network there, or one slow
@@ -283,7 +284,14 @@ fn consider<'a>(
     info: Option<&'a EncryptionInfo>,
     may_fetch: bool,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-    Box::pin(consider_inner(generation, client, room, value, info, may_fetch))
+    Box::pin(async move {
+        let changed = consider_inner(generation, client, room, value, info, may_fetch).await;
+        if changed {
+            // The rooms list read this room's preview before the card was admitted.
+            super::run_card_previews::after_admission(room);
+        }
+        changed
+    })
 }
 async fn consider_inner(
     generation: u64,

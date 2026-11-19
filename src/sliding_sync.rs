@@ -5750,7 +5750,9 @@ async fn get_latest_event_details(
 ///
 /// This function sends a `RoomsListUpdate::UpdateLatestEvent`
 /// to update the latest event in the RoomsListEntry for the given room.
-async fn update_latest_event(room: &Room) {
+/// Recomputes `room`'s rooms-list preview from its latest event.
+// TODO(split): rooms-list preview computation (this, `get_latest_event_details`) belongs in its own module.
+pub(crate) async fn update_latest_event(room: &Room) {
     if let Some(latest) = get_latest_event_details(
         &room.latest_event().await,
         &room.client(),
