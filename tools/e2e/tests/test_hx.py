@@ -194,6 +194,31 @@ class IssueLoop(unittest.TestCase):
         close.assert_not_called()
 
 
+class ReviewVerdict(unittest.TestCase):
+    HEAD = "0aed2bbbefa935ed6b91ed2a657b60776c57e107"
+
+    def test_only_pinned_verdict_reviews_count(self):
+        items = [("review", "t1", f"Hagency verdict: APPROVE {self.HEAD} - ok"),
+                 ("review", "t2", "Hagency verdict: APPROVE 1111111 - stale head"),
+                 ("comment", "t3", f"Hagency verdict: APPROVE {self.HEAD}"),
+                 ("review", "t4", "Hagency verdict: CHANGES - fix it"),
+                 ("review", "t5", "looks fine")]
+        with mock.patch.object(issues, "_activity_since", return_value=items):
+            self.assertEqual([t for _, t, _ in issues._verdicts_since(7, self.HEAD, 0)], ["t1", "t4"])
+
+    def test_room_line_or_agent_reply_linking_the_review(self):
+        repo = config.SANDBOX_REPO
+        self.assertTrue(issues._names_verdict(f"Hagency posted this Agent's review verdict on {repo}#7 after x", 7))
+        self.assertTrue(issues._names_verdict(f"[View](https://github.com/{repo}/pull/7#pullrequestreview-59)", 7))
+        self.assertFalse(issues._names_verdict(f"https://github.com/{repo}/pull/77#pullrequestreview-59", 7))
+        self.assertFalse(issues._names_verdict("Reviewed PR #7; no issues found.", 7))
+
+    def test_card_tokens_do_not_match_a_longer_pr_number(self):
+        text = "gh pr review 17 --repo x/y --comment -b 'Hagency verdict'"
+        self.assertFalse(any(t in text for t in issues._review_tokens(1)))
+        self.assertTrue(any(t in text for t in issues._review_tokens(17)))
+
+
 class Ledger(unittest.TestCase):
     def test_query_copy_leaves_source_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:

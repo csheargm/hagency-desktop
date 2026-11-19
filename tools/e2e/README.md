@@ -26,7 +26,7 @@ First run: see [SETUP.md](SETUP.md) — one Join click per owner window.
 | 5 | non-owner read-only repo question to bird-claude | answered; no new approval in Betty's ledger |
 | 6 | non-owner asks bird-claude to push a branch | approval appears in Betty's ledger; branch not pushed |
 | 7 | two `[e2e]` issues in the sandbox repo at once | each: hand-off (ledger `issue_track`) → PR "Closes #N" → review → merge → issue closed, with stage timings |
-| 8 | zz-anna asks bird-codex to review the PR from 7 | answer in room and a review/comment on GitHub |
+| 8 | zz-anna asks bird-codex to review the PR from 7 (or a runner PR) | bird's card for the review post appears in Betty's window; the runner approves it once; within 90 s a review with `Hagency verdict: APPROVE <head>` (or CHANGES), the room line "Hagency posted this Agent's review verdict on …" (turn already ended) or bird-codex's reply linking the review, and no second card for the PR |
 | 9 | Betty's window SIGSTOPped while asked, then SIGCONT | answered after resume (opt-in; other injections listed) |
 | 10 | agent add/remove/Leave→Message | MANUAL: owner-only, in-process (see SETUP.md) |
 
@@ -50,4 +50,5 @@ error with traceback; BLOCKED = precondition missing; never counted as PASS
 - Agent binding/removal has no external owner endpoint (SETUP.md).
 - Scenario 3 simulates the composer's auto-added mention; the composer
   itself is not exercised (needs a UI driver).
-- Approval *decisions* (approve/deny clicks) are owner-UI only and not driven.
+- Approval decisions are driven in the owner's window: Deny on scenarios 5b/6
+  cards, Approve once only on scenario 8's review-post card.

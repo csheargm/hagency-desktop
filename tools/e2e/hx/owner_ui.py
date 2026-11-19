@@ -4,7 +4,9 @@ Every step is idempotent: it first checks Matrix (as zz-anna) and does
 nothing when the owner/Agent is already in the room (or an invite is still
 pending). Each act is chosen from one tree snapshot, and a button only counts
 when the text that identifies it (the e2e room, the runner's token) sits in
-the same widget container. Ambiguity stops the flow. There is no approve."""
+the same widget container. Ambiguity stops the flow. Approve ("Approve once")
+is pressed only on a card naming the runner's own request (scenario 8's
+review post); every other card is denied."""
 import time
 
 from . import config, room
@@ -179,14 +181,23 @@ def setup_owner(owner: str, room_id: str) -> list:
     return log
 
 
-def card_deny(nodes: list, token: str) -> list:
-    """Deny buttons of permission cards whose own text names `token`, from one
-    snapshot: the room notice or an inbox row. A chat message quoting the token
-    is in no card, so it never qualifies."""
-    texts = [n for n in nodes if token in label(n)]
+def _tokens(token) -> tuple:
+    return (token,) if isinstance(token, str) else tuple(token)
+
+
+def card_buttons(nodes: list, token, widget: str) -> list:
+    """`widget` buttons ("deny", "once") of permission cards whose own text
+    names `token` (a string, or a tuple of which any one), from one snapshot:
+    the room notice or an inbox row. A chat message quoting the token is in no
+    card, so it never qualifies."""
+    texts = [n for n in nodes if any(t in label(n) for t in _tokens(token))]
     places = [n for n in nodes if label(n).startswith(f"In {config.E2E_ROOM_NAME} ")]
-    denies = [n for n in nodes if ends(n, "deny") and "press" in n.get("actions", "")]
-    return [d for d in denies if any(same_card(t, d, 2) for t in texts) and in_e2e_room(d, places)]
+    buttons = [n for n in nodes if ends(n, widget) and "press" in n.get("actions", "")]
+    return [d for d in buttons if any(same_card(t, d, 2) for t in texts) and in_e2e_room(d, places)]
+
+
+def card_deny(nodes: list, token) -> list:
+    return card_buttons(nodes, token, "deny")
 
 
 def one_card(denies: list) -> list:
@@ -205,21 +216,32 @@ def in_e2e_room(deny: dict, places: list) -> bool:
     return any(same_card(p, deny, 2) for p in places)
 
 
-def deny_card(owner: str, token: str, timeout_s: float = CARD_WAIT_S) -> str:
-    """Deny the permission card for the runner's own request. Never approves."""
+def _decide_card(owner: str, token, widget: str, verb: tuple, timeout_s: float) -> str:
+    """Press `widget` on the one pending card naming `token`, then see it go."""
     bridge = Bridge(owner)
     open_room(bridge, config.E2E_ROOM_NAME)
-    deny = _unique(bridge, lambda ns: one_card(card_deny(ns, token)), f"a permission card naming {token}", timeout_s)
-    again = _unique(bridge, lambda ns: one_card(card_deny(ns, token)), f"the card naming {token} (re-check)", 5)
-    if again["id"] != deny["id"]:
+    pick = lambda ns: one_card(card_buttons(ns, token, widget))  # noqa: E731
+    button = _unique(bridge, pick, f"a permission card naming {token}", timeout_s)
+    again = _unique(bridge, pick, f"the card naming {token} (re-check)", 5)
+    if again["id"] != button["id"]:
         raise StepNotFound(f"{owner}: the card naming {token} changed between reads; not pressing")
     bridge.press(again, settle=2.0)
-    if wait_step(bridge, lambda ns: not card_deny(ns, token) and ["gone"], GONE_WAIT_S) is None:
-        raise StepNotFound(f"{owner}: pressed Deny but the card naming {token} is still pending")
-    return f"{owner}: denied the pending card naming {token} (card gone)"
+    if wait_step(bridge, lambda ns: not card_buttons(ns, token, widget) and ["gone"], GONE_WAIT_S) is None:
+        raise StepNotFound(f"{owner}: pressed {verb[0]} but the card naming {token} is still pending")
+    return f"{owner}: {verb[1]} the pending card naming {token} (card gone)"
 
 
-def pending_cards(owner: str, token: str) -> int:
+def deny_card(owner: str, token, timeout_s: float = CARD_WAIT_S) -> str:
+    """Deny the permission card for the runner's own request."""
+    return _decide_card(owner, token, "deny", ("Deny", "denied"), timeout_s)
+
+
+def approve_card(owner: str, token, timeout_s: float = CARD_WAIT_S) -> str:
+    """"Approve once" on the card for the runner's own request (scenario 8 only)."""
+    return _decide_card(owner, token, "once", ("Approve once", "approved"), timeout_s)
+
+
+def pending_cards(owner: str, token) -> int:
     """How many pending (still answerable) cards name `token`, read only.
     Member requests' cards live in the window (room notice, owner inbox),
     not in the ledger's approvals table."""

@@ -90,7 +90,7 @@ def prs_closing(number: int) -> list:
 
 def pr(number: int) -> dict:
     return gh("pr", "view", str(number), "-R", config.SANDBOX_REPO, "--json",
-              "number,title,state,headRefName,createdAt,mergedAt,url,reviews,comments,body")
+              "number,title,state,headRefName,headRefOid,createdAt,mergedAt,url,reviews,comments,body")
 
 
 def close_issue(number: int, comment: str):

@@ -99,10 +99,23 @@ class Matching(unittest.TestCase):
                 n("a2", "modal2.buttons.allow", "Allow in group rooms", "press")]
         self.assertEqual([x["id"] for x in owner_ui.private_allow(other_room + ours, "bird-codex")], ["a2"])
 
-    def test_there_is_no_approve_path(self):
-        src = Path(owner_ui.__file__).read_text()
-        self.assertNotIn("once", src.replace("answered once", ""))
-        self.assertFalse(hasattr(owner_ui, "decide_card"))
+    def test_approve_only_on_the_review_card_of_this_pr(self):
+        tokens = ("pulls/7/reviews", "pr review 7 ")
+        ours = [n("t1", f"{NOTICE}.request_details.details", "gh pr review 7 --repo x/y --comment -b 'Hagency verdict'"),
+                n("o1", f"{NOTICE}.actions.once", "Approve once", "focus,press"),
+                n("d1", f"{NOTICE}.actions.deny", "Deny", "focus,press")]
+        other_pr = [n("t2", "inbox.row0.text", "gh pr review 77 --repo x/y"),
+                    n("o2", "inbox.row0.buttons.once", "Approve once", "press")]
+        chat = [n("m", "timeline.message.text", "gh pr review 7 --repo x/y")]
+        screen = ours + other_pr + chat
+        self.assertEqual([b["id"] for b in owner_ui.card_buttons(screen, tokens, "once")], ["o1"])
+        self.assertEqual(owner_ui.card_buttons(other_pr + chat, tokens, "once"), [])
+        self.assertEqual([b["id"] for b in owner_ui.card_deny(screen, tokens)], ["d1"])
+
+    def test_approve_is_called_only_by_scenario_8(self):
+        scenarios = Path(owner_ui.__file__).resolve().parent.parent / "scenarios"
+        callers = [p.name for p in scenarios.glob("*.py") if "approve_card(" in p.read_text()]
+        self.assertEqual(callers, ["issues.py"])
 
 
 class Flows(unittest.TestCase):
