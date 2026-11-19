@@ -73,8 +73,8 @@ fn counts_fixed_merged_and_need_you_from_the_ledger() {
     // Need you: #36 held, #37 given up, #38's card (#36's card is the held PR, counted once).
     assert_eq!(day.need, 3);
     let text = digest::text(REPO, &day);
-    assert!(text.starts_with("📋 acme/app daily digest — Today: 3 fixed, 2 merged, 3 need you"), "{text}");
-    for line in ["#33 → PR #41 merged", "#36 → PR #43 needs you: https://github.com/acme/app/pull/43", "#37 gave up: https://github.com/acme/app/issues/37", "#38 approval card unanswered: https://github.com/acme/app/issues/38"] {
+    assert!(text.starts_with("📋 acme/app daily digest — Today: 2 merged, 3 issues fixed, 3 need you\n"), "no in-progress count on a day with none: {text}");
+    for line in ["#33 → PR #41 merged", "#36 → PR #43 needs you: https://github.com/acme/app/pull/43", "#37 needs a person: no pull request after 1 tries — https://github.com/acme/app/issues/37", "#38 approval card unanswered: https://github.com/acme/app/issues/38"] {
         assert!(text.contains(line), "{line} in {text}");
     }
     assert!(!text.contains("#20") && !text.contains("PR #9"), "yesterday's and other repositories' moves stay out: {text}");
@@ -94,7 +94,21 @@ fn a_long_day_is_cut_to_the_item_limit() {
     let many: Vec<Track> = (1..=(MAX_ITEMS as i64 + 3)).map(|n| track(n, &[(w.start + n, json!({"handed": 1}))])).collect();
     let text = digest::text(REPO, &summarize(REPO, &Inputs { tracks: &many, ..Inputs::default() }, &w).unwrap());
     assert_eq!(text.lines().count(), 1 + MAX_ITEMS + 1, "{text}");
-    assert!(text.ends_with("And 3 more"), "{text}");
+    assert!(text.ends_with("And 3 more on https://github.com/acme/app/issues"), "says where the rest are: {text}");
+}
+
+/// Regression (Nov 18 screen pass): "Today: 7 fixed, 7 merged, 5 need you"
+/// read as one number twice. Equal counts show once; open work shows apart.
+#[test]
+fn the_headline_never_repeats_a_count_and_shows_work_in_progress() {
+    let w = today();
+    let t = w.start + 60;
+    let tracks = [
+        track(1, &[(t, json!({"handed": 1})), (t + 1, json!({"state": "pr_opened", "pr": 5})), (t + 2, json!({"state": "merged"}))]),
+        track(2, &[(t, json!({"handed": 1}))]),
+    ];
+    let text = digest::text(REPO, &summarize(REPO, &Inputs { tracks: &tracks, ..Inputs::default() }, &w).unwrap());
+    assert_eq!(text.lines().next(), Some("📋 acme/app daily digest — Today: 1 merged, 0 need you, 1 in progress"), "{text}");
 }
 
 #[test]
@@ -195,7 +209,7 @@ fn the_digest_is_sent_once_a_day_even_across_a_restart() {
     *restarted.tracks.borrow_mut() = vec![next.clone()];
     run(send_due(&restarted, &saved(&restarted, &[next]), Some(tomorrow)));
     assert_eq!(restarted.posts.borrow().len(), 1);
-    assert!(restarted.posts.borrow()[0].1.contains("Today: 1 fixed, 1 merged, 0 need you"));
+    assert!(restarted.posts.borrow()[0].1.contains("Today: 1 merged, 0 need you"));
 }
 
 #[test]
@@ -230,7 +244,7 @@ fn a_move_recorded_just_before_the_send_hour_is_in_the_digest() {
     let fake = Fake { tracks: RefCell::new(vec![merged]), ..Fake::default() };
     let stale = saved(&fake, &[]);
     assert!(run(send_due(&fake, &stale, Some(w))).is_empty());
-    assert!(fake.posts.borrow()[0].1.contains("Today: 1 fixed, 1 merged, 0 need you"), "{:?}", fake.posts.borrow());
+    assert!(fake.posts.borrow()[0].1.contains("Today: 1 merged, 0 need you"), "{:?}", fake.posts.borrow());
 }
 
 #[test]
