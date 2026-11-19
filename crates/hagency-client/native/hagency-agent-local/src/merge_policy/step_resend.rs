@@ -220,7 +220,7 @@ impl Ledger {
     }
 
     /// Approvals of the head recorded in `room` that could count, as
-    /// [`Ledger::recorded_room_reviews`] counts them without GitHub's view:
+    /// [`Ledger::recorded_room_reviewers`] lists them without GitHub's view:
     /// never the step's Agent (the merger) nor an Agent the tracker handed
     /// the pull request to (round-2 GPT review P2-5: an author's or merger's
     /// approval stopped the rotation while readiness counted zero). Residual:

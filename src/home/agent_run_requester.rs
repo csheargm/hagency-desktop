@@ -41,7 +41,7 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
     let message = event.content().as_message()?;
     let agent = first_agent(message.mentions()?.user_ids.iter())?;
     let sender = event.sender();
-    let age = waiting_age(now_ms(), u64::from(event.timestamp().0), sender.as_str(), message.body(),
+    let age = waiting_age(now_ms(), u64::from(event.timestamp().0), (room.as_str(), sender.as_str()), message.body(),
         || crate::home::agent_ask_badge::is_own_agent(sender, agent),
         || crate::home::room_memory::auto::load_roster(room))?;
     let pill = match message.msgtype() {
@@ -123,9 +123,12 @@ fn waits_for_no_card(sender: &str, body: &str, own_agent: bool) -> bool {
 /// the line shows meanwhile and `read_listing` asks for it, since nothing else
 /// reads it unless the member list opened (bird's window, Nov 19). The card's
 /// clock tick re-populates the row, so the line goes once the listing arrives.
-fn waiting_age(now_ms: u64, sent_ms: u64, sender: &str, body: &str, own_agent: impl FnOnce() -> Option<bool>, read_listing: impl FnOnce()) -> Option<Duration> {
+/// A review request whose own reviewer's review the loop recorded in this
+/// `room` waits no more (bird's window, Nov 18: "⏳ Waiting for bird-codex to
+/// start…" stayed after bird-codex had reviewed).
+fn waiting_age(now_ms: u64, sent_ms: u64, (room, sender): (&str, &str), body: &str, own_agent: impl FnOnce() -> Option<bool>, read_listing: impl FnOnce()) -> Option<Duration> {
     let age = age(now_ms, sent_ms)?;
-    if review_answered(body) {
+    if crate::hagency::issue_watch::loop_notice::answered(room, body) {
         return None;
     }
     let (hide, read) = own_notice_decision(sender, body, own_agent);
@@ -133,13 +136,6 @@ fn waiting_age(now_ms: u64, sent_ms: u64, sender: &str, body: &str, own_agent: i
         read_listing();
     }
     (!hide).then_some(age)
-}
-
-/// Whether `body` is the loop's "🔎 Review requested" whose review the loop
-/// recorded for that head and reviewer (bird's window, Nov 18: "⏳ Waiting for
-/// bird-codex to start…" stayed after bird-codex had reviewed).
-fn review_answered(body: &str) -> bool {
-    crate::hagency::issue_watch::loop_notice::answered(body)
 }
 
 /// (hide the line, read the Agent listing) for a message: only the viewer's
