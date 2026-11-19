@@ -1051,6 +1051,10 @@ async fn permission(
     // TODO(R4): runtime.rs is over budget; split Claude permission handling into runtime/permission.rs.
     // A Claude call id shaped like a Codex key holds nothing (GPT review).
     let held = if call.starts_with(crate::merge_policy::codex_review::KEY_PREFIX) { "" } else { call };
+    // A `gh pr create` names its Agent as the author once it ran (GPT batch review P1-1).
+    if ledger.hold_create(held, &proposal, now()).is_err() {
+        return ToolAnswer::Deny;
+    }
     if let Some(allowed) = crate::merge_policy::gate::auto_answer(ledger, owner, &proposal, held, now(), github).await {
         return ToolAnswer::allowed(allowed);
     }

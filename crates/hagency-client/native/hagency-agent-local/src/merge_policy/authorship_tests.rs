@@ -28,11 +28,19 @@ fn a_create_names_its_repository_and_head_in_any_segment() {
 #[test]
 fn every_publisher_of_the_branch_is_an_author_and_a_recent_create_makes_it_known() {
     let temp = tempfile::tempdir().unwrap();
-    let ledger = ledger_with(temp.path(), &["anna", "yue"]);
+    let mut ledger = ledger_with(temp.path(), &["anna", "yue"]);
     let push = TrustedStep::Host(HostStep::Push { dir: temp.path().into(), remote: "origin".into(), branch: "fix-3".into(), repo: "acme/app".into(), upstream: true });
     note(&ledger.db, &bash("git -C app push -u origin fix-3", temp.path(), "yue"), Some(&push), OPENED - 600).unwrap();
     assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap(), (vec!["yue".to_owned()], false), "a push alone does not say who opened it");
-    note(&ledger.db, &bash("gh pr create --repo Acme/App --head fix-3 -b x", temp.path(), "anna"), None, OPENED - 30).unwrap();
+    let create = bash("gh pr create --repo Acme/App --head fix-3 -b x", temp.path(), "anna");
+    note(&ledger.db, &create, None, OPENED - 30).unwrap();
+    assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap(), (vec!["anna".to_owned(), "yue".to_owned()], false), "allowed is not ran");
+    // GPT review of these fixes: a create that failed never vouches; one that ran does.
+    ledger.hold_create("failed", &create, OPENED - 30).unwrap();
+    ledger.settle_tool_call("failed", false).unwrap();
+    assert!(!ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap().1, "a failed create vouches for nothing");
+    ledger.hold_create("ran", &create, OPENED - 30).unwrap();
+    ledger.settle_tool_call("ran", true).unwrap();
     assert_eq!(ledger.branch_authors("acme/app", &view(Some("fix-3"))).unwrap(), (vec!["anna".to_owned(), "yue".to_owned()], true));
     assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-4"))).unwrap(), (vec![], false), "another branch");
     assert_eq!(ledger.branch_authors(REPO, &view(None)).unwrap(), (vec![], false), "a fork's branch is never ours");

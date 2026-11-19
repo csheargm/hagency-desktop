@@ -48,10 +48,11 @@ const OPENED: i64 = 1_800_000_000;
 fn shared_login() -> Src {
     Src { author: "anna", head_ref: Some(HeadRef { branch: "fix-3".into(), created_at: OPENED }), ..Src::new(vec![file("src/a.rs", 3)]) }
 }
-/// `agent` was allowed `gh pr create` of `fix-3` just before GitHub opened #7.
-fn created_by(ledger: &Ledger, dir: &std::path::Path, agent: &str) {
+/// `agent`'s `gh pr create` of `fix-3` ran (succeeded) `before` seconds before GitHub opened #7.
+fn created_by(ledger: &mut Ledger, dir: &std::path::Path, agent: &str, before: i64) {
     let create = bash(&format!("gh pr create --repo {A} --head fix-3 -t 'Fix #3' -b 'Closes #3'"), dir, agent);
-    crate::merge_policy::authorship::note(&ledger.db, &create, None, OPENED - 30).unwrap();
+    ledger.hold_create(&format!("pc-{agent}"), &create, OPENED - before).unwrap();
+    ledger.settle_tool_call(&format!("pc-{agent}"), true).unwrap();
 }
 fn tracked_by(ledger: &Ledger, agent: &str) {
     ledger.db.execute("INSERT INTO issue_track (agent,repo,number,state,attempts,handed_at,pr,notified) VALUES (?1,?2,3,'pr_open',1,0,7,0)", (agent, A)).unwrap();
@@ -74,7 +75,7 @@ async fn a_shared_logins_pull_request_counts_the_other_agents_recorded_review() 
     let (view, _, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 0, "an unknown author among the login's Agents: no local approval counts");
     assert_eq!(ledger.recorded_room_reviews(&view, 7, ("anna", "!r:x")).unwrap(), 1, "yet the review is recorded");
-    created_by(&ledger, temp.path(), "anna");
+    created_by(&mut ledger, temp.path(), "anna", 30);
     let (view, decision, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 1, "the ledger names the author: the other Agent's approval counts");
     assert!(!matches!(decision, Decision::NeedsHuman(ref r) if crate::merge_policy::reason_kind(r) == "approvals"), "{decision:?}");
@@ -95,7 +96,7 @@ async fn the_trackers_guess_never_makes_the_real_authors_approval_count() {
     let (view, decision, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 0, "the tracker alone never names the author");
     assert!(matches!(decision, Decision::NeedsHuman(_)), "{decision:?}");
-    created_by(&ledger, temp.path(), "yue");
+    created_by(&mut ledger, temp.path(), "yue", 30);
     let (_, decision, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 0, "yue created it: its own approval never counts");
     assert!(matches!(decision, Decision::NeedsHuman(_)), "{decision:?}");
@@ -110,8 +111,7 @@ async fn an_old_create_of_the_same_branch_is_no_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
     ledger.record_agent_review(&format!("https://github.com/{A}/pull/7"), HEAD, "yue", "!r:x").unwrap();
-    let create = bash(&format!("gh pr create --repo {A} --head fix-3 -t 'Fix #3' -b 'Closes #3'"), temp.path(), "anna");
-    crate::merge_policy::authorship::note(&ledger.db, &create, None, OPENED - 86_400).unwrap();
+    created_by(&mut ledger, temp.path(), "anna", 86_400);
     let (_, _, counted) = merge_readiness_counted(&mut ledger, &merge_7(temp.path()), ("anna", "!r:x"), &shared_login()).await.unwrap();
     assert_eq!(counted, 0);
 }

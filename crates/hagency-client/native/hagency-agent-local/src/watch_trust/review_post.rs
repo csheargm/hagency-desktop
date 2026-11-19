@@ -81,6 +81,9 @@ impl ReviewPost {
     }
 
     /// The command that runs in place of the model's text.
+    // TODO(GPT P2, Nov 18): `gh pr review` cannot name a commit, so a push between the
+    // head check and this post still lands it on the new head; post through
+    // `POST repos/{repo}/pulls/{n}/reviews` with `commit_id` to bind it.
     pub(crate) fn command(&self) -> String {
         let q = super::quote;
         let line = format!("GH_HOST='github.com' gh pr review {} {} -R {} -b {}", self.number, self.mode, q(&self.repo), q(&self.body));
