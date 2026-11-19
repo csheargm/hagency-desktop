@@ -30,9 +30,12 @@ fn rows_list_this_rooms_watches_with_status_and_owner() {
     assert_eq!((rows[0].agent.as_str(), rows[0].repo.as_str(), rows[0].active), ("bird-claude", "csheargm/hagency-demo-sandbox", true));
     assert_eq!(rows[0].owner, "@betty:example.org");
     assert!(!rows[1].active, "an Agent that is off has its watch paused");
-    let (title, detail) = panel::row_text(&rows[0]);
+    let (title, detail) = panel::row_text(&rows[0], &Default::default());
     assert_eq!(title, "bird-claude · csheargm/hagency-demo-sandbox");
     assert!(detail.contains("Active") && detail.contains("@betty:example.org") && !detail.contains('9'));
+    let names = [("@betty:example.org".to_owned(), "Betty".to_owned())].into();
+    let (_, named) = panel::row_text(&rows[0], &names);
+    assert!(named.contains("owner Betty") && !named.contains("@betty"), "the owner's display name, not a raw ID: {named}");
 }
 
 #[test]
@@ -41,7 +44,7 @@ fn unreadable_roster_is_an_error_and_empty_says_so() {
     let empty = rows("!quiet:example.org", &roster(), &saved()).unwrap();
     assert!(empty.is_empty());
     let none = Watches { rows: empty, status: Ok(status::RoomStatus::default()) };
-    assert!(panel::notice(Some(&Ok(none)), None).unwrap().contains("No Agent watches"));
+    assert!(panel::notice(Some(&Ok(none)), None).unwrap().contains("No agent is working on this room's repositories right now."));
     assert!(panel::notice(Some(&Err("down".into())), None).unwrap().contains("down"));
     assert!(panel::notice(None, Some("M_FORBIDDEN")).unwrap().contains("M_FORBIDDEN"), "a refused link is shown");
 }
@@ -58,3 +61,5 @@ fn a_superseded_refresh_is_dropped_and_accounts_do_not_share_rows() {
 
 #[path = "status_tests.rs"]
 mod status_tests;
+#[path = "load_tests.rs"]
+mod load_tests;
