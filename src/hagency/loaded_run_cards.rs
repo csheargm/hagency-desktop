@@ -110,7 +110,8 @@ pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
     let cards: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
     let generation = super::pending_questions::generation();
     let found = cards.len();
-    let cards = claim(generation, cards);
+    // A stored card is never handed over again, even once its claim is pruned.
+    let cards = claim(generation, cards.into_iter().filter(|c| !stored(room.room_id().as_str(), c)).collect());
     if cards.is_empty() {
         return;
     }

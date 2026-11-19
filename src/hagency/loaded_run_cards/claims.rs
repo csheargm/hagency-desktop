@@ -26,10 +26,25 @@ pub(super) fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
     let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
     // An older login's claims never apply again (its tasks end on sign-out).
     handed.retain(|key, _| key.0 == generation);
-    if handed.len() > MAX_HANDED {
-        handed.retain(|_, state| matches!(state, Handed::Admitting(_)));
-    }
+    prune(&mut handed);
     cards.into_iter().filter(|c| claim_key(&mut handed, c.key(generation))).collect()
+}
+
+/// Over `MAX_HANDED`, forgets only what is safe to hand over again: stored
+/// cards (`ingest` skips a card the store holds) and failures with tries left.
+/// Out-of-tries failures are kept, so they are not fetched again this login
+/// (GPT review P2: all were forgotten); past the cap even those go, to stay bounded.
+fn prune(handed: &mut HashMap<Key, Handed>) {
+    if handed.len() <= MAX_HANDED {
+        return;
+    }
+    handed.retain(|_, state| matches!(state, Handed::Admitting(_) | Handed::Failed(MAX_TRIES..)));
+    let mut over = handed.len().saturating_sub(MAX_HANDED);
+    handed.retain(|_, state| {
+        let evict = over > 0 && !matches!(state, Handed::Admitting(_));
+        over -= usize::from(evict);
+        !evict
+    });
 }
 
 /// Marks `key` as being admitted unless it is stored, being admitted, or out of tries.
@@ -50,3 +65,7 @@ pub(super) fn settle_key(key: Key, stored: bool) {
         Handed::Stored => Handed::Failed(1),
     };
 }
+
+#[cfg(test)]
+#[path = "claims_tests.rs"]
+mod tests;
