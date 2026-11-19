@@ -111,8 +111,9 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
 async fn judge_counted(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(Decision, usize)> {
     let judged = super::work::judged(ledger, (merger, room), command, repo, view, source).await?;
     let local = local_approvers(ledger, repo, command.number, view, Some(room)).ok()?;
-    // Decided before the approvals: those of this device's Agents but the merger.
-    let early = super::counted_approvals(&local, merger).len();
+    // Decided before the approvals: the recorded count, as before, so a hold
+    // that no review can lift is never read as "no review yet" (round-2 GPT review).
+    let early = ledger.agent_reviewers_in(&view.url, &view.head_sha, Some(room)).ok()?.len();
     if let Some(reason) = judged.author_reason {
         return Some((Decision::NeedsHuman(reason), early));
     }
