@@ -27,6 +27,7 @@ NO_ANSWER_MARKS = ("(nothing)", "no answer")
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _CONFIG_DIR_ENV = re.compile(r"(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)")
 _CONFIG_DIR_SCRIPT = re.compile(r"--env\s+CLAUDE_CONFIG_DIR=[\"']?([^\"'\s]+)")
+_ITEM_END = re.compile(r"(?<=\.)\s+")
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z")
 
 
@@ -154,18 +155,33 @@ def desktop_offsets() -> dict:
     return {k: v for k, v in evidence.log_offsets().items() if k.startswith("desktop:")}
 
 
+def failure_items(note: str) -> list:
+    """The failures a scenario recorded: its note is a run of ". "-ended items."""
+    return [x.strip() for x in _ITEM_END.split(note.strip()) if x.strip(" .")]
+
+
+def _silent_agent(item: str, signed_out_owners: set) -> str | None:
+    """The signed-out Claude Agent this failure item says gave no answer."""
+    if not any(m in item for m in NO_ANSWER_MARKS):
+        return None
+    return next((a for a in claude_agents() if a in item and config.AGENTS[a][0] in signed_out_owners), None)
+
+
 def reclassify_silence(result, offsets: dict):
-    """A FAIL whose note says a Claude Agent gave no answer, while that Agent's
-    owner log showed the login error during the scenario, becomes BLOCKED."""
-    if result.status != FAIL or result.kind != "finding" or not any(m in result.note for m in NO_ANSWER_MARKS):
+    """A FAIL becomes BLOCKED only when every failure it recorded is a no-answer
+    from a Claude Agent whose owner log showed the login error during the
+    scenario; any other failure (wrong answer, an approval raised) keeps it FAIL."""
+    items = failure_items(result.note)
+    if result.status != FAIL or result.kind != "finding" or not items:
         return result
     by_owner = {}
     for key, line in evidence.grep_logs(offsets, (CLAUDE_LOGIN_REQUIRED, STARTUP_CHECK_FAILED)):
         if is_login_error(line):
             by_owner.setdefault(key.removeprefix("desktop:"), []).append(_ANSI.sub("", line))
-    silent = [a for a in claude_agents() if a in result.note and by_owner.get(config.AGENTS[a][0])]
-    if not silent:
+    found = [_silent_agent(item, set(by_owner)) for item in items]
+    if not all(found):
         return result
+    silent = list(dict.fromkeys(found))
     last = by_owner[config.AGENTS[silent[-1]][0]][-1]
     result.status, result.kind = BLOCKED, "setup"
     result.note = f"{SIGNED_OUT_NOTE} during the run ({', '.join(silent)}; owner log: {last[-160:]}). " \

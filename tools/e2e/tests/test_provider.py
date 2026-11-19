@@ -206,6 +206,23 @@ class TimeoutReclassification(unittest.TestCase):
             r = provider.reclassify_silence(self._fail("s1: no answer with T from anna-claude in 240s"), offsets)
         self.assertEqual(r.status, BLOCKED)
 
+    def test_no_answer_plus_another_failure_stays_fail(self):
+        note = ("no answer quoting the title in 300s; bird-claude said: '(nothing)'. "
+                "approval(s) raised for a read-only query: ['$abc']. ")
+        with tempfile.TemporaryDirectory() as tmp:
+            offsets = self._offsets(tmp, "", LOGIN_LINE + "\n")
+            r = provider.reclassify_silence(self._fail(note), offsets)
+        self.assertEqual((r.status, r.kind), (FAIL, "finding"))
+
+    def test_every_item_silent_and_signed_out_is_blocked(self):
+        note = ("s2a: no answer with T from anna-claude in 240s (asked $a). "
+                "s2b: no answer with T from bird-claude in 240s (asked $b). ")
+        with tempfile.TemporaryDirectory() as tmp:
+            offsets = self._offsets(tmp, LOGIN_LINE + "\n", LOGIN_LINE + "\n")
+            self.assertEqual(provider.reclassify_silence(self._fail(note), offsets).status, BLOCKED)
+            offsets = self._offsets(tmp, LOGIN_LINE + "\n", "")
+            self.assertEqual(provider.reclassify_silence(self._fail(note), offsets).status, FAIL)
+
     def test_error_only_before_the_window_stays_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             offsets = self._offsets(tmp, "", OTHER_LINE + "\n")
