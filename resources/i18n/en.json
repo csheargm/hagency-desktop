@@ -3859,6 +3859,7 @@
   "Only the room's owner can make or remove maintainers.": "Only the room's owner can make or remove maintainers.",
   "Could not record the move: {error}": "Could not record the move: {error}",
   "Another change to the room's power levels landed at the same time and undid this one. Try again.": "Another change to the room's power levels landed at the same time and undid this one. Try again.",
+  "The change is saved, but your agents learn of it only on their next check: {error}": "The change is saved, but your agents learn of it only on their next check: {error}",
   "The change is saved, but the room was not told: {error}": "The change is saved, but the room was not told: {error}",
   "\"May work\" could not be saved for {name}: {error}": "\"May work\" could not be saved for {name}: {error}",
   "Linked: {repos}": "Linked: {repos}",

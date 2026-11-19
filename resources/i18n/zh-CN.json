@@ -3859,6 +3859,7 @@
   "Only the room's owner can make or remove maintainers.": "只有房间所有者可以设置或取消维护者。",
   "Could not record the move: {error}": "无法记录迁移：{error}",
   "Another change to the room's power levels landed at the same time and undid this one. Try again.": "另一项对房间权限等级的更改同时生效并撤销了这次更改。请重试。",
+  "The change is saved, but your agents learn of it only on their next check: {error}": "更改已保存，但你的 Agent 要到下次检查时才会知道：{error}",
   "The change is saved, but the room was not told: {error}": "更改已保存，但未能通知房间：{error}",
   "\"May work\" could not be saved for {name}: {error}": "无法为 {name} 保存“可以工作”：{error}",
   "Linked: {repos}": "已关联：{repos}",

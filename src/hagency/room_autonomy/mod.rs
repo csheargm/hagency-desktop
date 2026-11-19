@@ -4,6 +4,7 @@
 //! so the gate and push trust judge by fresh values. Who may do what follows
 //! the room's power levels: the room's owner (admin) and maintainers (power
 //! level 50) change the level and resume; every member may pause.
+pub mod gate;
 pub mod lines;
 pub mod server;
 pub mod state;

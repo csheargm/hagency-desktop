@@ -95,7 +95,19 @@ pub async fn commit_then<T>(
 
 /// Set the level (owner and maintainers), keeping the Resume point; one room line.
 pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
+    set_level_if(room, level, |_| true).await.map(|written| written.unwrap_or_default())
+}
+
+/// [`set_level`] only while `still` holds for the room's state read right
+/// before the write (GPT review P2: the migration's "unset" was judged on an
+/// earlier read and could overwrite a maintainer's Off); `Err(state)` when it
+/// no longer held and nothing was written. Matrix has no conditional state
+/// write, so this narrows the window to one request; it cannot close it.
+pub async fn set_level_if(room: &Room, level: Level, still: impl Fn(&RoomState) -> bool) -> Result<Result<Announced, RoomState>, String> {
     let state = read(room).await?;
+    if !still(&state) {
+        return Ok(Err(state));
+    }
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can change agent work here.").to_owned());
     }
@@ -103,7 +115,14 @@ pub async fn set_level(room: &Room, level: Level) -> Result<Announced, String> {
         room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await.map(|_| ())
             .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))
     };
-    commit_then(write, async {}, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|((), a)| a)
+    let pushed = super::gate::push(room, super::gate::Saved::Level(level));
+    commit_then(write, pushed, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|(p, a)| Ok(told(a, p)))
+}
+
+/// The note after a saved change: the room line's failure and the gate's, if any.
+fn told(announced: Announced, pushed: Result<(), String>) -> Announced {
+    let notes: Vec<String> = announced.into_iter().chain(pushed.err().map(super::gate::not_pushed)).collect();
+    (!notes.is_empty()).then(|| notes.join(" "))
 }
 
 /// Pause the room (any member): this account's own pause event, then `after`
@@ -115,10 +134,12 @@ pub async fn pause<T>(room: &Room, after: impl std::future::Future<Output = T>) 
         room.send_state_event_raw(ROOM_PAUSE_STATE_TYPE, &me, pause_content(now_ms)).await.map(|_| ())
             .map_err(|e| crate::i18n::format("Could not pause the room: {error}", &[("error", e.to_string())]))
     };
+    // The gate hears of the pause now, not on the poller's next check (GPT review P1).
+    let after = async { tokio::join!(after, super::gate::push(room, super::gate::Saved::Paused)) };
     commit_then(write, after, async {
         let (name, time) = who_and_when(room).await;
         post(room, lines::paused_line(&name, &time)).await
-    }).await
+    }).await.map(|((done, pushed), a)| (done, told(a, pushed)))
 }
 
 /// Resume (owner and maintainers): the level event clears exactly the pause
@@ -133,10 +154,10 @@ pub async fn resume(room: &Room) -> Result<Announced, String> {
         room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await.map(|_| ())
             .map_err(|e| crate::i18n::format("Could not resume the room: {error}", &[("error", e.to_string())]))
     };
-    commit_then(write, async {}, async {
+    commit_then(write, super::gate::push(room, super::gate::Saved::Resumed), async {
         let (name, time) = who_and_when(room).await;
         post(room, lines::resumed_line(&name, &time)).await
-    }).await.map(|((), a)| a)
+    }).await.map(|(p, a)| told(a, p))
 }
 
 #[cfg(test)]

@@ -181,9 +181,15 @@ fn act(room: &RoomId, act: Act) {
     let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
         return set_note(account, room, crate::i18n::tr("Room not found").to_owned());
     };
+    // Taken on the click, so the order of choices decides which one is the latest.
+    let choice = matches!(act, Act::Level(_)).then(|| choose(room));
     crate::sliding_sync::spawn_async_task(async move {
         let outcome = match act {
-            Act::Level(level) => server::set_level(&joined, level).await.map(Option::unwrap_or_default),
+            Act::Level(level) => match latest_only(joined.room_id(), choice.unwrap_or_default(), server::set_level(&joined, level)).await {
+                Some(written) => written.map(Option::unwrap_or_default),
+                // A newer choice superseded this one before it was written: only that one is saved.
+                None => return,
+            },
             // This desktop stops its own loop runs now; other owners' desktops on their next check.
             Act::Pause => server::pause(&joined, crate::hagency::room_autonomy::stop::stop_loop_runs(&joined)).await.map(|(stopped, announced)| pause_note(stopped, announced)),
             Act::Resume => server::resume(&joined).await.map(Option::unwrap_or_default),
@@ -193,6 +199,34 @@ fn act(room: &RoomId, act: Act) {
         read_into(account, &joined).await;
         super::refresh(joined.room_id());
     });
+}
+
+/// The newest level choice per room on this desktop (GPT review P2: Assist →
+/// Autonomous → Off clicked while the first write was pending could land
+/// Autonomous last). Level writes run one at a time per room, and a choice a
+/// newer one superseded while it waited is dropped, so the latest choice is
+/// written last.
+static LEVEL_CHOICES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<OwnedRoomId, u64>>> = std::sync::LazyLock::new(Default::default);
+static LEVEL_WRITES: crate::home::call_power_levels::RoomLocks = crate::home::call_power_levels::RoomLocks::new();
+
+/// A new level choice in `room`: its ticket, the room's latest from now.
+fn choose(room: &RoomId) -> u64 {
+    let mut choices = LEVEL_CHOICES.lock().unwrap_or_else(|p| p.into_inner());
+    let ticket = choices.get(room).copied().unwrap_or_default() + 1;
+    choices.insert(room.to_owned(), ticket);
+    ticket
+}
+
+/// `write` for choice `ticket` once `room`'s earlier level writes finished,
+/// unless a newer choice was made meanwhile (`None`: superseded, not written).
+async fn latest_only<T>(room: &RoomId, ticket: u64, write: impl std::future::Future<Output = T>) -> Option<T> {
+    let lock = LEVEL_WRITES.of(room);
+    let _one = lock.lock().await;
+    let latest = LEVEL_CHOICES.lock().unwrap_or_else(|p| p.into_inner()).get(room).copied();
+    if latest != Some(ticket) {
+        return None;
+    }
+    Some(write.await)
 }
 
 /// After a saved Pause: the runs stopped, and the room line's failure if any.
@@ -220,5 +254,29 @@ mod tests {
         let note = pause_note(2, Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned()));
         assert_eq!(note, "Stopped 2 runs of your agents' work here. The change is saved, but the room was not told: M_FORBIDDEN");
         assert_eq!(pause_note(0, None), "");
+    }
+
+    /// GPT review (P2): Assist → Autonomous → Off while the Autonomous write is
+    /// pending: Off is written last, and a choice superseded while it waited is dropped.
+    #[test]
+    fn the_latest_level_choice_is_written_last() {
+        let room = matrix_sdk::ruma::owned_room_id!("!latest:x");
+        let log = std::sync::Mutex::new(Vec::new());
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let autonomous = choose(&room);
+        let first = latest_only(&room, autonomous, async { held.await.unwrap(); log.lock().unwrap().push(Level::Autonomous) });
+        let rest = async {
+            tokio::task::yield_now().await;
+            let stale = choose(&room);
+            let off = choose(&room);
+            let stale_write = latest_only(&room, stale, async { log.lock().unwrap().push(Level::Assist) });
+            let off_write = latest_only(&room, off, async { log.lock().unwrap().push(Level::Off) });
+            release.send(()).unwrap();
+            tokio::join!(stale_write, off_write)
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (first, (stale, off)) = runtime.block_on(async { tokio::join!(first, rest) });
+        assert_eq!((first, stale, off), (Some(()), None, Some(())), "the superseded choice is never written");
+        assert_eq!(*log.lock().unwrap(), vec![Level::Autonomous, Level::Off], "the latest choice lands last");
     }
 }

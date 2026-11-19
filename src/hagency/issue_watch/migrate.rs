@@ -150,6 +150,17 @@ async fn link_room(room_id: &str, plan: &Move, rooms: &Rooms) -> Result<(), Stri
     Ok(())
 }
 
+/// Whether no one ever set `state`'s level (absent event: Off by default);
+/// an explicit Off a maintainer saved is set, and the move never overwrites it.
+pub(crate) fn level_unset(state: &crate::hagency::room_autonomy::state::RoomState) -> bool {
+    state.level_by.is_empty() && state.level == Ok(Level::Off)
+}
+
+/// The level a maintainer chose that lets agents work (`None`: Off or unreadable).
+fn chosen(state: &crate::hagency::room_autonomy::state::RoomState) -> Option<Level> {
+    state.level.clone().ok().filter(|l| *l != Level::Off)
+}
+
 /// Phase two for one room: the level when unset and allowed, then may-work
 /// on — in that order, so a failed level write is retried (a room that may
 /// work counts as moved; GPT review). The level it ended at (`None`: left
@@ -157,13 +168,13 @@ async fn link_room(room_id: &str, plan: &Move, rooms: &Rooms) -> Result<(), Stri
 async fn enable_room(service: &Service, agent_id: &str, room_id: &str, plan: &Move, rooms: &Rooms) -> Result<Option<Level>, String> {
     let state = rooms.0.get(room_id).cloned().unwrap_or_else(|| Err(String::new()))?;
     let room = crate::sliding_sync::get_client().zip(matrix_sdk::ruma::RoomId::parse(room_id).ok()).and_then(|(c, id)| c.get_room(&id));
-    let unset = state.level_by.is_empty() && state.level == Ok(Level::Off);
     let level = match room {
-        Some(room) if unset && state.can_change => {
-            crate::hagency::room_autonomy::server::set_level(&room, plan.level).await?;
-            Some(plan.level)
-        }
-        _ => state.level.ok().filter(|l| *l != Level::Off),
+        // Re-checked on the state read right before the write, never only on this check's read (GPT review P2).
+        Some(room) if level_unset(&state) && state.can_change => match crate::hagency::room_autonomy::server::set_level_if(&room, plan.level, level_unset).await? {
+            Ok(_) => Some(plan.level),
+            Err(now) => chosen(&now),
+        },
+        _ => chosen(&state),
     };
     super::live::saved(service, agent_id, Some(json!({"mayWork": {"roomId": room_id, "on": true}}))).await?;
     Ok(level)
