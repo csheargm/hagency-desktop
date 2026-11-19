@@ -438,6 +438,9 @@ pub struct MobileChatInfo {
     /// that raced their departure must not show them again.
     #[rust] recently_left: HashSet<OwnedUserId>,
     #[rust] ownership_unavailable: bool,
+    /// A power-level change arrived while a chat information read was in
+    /// flight: that read may hold the old roles, so they are read again (GPT review).
+    #[rust] roles_stale: bool,
     #[rust]
     status: String,
     #[rust]
@@ -590,6 +593,7 @@ impl MobileChatInfo {
         super::room_watches::watch_room_changes(&client);
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.roles_stale = false;
         self.owner = Some(owner.clone());
         let request = self.request;
         self.origin = client.homeserver().to_string();
@@ -656,6 +660,14 @@ impl MobileChatInfo {
                 result,
             });
         });
+    }
+
+    /// Reads the open room's roles again for the listed members; with none
+    /// listed yet, the pending load's result triggers it (`roles_stale`).
+    fn reread_roles(&mut self) {
+        let Some(data) = self.data.as_ref() else { return };
+        let Some(room) = get_client().and_then(|c| c.get_room(data.room.room_id())) else { return };
+        member_role::spawn_reread(room, data.members.iter().map(|m| m.user_id.clone()).collect());
     }
 
     /// Takes members who left out of the list (and closes their menu).
@@ -924,16 +936,17 @@ impl Widget for MobileChatInfo {
                 }
                 // Roles only, from the server: a role change here or by another member (sync).
                 if let Some(changed) = action.downcast_ref::<member_role::RoleChanged>()
-                    && self.pin_is_current() && let Some(data) = self.data.as_ref().filter(|d| d.room.room_id() == &changed.room_id)
-                    && let Some(room) = get_client().and_then(|c| c.get_room(&changed.room_id))
+                    && self.pin_is_current() && self.room.as_ref().is_some_and(|r| r.room_id() == &changed.room_id)
                 {
-                    member_role::spawn_reread(room, data.members.iter().map(|m| m.user_id.clone()).collect());
+                    self.roles_stale = true;
+                    self.reread_roles();
                 }
                 if let Some(loaded) = action.downcast_ref::<member_role::RolesLoaded>()
                     && loaded.is_latest() && self.owner.as_ref() == Some(&loaded.owner)
                     && let Some(data) = self.data.as_mut().filter(|d| d.room.room_id() == &loaded.room_id)
                 {
                     data.roles = loaded.roles.clone();
+                    if let Some(removable) = &loaded.removable { data.removable = removable.clone(); }
                     self.view.redraw(cx);
                 }
                 if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
@@ -980,6 +993,8 @@ impl Widget for MobileChatInfo {
                                 self.data = Some(data);
                                 self.failed = false;
                                 self.status.clear();
+                                // The latest read is in; a change seen while it ran may be missing from it.
+                                if std::mem::take(&mut self.roles_stale) { self.reread_roles(); }
                             }
                             Err(error) => {
                                 self.status = crate::i18n::format(

@@ -42,6 +42,10 @@ fn without_hagency_events(content: &Value) -> Value {
     if let Some(events) = copy.get_mut("events").and_then(Value::as_object_mut) {
         events.retain(|kind, _| !kind.starts_with(HAGENCY_EVENT_PREFIX));
     }
+    // An empty map and an absent one are the same levels (GPT review: Ruma omits an empty `events`).
+    if let Some(object) = copy.as_object_mut() && object.get("events").and_then(Value::as_object).is_some_and(Map::is_empty) {
+        object.remove("events");
+    }
     copy
 }
 
@@ -139,5 +143,9 @@ mod tests {
         let mut person = setup.clone();
         person["users"]["@bird:x"] = json!(50);
         assert!(!only_hagency_event_levels(&before, &person), "a person's level changed too");
+        let bare = json!({"users": {"@anna:x": 100}});
+        let first = json!({"users": {"@anna:x": 100}, "events": {"io.hagency.room_autonomy": 50}});
+        assert!(only_hagency_event_levels(&bare, &first), "the first Hagency entry (no events map before)");
+        assert!(only_hagency_event_levels(&first, &bare), "the last Hagency entry removed");
     }
 }

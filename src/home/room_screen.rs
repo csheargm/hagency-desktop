@@ -7612,6 +7612,8 @@ impl SmallStateEventContent for PollState {
 
 /// The timeline line for `state`, naming a person whose role changed by
 /// their cached display name (their Matrix ID's local part until it is known).
+// TODO: the account-wide name, not the room's own one: SmallStateEventContent
+// gets no room ID (GPT review, deferred: changing the trait touches every impl).
 fn other_state_line(cx: &mut Cx, state: &timeline::OtherState) -> crate::event_preview::TextPreview {
     let mut name_of = |id: &str| {
         let cached = matrix_sdk::ruma::OwnedUserId::try_from(id).ok()

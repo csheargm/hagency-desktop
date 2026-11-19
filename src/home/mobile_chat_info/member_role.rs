@@ -174,6 +174,8 @@ pub struct RolesLoaded {
     pub room_id: matrix_sdk::ruma::OwnedRoomId,
     pub owner: OwnedUserId,
     pub roles: Roles,
+    /// Whom this account may remove now (`None`: members unreadable, keep the list's).
+    pub removable: Option<std::collections::HashSet<OwnedUserId>>,
     request: u64,
 }
 
@@ -193,8 +195,14 @@ pub fn spawn_reread(room: Room, members: Vec<OwnedUserId>) {
     let request = LATEST_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     crate::sliding_sync::spawn_async_task(async move {
         let roles = roles(&room, &members).await;
+        // A role change can also change whom this account may remove (GPT review).
+        let removable = match room.members(matrix_sdk::RoomMemberships::JOIN | matrix_sdk::RoomMemberships::BAN).await {
+            Ok(listed) => Some(super::member_remove::removable(&room, &listed).await),
+            // Unreadable members: the list keeps its removal rights until its next full read.
+            Err(_) => None,
+        };
         let (room_id, owner) = (room.room_id().to_owned(), room.own_user_id().to_owned());
-        makepad_widgets::Cx::post_action(RolesLoaded { room_id, owner, roles, request });
+        makepad_widgets::Cx::post_action(RolesLoaded { room_id, owner, roles, removable, request });
     });
 }
 
