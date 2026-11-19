@@ -32,21 +32,47 @@ fn one_line_name(name: &str) -> String {
     words.join(" ").chars().take(MAX_NAME_CHARS).collect::<String>().trim_end().to_owned()
 }
 
+/// The byte ranges of `body`'s inline code spans, backticks included, found
+/// line by line the way the preview's Markdown step reads each trimmed line.
+fn code_spans(body: &str) -> Vec<std::ops::Range<usize>> {
+    use pulldown_cmark::{Event, Parser};
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let offset = start + line.len() - trimmed.len();
+        for (event, range) in Parser::new(trimmed).into_offset_iter() {
+            if let Event::Code(_) = event { spans.push(offset + range.start..offset + range.end); }
+        }
+        start += line.len();
+    }
+    spans
+}
+
 /// `body` (Markdown) with each ID of `names` as its pill label, written as
-/// literal text: one line, capped, its punctuation escaped.
+/// literal text: one line, capped, its punctuation escaped outside a code
+/// span; inside one (where a backslash shows) the plain name, without
+/// backticks so the span stays closed.
 pub fn with_names<'a>(body: &'a str, names: &[(OwnedUserId, Option<String>)]) -> Cow<'a, str> {
-    let mut sorted: Vec<_> = names.iter().collect();
+    let mut sorted: Vec<_> = names.iter().filter(|(id, _)| body.contains(id.as_str())).collect();
+    if sorted.is_empty() { return Cow::Borrowed(body); }
     // Longest first, so an ID that begins another is never cut out of it.
     sorted.sort_by_key(|(id, _)| std::cmp::Reverse(id.as_str().len()));
-    let mut out = Cow::Borrowed(body);
-    for (id, name) in sorted {
-        if out.contains(id.as_str()) {
-            let name = name.as_deref().map(one_line_name);
-            let label = super::mention_text::user_label(id, name.as_deref());
-            out = Cow::Owned(out.replace(id.as_str(), &super::mention_text::escape_punctuation(label)));
-        }
+    let spans = code_spans(body);
+    let (mut out, mut i) = (String::with_capacity(body.len()), 0);
+    while let Some(c) = body[i..].chars().next() {
+        let Some((id, name)) = sorted.iter().find(|(id, _)| body[i..].starts_with(id.as_str())) else {
+            out.push(c);
+            i += c.len_utf8();
+            continue;
+        };
+        let name = name.as_deref().map(one_line_name);
+        let label = super::mention_text::user_label(id, name.as_deref());
+        if spans.iter().any(|span| span.contains(&i)) { out.extend(label.chars().filter(|&c| c != '`')); }
+        else { out.push_str(&super::mention_text::escape_punctuation(label)); }
+        i += id.as_str().len();
     }
-    out
+    Cow::Owned(out)
 }
 
 /// The display names in `room` of the IDs written in `body`.
@@ -103,6 +129,20 @@ mod tests {
         assert_eq!(preview(" \n\t "), "🔎 Review requested — _hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5 please review PR #131", "an empty name is the localpart");
         let long = preview(&"n".repeat(200));
         assert!(long.contains(&format!("— {} please", "n".repeat(MAX_NAME_CHARS))), "{long}");
+    }
+
+    /// GPT review, Nov 19: a name in backticks showed "yue\\-claude" in the rooms list.
+    #[test]
+    fn a_name_in_a_code_span_is_plain_and_outside_one_escaped() {
+        let agent = OwnedUserId::try_from(AGENT).unwrap();
+        let names = [(agent, Some("yue-claude".into()))];
+        let body = format!("ping `{AGENT}` and {AGENT}");
+        assert_eq!(with_names(&body, &names), "ping `yue-claude` and yue\\-claude");
+        let msg = matrix_sdk::ruma::events::room::message::MessageType::text_plain(body);
+        assert_eq!(crate::thread_reply_preview::escaped_plain_line(&msg, &names).unwrap(), "ping yue-claude and yue-claude");
+        let tick = [(OwnedUserId::try_from(AGENT).unwrap(), Some("a`b".into()))];
+        assert_eq!(with_names(&format!("`{AGENT}` x"), &tick), "`ab` x", "a backtick in the name cannot close the span");
+        assert_eq!(with_names(&format!("\\`{AGENT}`"), &names), "\\`yue\\-claude`", "an escaped backtick opens no span");
     }
 
     #[test]
