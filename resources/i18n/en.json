@@ -3777,7 +3777,7 @@
   "Max changed lines": "Max changed lines",
   "Require CI": "Require CI",
   "Save merge rules": "Save merge rules",
-  "Needs {n} approval(s) before an Agent merges: a review by another Agent, or a trusted reviewer's approval on GitHub": "Needs {n} approval(s) before an Agent merges: a review by another Agent, or a trusted reviewer's approval on GitHub",
+  "Needs {n} approval(s) before an Agent merges: a review by another Agent, a trusted reviewer's approval on GitHub, or a maintainer's review of an outside contributor's pull request": "Needs {n} approval(s) before an Agent merges: a review by another Agent, a trusted reviewer's approval on GitHub, or a maintainer's review of an outside contributor's pull request",
   "set by someone who is no longer in the room": "set by someone who is no longer in the room",
   "Room state is unavailable right now: {reason}": "Room state is unavailable right now: {reason}",
   "The merge rules are too long to store (at most {n} KiB): remove some paths": "The merge rules are too long to store (at most {n} KiB): remove some paths",
