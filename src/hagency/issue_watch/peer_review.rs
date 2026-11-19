@@ -56,6 +56,16 @@ fn still_assist(readiness: &Value, head: &str) -> bool {
     readiness["head"].as_str() == Some(head) && (only_level || super::super::approval_note::only_assist_left(readiness))
 }
 
+/// Record `peer`'s review of `target` as answered once `readiness` holds a
+/// recorded Agent review of its head, or only the Assist level holds it (approvals passed).
+pub(crate) fn note_review(target: &Target, peer: Option<&Pick>, readiness: &Value) {
+    let only_level = readiness["decision"] == "human" && readiness["reason"] == ASSIST_REASON;
+    let recorded = readiness["recorded"].as_u64().is_some_and(|n| n > 0);
+    if let Some(peer) = peer.filter(|_| readiness["head"].as_str() == Some(&target.head) && (recorded || only_level)) {
+        super::super::loop_notice::note_answered(target, peer.reviewer.as_str());
+    }
+}
+
 /// Whether `target`'s head is settled for the loop: the Assist notice was
 /// posted for it and the room's level still leaves only a person. The gate
 /// is read only once that notice is known.
@@ -73,6 +83,7 @@ pub(crate) async fn settled(io: &impl LoopIo, target: &Target) -> Result<bool, S
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, peer: Option<&Pick>, facts: &impl PeerFacts) -> Result<bool, String> {
     let Some(peer) = peer else { return Ok(false) };
     if settled(io, target).await? {
+        super::super::loop_notice::note_answered(target, peer.reviewer.as_str());
         return Ok(true);
     }
     if peer.own {

@@ -181,3 +181,26 @@ fn a_verdict_of_the_head_is_an_approval_or_a_change_request_of_that_head() {
     assert!(!verdict_of(&review("COMMENTED", HEAD), HEAD), "a plain comment answers nothing");
     assert!(!verdict_of(&review("APPROVED", MOVED), HEAD), "another head's verdict");
 }
+
+/// Bird's window, Nov 18 00:12: the waiting line under the review request
+/// stayed after the review was recorded; the loop now notes the answer.
+#[test]
+fn a_recorded_review_of_the_head_answers_its_request() {
+    use super::super::super::loop_notice::answered;
+    let own = Pick { reviewer: owned_user_id!("@_hagency_bird_bird-codex:localhost:8452"), notice: None, own: true };
+    let pr = Target { number: 122, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/122".into(), ..target(HEAD) };
+    let request = |head: &str, reviewer: &OwnedUserId| LoopNotice::ReviewRequested { target: Target { head: head.into(), ..pr.clone() }, reviewer: reviewer.clone() }.body();
+    let asked = |head: &str| answered(&request(head, &own.reviewer));
+    super::note_review(&pr, Some(&own), &at_assist(HEAD, "assist"));
+    assert!(!asked(HEAD), "asked, nothing recorded: still waiting");
+    let mut recorded = at_assist(HEAD, "assist");
+    recorded["recorded"] = json!(1);
+    super::note_review(&Target { head: MOVED.into(), ..pr.clone() }, Some(&own), &recorded);
+    assert!(!asked(MOVED), "a record of another head answers nothing");
+    super::note_review(&pr, Some(&own), &recorded);
+    assert!(asked(HEAD), "recorded for this head: answered");
+    assert!(!answered(&request(HEAD, &bird_codex().reviewer)), "only the asked reviewer");
+    let assist_only = Target { number: 123, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/123".into(), ..target(HEAD) };
+    super::note_review(&assist_only, Some(&own), &json!({"decision": "human", "head": HEAD, "reason": ASSIST_REASON, "kind": "autonomy"}));
+    assert!(answered(&LoopNotice::ReviewRequested { target: assist_only, reviewer: own.reviewer.clone() }.body()), "approvals passed, only Assist left: answered");
+}

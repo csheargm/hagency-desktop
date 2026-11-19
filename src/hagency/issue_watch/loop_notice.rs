@@ -123,7 +123,7 @@ impl LoopNotice {
         let short = &t.head[..t.head.len().min(12)];
         match self {
             Self::ReviewRequested { reviewer, .. } => {
-                format!("{}{reviewer} {}: {}\nTo review: {}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url, review_steps(t))
+                format!("{}\nTo review: {}", request_line(t, reviewer.as_str()), review_steps(t))
             }
             Self::Approved { fixer, name, .. } => format!(
                 "{lead}{short} — merging under the room rules: {who} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",
@@ -193,6 +193,30 @@ impl LoopNotice {
         let key = blake3::hash(format!("{agent_id}\n{}\n{}\n{}{again}", self.step(), t.url, t.head).as_bytes());
         OwnedTransactionId::from(format!("hagency-loop-{}", key.to_hex()))
     }
+}
+
+/// The review request's first line: whom it asks, which head, the link.
+fn request_line(t: &Target, reviewer: &str) -> String {
+    format!("{}{reviewer} {}: {}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
+}
+
+/// The first lines of review requests the loop knows were answered. In
+/// memory: the requester's waiting line under its "🔎 Review requested" goes
+/// once the review is recorded (bird's window, Nov 18).
+fn lock_answered() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static ANSWERED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+    // Plain strings: still usable after a panic elsewhere held the lock.
+    ANSWERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `reviewer`'s review of `target`'s head is recorded.
+pub(crate) fn note_answered(target: &Target, reviewer: &str) {
+    lock_answered().insert(request_line(target, reviewer));
+}
+
+/// Whether `body` is a review request whose review is recorded.
+pub(crate) fn answered(body: &str) -> bool {
+    body.lines().next().is_some_and(|line| lock_answered().contains(line))
 }
 
 #[cfg(test)]

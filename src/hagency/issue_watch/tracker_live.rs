@@ -133,6 +133,7 @@ impl LiveTrack<'_> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
+        review_loop::peer_review::note_review(target, peer, &readiness);
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         if readiness["kind"] != "approvals" || !readiness["head"].is_string() {
             let own = super::approval_note::reviewer_of(&self.peers, super::approval_note::asked_again(peer), &self.room).await;
@@ -265,9 +266,8 @@ impl TrackIo for LiveTrack<'_> {
     }
 }
 
-/// What the merge step's `gate` means for the pull request; `asking`: a
-/// reviewer was asked, else everyone was passed over and a person reviews,
-/// though a late verdict still carries it on (GPT review).
+/// What the merge step's `gate` means for the pull request; `asking`: a reviewer was asked,
+/// else everyone was passed over and a person reviews, though a late verdict still carries it on (GPT review).
 pub(super) fn followed_of(gate: Gate, asking: bool) -> Followed {
     match gate {
         Gate::Merge => Followed::Merging,
