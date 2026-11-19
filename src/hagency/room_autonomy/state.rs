@@ -93,8 +93,19 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
         can_pause: rights.pause,
         can_link: rights.link,
         maintainer: rights.maintainer,
-        as_of: events.iter().filter_map(|e| e["origin_server_ts"].as_i64()).max(),
+        as_of: as_of(events),
     }
+}
+
+/// The state types a snapshot's source time comes from: the level, the
+/// pauses and the power levels that decide who may set them. Never
+/// membership (GPT review round 3: a membership change, or a future-dated
+/// federated one, must not move it).
+const AS_OF_TYPES: [&str; 3] = [ROOM_AUTONOMY_STATE_TYPE, ::hagency::issue_watch::safeguards::room_autonomy::ROOM_PAUSE_STATE_TYPE, crate::hagency::issue_watch::room_rules::POWER_LEVELS_EVENT];
+
+/// The newest server time among `events` of [`AS_OF_TYPES`].
+pub fn as_of(events: &[Value]) -> Option<i64> {
+    events.iter().filter(|e| AS_OF_TYPES.iter().any(|t| e["type"] == *t)).filter_map(|e| e["origin_server_ts"].as_i64()).max()
 }
 
 /// `user`'s display name in the room's member `events`, when they set one.

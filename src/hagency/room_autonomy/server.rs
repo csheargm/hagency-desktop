@@ -124,11 +124,12 @@ async fn write_level(room: &Room, level: Level, still: impl Fn(&RoomState) -> bo
     if !state.can_change {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can change agent work here.").to_owned());
     }
+    let sent = super::gate::Sent::default();
     let write = async {
-        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await.map(|_| ())
+        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &state.cleared)).await.map(|r| sent.record(r.event_id))
             .map_err(|e| crate::i18n::format("Could not change agent work: {error}", &[("error", e.to_string())]))
     };
-    let pushed = super::gate::push(room, super::gate::Saved::Level(level));
+    let pushed = super::gate::push(room, super::gate::Saved::Level(level), &sent);
     commit_then(write, pushed, async { post(room, lines::level_line(&who_and_when(room).await.0, level)).await }).await.map(|(p, a)| Ok(told(a, p)))
 }
 
@@ -143,12 +144,13 @@ fn told(announced: Announced, pushed: Result<(), String>) -> Announced {
 pub async fn pause<T>(room: &Room, after: impl std::future::Future<Output = T>) -> Result<(T, Announced), String> {
     let me = room.client().user_id().map(|u| u.to_string()).ok_or_else(|| crate::i18n::tr("Signed out").to_owned())?;
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let sent = super::gate::Sent::default();
     let write = async {
-        room.send_state_event_raw(ROOM_PAUSE_STATE_TYPE, &me, pause_content(now_ms)).await.map(|_| ())
+        room.send_state_event_raw(ROOM_PAUSE_STATE_TYPE, &me, pause_content(now_ms)).await.map(|r| sent.record(r.event_id))
             .map_err(|e| crate::i18n::format("Could not pause the room: {error}", &[("error", e.to_string())]))
     };
     // The gate hears of the pause now, not on the poller's next check (GPT review P1).
-    let after = async { tokio::join!(after, super::gate::push(room, super::gate::Saved::Paused)) };
+    let after = async { tokio::join!(after, super::gate::push(room, super::gate::Saved::Paused, &sent)) };
     commit_then(write, after, async {
         let (name, time) = who_and_when(room).await;
         post(room, lines::paused_line(&name, &time)).await
@@ -169,11 +171,12 @@ async fn resume_now(room: &Room) -> Result<Announced, String> {
         return Err(crate::i18n::tr("Only the room's owner and maintainers can resume agent work here.").to_owned());
     }
     let level = state.level.clone().unwrap_or(Level::Off);
+    let sent = super::gate::Sent::default();
     let write = async {
-        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await.map(|_| ())
+        room.send_state_event_raw(ROOM_AUTONOMY_STATE_TYPE, "", level_content(level, &resume_clears(&events))).await.map(|r| sent.record(r.event_id))
             .map_err(|e| crate::i18n::format("Could not resume the room: {error}", &[("error", e.to_string())]))
     };
-    commit_then(write, super::gate::push(room, super::gate::Saved::Resumed), async {
+    commit_then(write, super::gate::push(room, super::gate::Saved::Resumed, &sent), async {
         let (name, time) = who_and_when(room).await;
         post(room, lines::resumed_line(&name, &time)).await
     }).await.map(|(p, a)| told(a, p))

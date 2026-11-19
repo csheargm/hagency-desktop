@@ -25,9 +25,11 @@ fn reach(level: Level) -> usize {
 /// The snapshot the gate gets for `room_id` after `saved`: the fresh `read`
 /// (unreadable: unread, fail closed), never looser than what was saved. When
 /// the read missed the write (the saved change made it stricter), its source
-/// time moves past the read's and to `now_ms`, so a poll that read the room
-/// before the write never replaces it at the gate (GPT review P1).
-pub fn pushed_snapshot(room_id: &str, read: &Result<RoomState, String>, saved: Saved, now_ms: i64) -> AutonomySnapshot {
+/// time becomes the saved event's own server time (`saved_ts`), or just past
+/// the read's when that is unknown, so a poll that read the room before the
+/// write never replaces it at the gate (GPT review P1). Neither known: untimed,
+/// which the gate takes only as stricter, keeping its stored time.
+pub fn pushed_snapshot(room_id: &str, read: &Result<RoomState, String>, saved: Saved, saved_ts: Option<i64>) -> AutonomySnapshot {
     let mut snapshot = match read {
         Ok(state) => state.snapshot(room_id),
         Err(_) => AutonomySnapshot { room_id: room_id.to_owned(), unread: true, ..Default::default() },
@@ -39,17 +41,36 @@ pub fn pushed_snapshot(room_id: &str, read: &Result<RoomState, String>, saved: S
         Saved::Resumed => {}
     }
     if snapshot != as_read {
-        snapshot.as_of = Some(snapshot.as_of.map_or(now_ms, |t| t.saturating_add(1).max(now_ms)));
+        snapshot.as_of = saved_ts.max(snapshot.as_of.map(|t| t.saturating_add(1)));
     }
     snapshot
 }
 
-/// Push `room`'s snapshot after `saved` to every Agent of this account this
-/// device runs (the gate that merges for them), read from the homeserver now.
-pub async fn push(room: &Room, saved: Saved) -> Result<(), String> {
+/// The event ID of the state event a change just saved (set by its write).
+#[derive(Default)]
+pub struct Sent(std::sync::OnceLock<matrix_sdk::ruma::OwnedEventId>);
+
+impl Sent {
+    /// Records the saved event (one write per change, so the first is the one).
+    pub fn record(&self, id: matrix_sdk::ruma::OwnedEventId) {
+        // Deliberately ignored: a change writes once; a second ID cannot occur.
+        let _ = self.0.set(id);
+    }
+}
+
+/// The server time of the event `sent` names, when it can be read.
+async fn sent_ts(room: &Room, sent: &Sent) -> Option<i64> {
+    let event = room.load_or_fetch_event(sent.0.get()?, None).await.ok()?;
+    serde_json::from_str::<serde_json::Value>(event.raw().json().get()).ok()?["origin_server_ts"].as_i64()
+}
+
+/// Push `room`'s snapshot after `saved` (its event in `sent`) to every Agent
+/// of this account this device runs (the gate that merges for them), read
+/// from the homeserver now.
+pub async fn push(room: &Room, saved: Saved, sent: &Sent) -> Result<(), String> {
     use crate::hagency::{backend::Service, model::Command};
     let read = super::server::read(room).await;
-    let change = serde_json::json!({"roomAutonomy": [pushed_snapshot(room.room_id().as_str(), &read, saved, chrono::Utc::now().timestamp_millis())]});
+    let change = serde_json::json!({"roomAutonomy": [pushed_snapshot(room.room_id().as_str(), &read, saved, sent_ts(room, sent).await)]});
     let service = Service::for_current()?;
     let listed = service.execute(Command::Agents).await?;
     for id in crate::hagency::kill_switch::here(&listed, &service.execute(Command::Devices).await?) {
@@ -82,10 +103,12 @@ mod tests {
     fn a_saved_pause_makes_the_gate_refuse_a_queued_merge() {
         let read = autonomous_read();
         assert_eq!(read.as_ref().unwrap().level, Ok(Level::Autonomous), "the stale read still says Autonomous");
-        let pushed = pushed_snapshot("!r:x", &read, Saved::Paused, 0);
+        let pushed = pushed_snapshot("!r:x", &read, Saved::Paused, Some(5_000));
         assert!(pushed.paused, "the gate sees the pause now");
         let polled = read.as_ref().unwrap().snapshot("!r:x");
         assert!(pushed.as_of > polled.as_of, "a poll that read the room before the pause is older at the gate");
+        assert_eq!(pushed.as_of, Some(5_000), "the saved pause event's own server time");
+        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Paused, None).as_of, Some(1_001), "unknown: just past the read");
         assert_eq!(pushed.level, Some(Level::Autonomous));
     }
 
@@ -94,12 +117,12 @@ mod tests {
     #[test]
     fn a_saved_level_only_ever_makes_the_gate_stricter() {
         let read = autonomous_read();
-        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Level(Level::Off), 0).level, Some(Level::Off));
-        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Level(Level::Assist), 0).level, Some(Level::Assist));
+        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Level(Level::Off), None).level, Some(Level::Off));
+        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Level(Level::Assist), None).level, Some(Level::Assist));
         let mut assist = read.clone().unwrap();
         assist.level = Ok(Level::Assist);
-        assert_eq!(pushed_snapshot("!r:x", &Ok(assist), Saved::Level(Level::Autonomous), 0).level, Some(Level::Assist), "a stale read keeps the stricter level");
-        let unread = pushed_snapshot("!r:x", &Err("no".into()), Saved::Resumed, 0);
+        assert_eq!(pushed_snapshot("!r:x", &Ok(assist), Saved::Level(Level::Autonomous), None).level, Some(Level::Assist), "a stale read keeps the stricter level");
+        let unread = pushed_snapshot("!r:x", &Err("no".into()), Saved::Resumed, None);
         assert!(unread.unread, "an unreadable room is unread at the gate (fail closed)");
     }
 }

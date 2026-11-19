@@ -74,3 +74,17 @@ fn the_pauser_is_named_by_their_display_name() {
     assert!(state.pause.is_some());
     assert_eq!(state.pause_name, None, "no display name: the caller falls back to the local part");
 }
+
+/// GPT review round 3 (P1): a snapshot's source time comes from the level,
+/// pause and power-level events only; a membership change (or a future-dated
+/// federated one) never moves it.
+#[test]
+fn a_membership_only_change_does_not_move_as_of() {
+    let at = |mut e: serde_json::Value, ts: i64| { e["origin_server_ts"] = ts.into(); e };
+    let base = [at(joined(MEMBER), 100), at(pause_by(MEMBER, "$p"), 200)];
+    let before = state_of(&base, ROOM, may_send, Rights::default());
+    assert_eq!(before.as_of, Some(200));
+    let later_member = at(joined(MAINTAINER), 9_999_999_999_999);
+    let after = state_of(&[base[0].clone(), base[1].clone(), later_member], ROOM, may_send, Rights::default());
+    assert_eq!(after.as_of, Some(200), "a membership event never moves as_of");
+}
