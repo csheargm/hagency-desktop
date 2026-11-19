@@ -53,8 +53,9 @@ pub enum LoopNotice {
     /// missing thing and how to fix it; `step` keys the set (one notice each).
     Held { target: Target, step: String, missing: Vec<String> },
     /// Reviewed and within the rules; only the room's Assist level holds it
-    /// (ADR 0030): one line that a person merges it. `step` is the hold step.
-    AwaitsPerson { target: Target, step: String },
+    /// (ADR 0030): one line that a person merges it. `step` is the hold step;
+    /// `reviewer` names an Agent whose review only its owner's device records (PR #121).
+    AwaitsPerson { target: Target, step: String, reviewer: Option<String> },
     /// The merge step could not reach GitHub several checks in a row.
     Unreachable { target: Target, step: String },
     /// A `review` or `merge` step's dispatch ended without the Agent running
@@ -117,7 +118,8 @@ impl LoopNotice {
                 let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();
                 format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
             }
-            Self::AwaitsPerson { .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
+            Self::AwaitsPerson { reviewer: Some(who), .. } => format!("✅ PR #{} in {} was reviewed by {who} and is ready. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
+            Self::AwaitsPerson { reviewer: None, .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
             Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
         }

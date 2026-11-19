@@ -10,19 +10,19 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-const HEAD: &str = "ad395c6d9cdea90a54566da56cda9cae91ddd540";
+pub(super) const HEAD: &str = "ad395c6d9cdea90a54566da56cda9cae91ddd540";
 const NO_APPROVAL: &str = "needs 1 approval(s) from another Agent, has 0";
 
-struct Fake {
-    posted: RefCell<Vec<LoopNotice>>,
+pub(super) struct Fake {
+    pub(super) posted: RefCell<Vec<LoopNotice>>,
     steps: RefCell<HashSet<String>>,
     readiness: RefCell<Value>,
 }
 impl Fake {
-    fn new(readiness: Value) -> Self {
+    pub(super) fn new(readiness: Value) -> Self {
         Self { posted: RefCell::default(), steps: RefCell::default(), readiness: RefCell::new(readiness) }
     }
-    fn bodies(&self) -> Vec<String> {
+    pub(super) fn bodies(&self) -> Vec<String> {
         self.posted.borrow().iter().map(LoopNotice::body).collect()
     }
 }
@@ -55,7 +55,7 @@ impl LoopIo for Fake {
     }
 }
 
-fn target(head: &str) -> Target {
+pub(super) fn target(head: &str) -> Target {
     Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 36, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/36".into(), head: head.into() }
 }
 fn fixer() -> OwnedUserId {
@@ -64,10 +64,13 @@ fn fixer() -> OwnedUserId {
 fn human(kind: &str, reason: &str) -> Value {
     json!({"decision": "human", "head": HEAD, "reason": reason, "kind": kind, "approvers": 0})
 }
+fn no_approval_line() -> String {
+    super::approval_note::approval_line(None, false, 0)
+}
 fn merge() -> Value {
     json!({"decision": "merge", "head": HEAD, "approvers": 1})
 }
-fn check(fake: &Fake, permission: Option<&str>, settled: bool) -> Gate {
+pub(super) fn check(fake: &Fake, permission: Option<&str>, settled: bool) -> Gate {
     let agent = fixer();
     let ctx = LoopCtx { agent: &agent, name: "bird-claude", maintainer: true, permission };
     let readiness = fake.readiness.borrow().clone();
@@ -80,15 +83,14 @@ fn pr_36_an_unrecorded_approval_is_named_once_instead_of_waiting_silently() {
     // GitHub but no Agent approval is in this device's ledger.
     let fake = Fake::new(human("approvals", NO_APPROVAL));
     for _ in 0..3 {
-        assert_eq!(check(&fake, Some("admin"), true), Gate::Hold(vec![(Missing::Approval, NO_APPROVAL.into())]));
+        assert_eq!(check(&fake, Some("admin"), true), Gate::Hold(vec![(Missing::Approval, no_approval_line())]));
     }
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 1, "one notice, not one per check: {bodies:?}");
     assert!(bodies[0].contains("PR #36 in csheargm/hagency-demo-sandbox at ad395c6d9cde cannot be merged yet"), "{}", bodies[0]);
-    assert!(bodies[0].contains(&format!("an Agent approval of this head (the merge gate says \"{NO_APPROVAL}\")")));
-    // Codex verdicts are recorded (and preferred): the notice never says otherwise (Nov 18).
-    assert!(!bodies[0].contains("Codex Agent's review") && !bodies[0].contains("(Claude) Agent"), "{}", bodies[0]);
-    assert!(bodies[0].contains("asks the reviewer again") && bodies[0].contains("Review and merge it yourself"));
+    // Plain words, never the gate's own reason (PR #121).
+    assert!(bodies[0].contains("an Agent approval that counts here. None is recorded for this version yet. Merge it yourself"), "{}", bodies[0]);
+    assert!(!bodies[0].contains(NO_APPROVAL) && !bodies[0].contains("merge gate"), "{}", bodies[0]);
     assert!(bodies[0].ends_with("https://github.com/csheargm/hagency-demo-sandbox/pull/36"));
 }
 
@@ -205,7 +207,7 @@ fn running_ci_and_unreadable_or_moved_facts_wait_without_a_notice() {
 #[test]
 fn each_fixed_blocker_lets_the_next_through_until_the_agent_is_told_to_merge() {
     let fake = Fake::new(human("approvals", NO_APPROVAL));
-    assert_eq!(check(&fake, Some("admin"), true), Gate::Hold(vec![(Missing::Approval, NO_APPROVAL.into())]));
+    assert_eq!(check(&fake, Some("admin"), true), Gate::Hold(vec![(Missing::Approval, no_approval_line())]));
     check(&fake, Some("admin"), true);
     assert_eq!(fake.bodies().len(), 1);
     assert!(fake.bodies()[0].contains("an Agent approval"));
