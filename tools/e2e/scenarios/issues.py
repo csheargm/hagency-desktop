@@ -5,7 +5,7 @@ from datetime import datetime
 from hx import config, evidence, github, owner_ui, personas
 from hx.bridge import BridgeDown, StepNotFound
 from hx.scenario import (BLOCKED, FAIL, PASS, Result, agent_messages, blocked, last_said, mention_content, now_ms,
-                         wait_for)
+                         signed_out, wait_for)
 
 LOOP_TIMEOUT_S = 25 * 60
 LOOP_POLL_S = 20
@@ -90,6 +90,8 @@ def _describe(number: int, st: dict) -> str:
 
 def s7_issue_loop(ctx) -> Result:
     name = "7 issue loop ×2 in parallel: issue→hand-off→PR→review→merge→closed"
+    if (b := signed_out(name, ctx, [LOOP_AGENT])):
+        return b
     r, t0 = Result(name), time.time()
     numbers = [_open_issue(ctx, "a"), _open_issue(ctx, "b")]
     states = ctx.loop_states  # shared at once so cleanup sees PRs even if this raises

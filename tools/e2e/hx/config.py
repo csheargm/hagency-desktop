@@ -30,6 +30,8 @@ AGENTS = {
     "bird-claude": ("betty", "@_hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5:localhost:8452"),
     "bird-codex": ("betty", "@_hagency_agt_01m7k6ws4k2z06ysr6shrxeqzf:localhost:8452"),
 }
+# Agent name -> model provider: a signed-out provider BLOCKs its Agents' scenarios.
+AGENT_PROVIDERS = {"anna-claude": "claude", "yue-claude": "claude", "bird-claude": "claude", "bird-codex": "codex"}
 DEV_ROOM = "!a3cQXHR8GZ4RP5n71s:localhost:8450"  # Chris's room: read only, never written
 E2E_ROOM_NAME = "e2e room"
 SANDBOX_REPO = "csheargm/hagency-demo-sandbox"

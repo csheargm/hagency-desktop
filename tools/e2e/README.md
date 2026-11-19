@@ -34,6 +34,14 @@ Results: PASS; FAIL (finding) = product behaviour; FAIL (runner) = harness
 error with traceback; BLOCKED = precondition missing; never counted as PASS
 (timeouts and empty answers are FAIL, R14).
 
+Provider preflight (`hx/provider.py`): before any scenario the runner reads
+`claude auth status` (`loggedIn` only) and the last 5 min of each owner's
+desktop log for "dedicated owner Claude login required". A signed-out Claude
+Agent's scenarios (1, 2, 5, 5b, 6, 7, 9) are BLOCKED "agent signed out (Claude
+login)" without running; Codex-only ones (3, 4, 8) still run. A scenario that
+FAILs with no answer from a Claude Agent while its owner's log showed that
+error during the scenario is reported BLOCKED too.
+
 ## Safety
 
 - Writes only: the e2e room, `[e2e]`-titled issues and `e2e-*` branches in

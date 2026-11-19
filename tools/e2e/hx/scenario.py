@@ -33,6 +33,7 @@ class Ctx:
     created_prs: list = field(default_factory=list)
     setup_log: list = field(default_factory=list)
     read_dev_room: bool = False  # opt-in: navigates Betty's window to the dev room
+    signed_out: dict = field(default_factory=dict)  # Agent -> reason its provider is unusable (provider.py)
 
     def agent_in_room(self, name: str) -> bool:
         return self.setup.get(f"agent:{name}") == "join"
@@ -154,6 +155,9 @@ def seen_on(viewer: str, room: str, event_id: str) -> bool:
 
 
 def blocked(name: str, ctx: Ctx, agents: list) -> Result | None:
+    """BLOCKED when an Agent the scenario needs is signed out or not in the room."""
+    if (out := signed_out(name, ctx, agents)):
+        return out
     missing = [a for a in agents if not ctx.agent_in_room(a)]
     if not missing:
         return None
@@ -162,6 +166,12 @@ def blocked(name: str, ctx: Ctx, agents: list) -> Result | None:
                   f"{' and '.join(owners)} not set up — the runner does it through each window's bridge "
                   f"(see the report's 'Owner UI setup' lines and SETUP.md)",
                   kind="setup")
+
+
+def signed_out(name: str, ctx: Ctx, agents: list) -> Result | None:
+    """BLOCKED when the preflight found a needed Agent's provider signed out."""
+    reasons = [f"{a}: {ctx.signed_out[a]}" for a in agents if a in ctx.signed_out]
+    return Result(name, BLOCKED, note="; ".join(reasons), kind="setup") if reasons else None
 
 
 def now_ms() -> int:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hx import config, github, owner_ui, room  # noqa: E402
+from hx import config, github, owner_ui, provider, room  # noqa: E402
 from hx.bridge import BridgeDown, StepNotFound  # noqa: E402
 from hx.report import write_report  # noqa: E402
 from hx.scenario import BLOCKED, FAIL, Ctx, Result  # noqa: E402
@@ -32,8 +32,9 @@ def scenario_table(args):
 
 def run_one(key, fn, ctx) -> Result:
     t0 = time.time()
+    offsets = provider.desktop_offsets()
     try:
-        return fn(ctx)
+        return provider.reclassify_silence(fn(ctx), offsets)
     except Exception as e:  # noqa: BLE001 — reported as a runner error with its traceback, never swallowed
         tb = traceback.format_exc().strip().splitlines()[-3:]
         return Result(f"{key} ({fn.__name__ if hasattr(fn, '__name__') else key})", FAIL,
@@ -103,8 +104,10 @@ def main() -> int:
     args = ap.parse_args()
     started = datetime.now()
     e2e_room, setup, wrong, setup_log = preflight(not args.no_ui_setup)
+    signed_out, provider_log = provider.preflight()
+    setup_log += [f"provider: {line}" for line in provider_log]
     ctx = Ctx(room=e2e_room, setup=setup, run_id=started.strftime("%m%d%H%M%S"), setup_log=setup_log,
-              read_dev_room=args.read_dev_room)
+              read_dev_room=args.read_dev_room, signed_out=signed_out)
     for line in setup_log:
         print(f"setup: {line}", flush=True)
     results, cleanup = [], []
