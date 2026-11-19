@@ -134,9 +134,7 @@ impl CreateAgentDialog {
         for action in actions {
             if let Some(probed) = action.downcast_ref::<Probed>() && probed.request == self.request {
                 let models = probed.result.as_ref().map(parse_models).map_err(Clone::clone);
-                self.state.probes[probed.index] = Some(models);
-                self.refresh_stem(cx);
-                self.render(cx);
+                self.probe_answered(cx, probed.index, models);
             }
             if let Some(created) = action.downcast_ref::<Created>() && created.request == self.request {
                 self.finish(cx, &created.identity, &created.result);
