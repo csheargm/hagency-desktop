@@ -153,3 +153,20 @@ fn an_older_read_arriving_later_never_replaces_a_newer_pause() {
     ledger.set_room_autonomy(OWNER, &snap(false, Some(3_000)), now + 3).unwrap();
     assert_eq!(ledger.room_autonomy_at(ROOM, now + 3).unwrap(), Autonomy::Level(Level::Autonomous), "a newer read (a Resume) replaces it");
 }
+
+/// GPT review (P2): the source time lives in its own table, so an earlier
+/// build's six-value insert still works on a migrated ledger, including one
+/// that got the round-2 `as_of` column (its times are kept).
+#[test]
+fn an_earlier_builds_six_value_insert_works_after_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(ledger(dir.path()));
+    let db = rusqlite::Connection::open(dir.path().join("local.db")).unwrap();
+    db.execute_batch("ALTER TABLE room_autonomy ADD COLUMN as_of INTEGER; INSERT INTO room_autonomy VALUES ('!old:x','autonomous',1,0,5,1,4000);").unwrap();
+    drop(db);
+    drop(ledger(dir.path()));
+    let db = rusqlite::Connection::open(dir.path().join("local.db")).unwrap();
+    db.execute("INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)", ("!r:x", "assist", 0, 0, 1, 1)).unwrap();
+    let kept: i64 = db.query_row("SELECT as_of FROM room_autonomy_as_of WHERE room='!old:x'", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 4000, "the round-2 column's time moved to the side table");
+}

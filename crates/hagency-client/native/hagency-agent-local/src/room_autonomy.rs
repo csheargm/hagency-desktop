@@ -198,10 +198,10 @@ impl Ledger {
         }
         let level = snapshot.level.unwrap_or_default().wire();
         self.db.execute(
-            "INSERT OR REPLACE INTO room_autonomy (room, level, paused, unread, read_at, maintainer, as_of) VALUES (?,?,?,?,?,?,?)",
-            (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64, snapshot.as_of),
+            "INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)",
+            (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64),
         )?;
-        Ok(())
+        as_of::record(&self.db, &snapshot.room_id, snapshot.as_of)
     }
     /// What `room`'s recorded state allows at `now`.
     pub fn room_autonomy_at(&self, room: &str, now: i64) -> Result<Autonomy> {
