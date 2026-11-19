@@ -145,12 +145,24 @@ impl LoopNotice {
         }
     }
 
+    /// The message: the plain body the Agents and the gate read (with the
+    /// Agent's Matrix ID), the Agent in `m.mentions` so it still wakes, and
+    /// HTML whose mention pill shows the Agent's name, not its ID.
     pub fn content(&self) -> RoomMessageEventContent {
-        let content = RoomMessageEventContent::text_plain(self.body());
-        match self.mention() {
-            Some(user) => content.add_mentions(Mentions::with_user_ids([user.clone()])),
-            None => content,
-        }
+        let Some(user) = self.mention() else { return RoomMessageEventContent::text_plain(self.body()) };
+        RoomMessageEventContent::text_html(self.body(), self.html(user)).add_mentions(Mentions::with_user_ids([user.clone()]))
+    }
+
+    /// The body as HTML with its one mention of `user` (as the body names it)
+    /// drawn as a pill. A pill whose text is the ID shows the member's name.
+    fn html(&self, user: &OwnedUserId) -> String {
+        let esc = |s: &str| htmlize::escape_text(s).into_owned();
+        let (shown, label) = match self {
+            Self::Approved { name, .. } | Self::MarkReady { name, .. } if !name.is_empty() => (named(name, user), name.clone()),
+            _ => (user.to_string(), user.to_string()),
+        };
+        let pill = format!("<a href=\"{}\">{}</a>", htmlize::escape_attribute(&user.matrix_to_uri().to_string()), esc(&label));
+        esc(&self.body()).replacen(&esc(&shown), &pill, 1).replace('\n', "<br>")
     }
 
     pub fn marker(&self) -> Map<String, Value> {
@@ -173,3 +185,7 @@ impl LoopNotice {
         OwnedTransactionId::from(format!("hagency-loop-{}", key.to_hex()))
     }
 }
+
+#[cfg(test)]
+#[path = "loop_notice_tests.rs"]
+mod tests;
