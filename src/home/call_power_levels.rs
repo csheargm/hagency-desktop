@@ -122,7 +122,8 @@ pub fn addable_member_state(levels: &RoomPowerLevels, me: &UserId) -> Vec<&'stat
         .collect()
 }
 
-async fn server_levels(room: &Room) -> anyhow::Result<Value> {
+/// `room`'s power-level content as the homeserver has it now (not the sync store).
+pub async fn server_levels(room: &Room) -> anyhow::Result<Value> {
     let request = get_state::Request::new(room.room_id().to_owned(), StateEventType::RoomPowerLevels, String::new());
     Ok(serde_json::from_str(room.client().send(request).await?.event_or_content.get())?)
 }

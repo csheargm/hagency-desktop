@@ -13,6 +13,8 @@ use matrix_sdk_base::crypto::types::events::UtdCause;
 use matrix_sdk_ui::timeline::{self, AnyOtherStateEventContentChange, EncryptedMessage, EventTimelineItem, MemberProfileChange, MembershipChange, MsgLikeKind, OtherMessageLike, RoomMembershipChange, TimelineItemContent};
 
 use crate::utils;
+// TODO(R4): event_preview.rs is over budget; split per event kind (state events into event_preview/state.rs).
+mod power_levels;
 
 #[cfg(test)]
 mod usage_preview_tests {
@@ -518,10 +520,20 @@ pub fn text_preview_of_other_message_like(
     ))
 }
 
-/// Returns a text preview of the given other state event as an Html-formatted string.
+/// Returns a text preview of the given other state event as an Html-formatted string;
+/// a person named in it (a role change) shows by their Matrix ID's local part.
 pub fn text_preview_of_other_state(
     other_state: &timeline::OtherState,
     format_as_html: bool,
+) -> TextPreview {
+    text_preview_of_other_state_named(other_state, format_as_html, &mut utils::user_localpart)
+}
+
+/// [`text_preview_of_other_state`] with `name_of` giving a person's shown name from their Matrix ID.
+pub fn text_preview_of_other_state_named(
+    other_state: &timeline::OtherState,
+    format_as_html: bool,
+    name_of: &mut dyn FnMut(&str) -> String,
 ) -> TextPreview {
     let text = match other_state.content() {
         AnyOtherStateEventContentChange::RoomAvatar(_) => {
@@ -575,8 +587,9 @@ pub fn text_preview_of_other_state(
             };
             localize("changed this room's name to \"{name}\".", &[("name", name.to_string())])
         }
-        AnyOtherStateEventContentChange::RoomPowerLevels(_) => {
-            tr("set the power levels for this room.").to_owned()
+        AnyOtherStateEventContentChange::RoomPowerLevels(change) => {
+            power_levels::role_change_preview(change, format_as_html, name_of)
+                .unwrap_or_else(|| tr("set the power levels for this room.").to_owned())
         }
         AnyOtherStateEventContentChange::RoomServerAcl(_) => {
             tr("set the server access control list for this room.").to_owned()

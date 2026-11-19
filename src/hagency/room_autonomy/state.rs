@@ -4,7 +4,7 @@
 //! linked repositories, and what this account may do. Absent level: Off.
 //! A level event that does not count makes the loop treat the room as
 //! paused (fail closed); a pause never needs to be accepted to count.
-use crate::hagency::issue_watch::room_rules::{RoomRead, accept_of};
+use crate::hagency::issue_watch::room_rules::{MEMBER_EVENT, RoomRead, accept_of};
 use ::hagency::issue_watch::safeguards::room_autonomy::{
     AutonomySnapshot, Level, Pause, ROOM_AUTONOMY_STATE_TYPE, UNREAD_REASON, cleared, level_of, pause_in,
 };
@@ -21,6 +21,8 @@ pub struct RoomState {
     /// The pause event IDs the accepted level event's last Resume cleared.
     pub cleared: Vec<String>,
     pub pause: Option<Pause>,
+    /// The display name of whoever paused, from their room membership (none set: `None`).
+    pub pause_name: Option<String>,
     /// The room's linked repositories, from a sender who may still link them.
     pub linked: Vec<String>,
     /// This account may change the level and resume (owner or maintainer).
@@ -74,10 +76,12 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
         RoomRead::Rules { content, .. } => linked(&content),
         RoomRead::None | RoomRead::Refused(_) => Vec::new(),
     };
+    let pause = pause_in(events, &resumed);
     RoomState {
         level,
         level_by,
-        pause: pause_in(events, &resumed),
+        pause_name: pause.as_ref().and_then(|p| member_name(events, &p.by)),
+        pause,
         cleared: resumed,
         linked,
         // The event permission alone is not the role (GPT review: a permissive
@@ -87,4 +91,10 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
         can_link: rights.link,
         maintainer: rights.maintainer,
     }
+}
+
+/// `user`'s display name in the room's member `events`, when they set one.
+pub fn member_name(events: &[Value], user: &str) -> Option<String> {
+    let member = events.iter().find(|e| e["type"] == MEMBER_EVENT && e["state_key"] == user)?;
+    member["content"]["displayname"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned)
 }

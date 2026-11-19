@@ -30,7 +30,7 @@ use crate::{
 pub(super) mod add_agent_picker;
 mod member_remove;
 // TODO(R4): mobile_chat_info.rs is over budget; the member row's menu (remove, role) belongs in member_menu.rs.
-mod member_role;
+pub(crate) mod member_role;
 mod member_rows;
 use member_rows::{MemberRow, MemberRows};
 pub(crate) use member_rows::is_departure;
@@ -438,6 +438,9 @@ pub struct MobileChatInfo {
     /// that raced their departure must not show them again.
     #[rust] recently_left: HashSet<OwnedUserId>,
     #[rust] ownership_unavailable: bool,
+    /// A power-level change arrived while a chat information read was in
+    /// flight: that read may hold the old roles, so they are read again (GPT review).
+    #[rust] roles_stale: bool,
     #[rust]
     status: String,
     #[rust]
@@ -586,8 +589,11 @@ impl MobileChatInfo {
         if epoch != crate::account_session::epoch() || crate::sliding_sync::account_changing() {
             return;
         }
+        // Another member's role change reaches the Members tab live (member_role::RoleChanged).
+        super::room_watches::watch_room_changes(&client);
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.roles_stale = false;
         self.owner = Some(owner.clone());
         let request = self.request;
         self.origin = client.homeserver().to_string();
@@ -654,6 +660,14 @@ impl MobileChatInfo {
                 result,
             });
         });
+    }
+
+    /// Reads the open room's roles again for the listed members; with none
+    /// listed yet, the pending load's result triggers it (`roles_stale`).
+    fn reread_roles(&mut self) {
+        let Some(data) = self.data.as_ref() else { return };
+        let Some(room) = get_client().and_then(|c| c.get_room(data.room.room_id())) else { return };
+        member_role::spawn_reread(room, data.members.iter().map(|m| m.user_id.clone()).collect());
     }
 
     /// Takes members who left out of the list (and closes their menu).
@@ -920,10 +934,20 @@ impl Widget for MobileChatInfo {
                     self.drop_departed(cx, &departed);
                     if self.pin_is_current() && let Some(room) = self.room.clone() { self.fetch_info(cx, room); }
                 }
+                // Roles only, from the server: a role change here or by another member (sync).
                 if let Some(changed) = action.downcast_ref::<member_role::RoleChanged>()
-                    && self.pin_is_current() && let Some(room) = self.room.clone().filter(|r| r.room_id() == &changed.room_id)
+                    && self.pin_is_current() && self.room.as_ref().is_some_and(|r| r.room_id() == &changed.room_id)
                 {
-                    self.fetch_info(cx, room);
+                    self.roles_stale = true;
+                    self.reread_roles();
+                }
+                if let Some(loaded) = action.downcast_ref::<member_role::RolesLoaded>()
+                    && loaded.is_latest() && self.owner.as_ref() == Some(&loaded.owner)
+                    && let Some(data) = self.data.as_mut().filter(|d| d.room.room_id() == &loaded.room_id)
+                {
+                    data.roles = loaded.roles.clone();
+                    if let Some(removable) = &loaded.removable { data.removable = removable.clone(); }
+                    self.view.redraw(cx);
                 }
                 if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
                     && left.epoch == self.epoch && self.owner.as_ref() == Some(&left.owner)
@@ -969,6 +993,8 @@ impl Widget for MobileChatInfo {
                                 self.data = Some(data);
                                 self.failed = false;
                                 self.status.clear();
+                                // The latest read is in; a change seen while it ran may be missing from it.
+                                if std::mem::take(&mut self.roles_stale) { self.reread_roles(); }
                             }
                             Err(error) => {
                                 self.status = crate::i18n::format(

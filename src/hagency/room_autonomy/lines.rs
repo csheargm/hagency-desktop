@@ -30,11 +30,12 @@ pub fn level_index(level: Level) -> usize {
 
 /// The Status tab's line: "Autonomous · 2 agents working", "Paused by Anna
 /// at 13:40", or why the loop treats the room as paused. `name` and `time`
-/// render a Matrix ID and a server time (ms).
+/// render a Matrix ID (when the pauser has no display name) and a server time (ms).
 pub fn status_line(state: &RoomState, working: usize, name: impl Fn(&str) -> String, time: impl Fn(i64) -> String) -> String {
     use crate::i18n::{format, tr};
     if let Some(pause) = &state.pause {
-        return format("Paused by {name} at {time}", &[("name", name(&pause.by)), ("time", time(pause.at_ms))]);
+        let who = state.pause_name.clone().unwrap_or_else(|| name(&pause.by));
+        return format("Paused by {name} at {time}", &[("name", who), ("time", time(pause.at_ms))]);
     }
     let level = match &state.level {
         Ok(level) => *level,
@@ -61,6 +62,15 @@ pub fn badge(state: &RoomState) -> Option<&'static str> {
         Ok(Level::Autonomous) => Some("Autonomous"),
         _ => None,
     }
+}
+
+/// Under "Let agents work on a repo", for everyone: the repositories the
+/// room links, which its agents may work on ("Linked: a/b, c/d"); empty when none.
+pub fn linked_line(linked: &[String]) -> String {
+    if linked.is_empty() {
+        return String::new();
+    }
+    crate::i18n::format("Linked: {repos}", &[("repos", linked.join(", "))])
 }
 
 /// The room line Pause posts.

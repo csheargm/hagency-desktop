@@ -55,6 +55,8 @@ script_mod! {
             }
             AutonomyText {text: #(crate::i18n::tr(super::autonomy::SETUP_HINT)) i18n_text: "Links the repository to this room, lets your agents in this room work on it, and starts the room at Assist: agents claim, build and review, and a person merges."}
         }
+        autonomy_linked := Label {visible: false width: Fill height: Fit flow: Flow.Right{wrap: true} padding: Inset{top: 2}
+            draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}}
         autonomy_note := AutonomyText {}
     }
 }
@@ -122,7 +124,7 @@ impl RoomAutonomy {
         let (status, state) = match shown {
             Shown::Loading => (crate::i18n::tr("Reading the room's agent work…").to_owned(), None),
             Shown::Failed(error) => (crate::i18n::format("Agent work is unavailable: {error}", &[("error", error.clone())]), None),
-            Shown::Ready(state) => (lines::status_line(state, crate::hagency::run_controls::running_in(&room), display_name, local_time), Some(state)),
+            Shown::Ready(state) => (lines::status_line(state, crate::hagency::run_controls::running_in(&room), crate::utils::user_localpart, local_time), Some(state)),
         };
         self.view.label(cx, ids!(autonomy_status)).set_text(cx, &status);
         let can_change = state.is_some_and(|s| s.can_change);
@@ -140,15 +142,16 @@ impl RoomAutonomy {
         self.view.button(cx, ids!(autonomy_pause)).set_visible(cx, state.is_some_and(|s| s.can_pause) && !paused);
         self.view.button(cx, ids!(autonomy_resume)).set_visible(cx, can_change && paused);
         self.view.view(cx, ids!(setup_box)).set_visible(cx, state.is_some_and(|s| s.can_link));
+        // Everyone sees what agents may work on; unlinking is the tab's link box (for those who may link).
+        let linked = state.map(|s| lines::linked_line(&s.linked)).unwrap_or_default();
+        let linked_label = self.view.label(cx, ids!(autonomy_linked));
+        linked_label.set_visible(cx, !linked.is_empty());
+        linked_label.set_text(cx, &linked);
         let note = self.room.as_deref().and_then(note);
         self.view.label(cx, ids!(autonomy_note)).set_text(cx, note.as_deref().unwrap_or_default());
     }
 }
 
-/// A member's name for the status line: the local part of their Matrix ID.
-fn display_name(id: &str) -> String {
-    id.trim_start_matches('@').split(':').next().unwrap_or(id).to_owned()
-}
 /// A server time (ms) as the local "13:40".
 fn local_time(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms).map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default()

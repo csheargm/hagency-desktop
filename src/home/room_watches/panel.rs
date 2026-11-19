@@ -90,8 +90,8 @@ pub fn row_text(watch: &::hagency::issue_watch::RoomWatch) -> (String, String) {
 pub fn notice(loaded: Option<&Result<super::Watches, String>>, link_error: Option<&str>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     match loaded {
-        None => parts.push(crate::i18n::tr("Loading watches…").to_owned()),
-        Some(Err(error)) => parts.push(crate::i18n::format("Watches are unavailable: {error}", &[("error", error.clone())])),
+        None => parts.push(crate::i18n::tr("Loading…").to_owned()),
+        Some(Err(error)) => parts.push(crate::i18n::format("Room status is unavailable: {error}", &[("error", error.clone())])),
         Some(Ok(w)) => {
             if w.rows.is_empty() && w.status.as_ref().is_ok_and(|s| s.tables.is_empty()) {
                 parts.push(crate::i18n::tr("No Agent watches a repository for this room.").to_owned());

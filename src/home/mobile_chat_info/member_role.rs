@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// The owner's level and the maintainer level.
-const OWNER_LEVEL: i64 = 100;
+pub const OWNER_LEVEL: i64 = 100;
 pub use ::hagency::issue_watch::safeguards::room_autonomy::MAINTAINER_LEVEL;
 
 /// A member's role, when they have one.
@@ -51,17 +51,44 @@ pub fn role_of(levels: &RoomPowerLevels, user: &UserId) -> Option<Role> {
     }
 }
 
+/// The role a plain power `level` gives (no room-creator rule).
+pub fn role_at(level: i64) -> Option<Role> {
+    if level >= OWNER_LEVEL {
+        Some(Role::Owner)
+    } else if level >= MAINTAINER_LEVEL {
+        Some(Role::Maintainer)
+    } else {
+        None
+    }
+}
+
 /// Whether `user` is a person (not an Agent puppet or a Hagency service account).
 fn is_person(user: &UserId) -> bool {
     !user.localpart().starts_with(hagency_core::puppet::RESERVED_LOCALPART_PREFIX) && !crate::shared::mention_candidates::is_hagency_service_account(user)
 }
 
-/// The roles of `members` in `room`, from the room's power levels.
+/// The roles of `members` in `room`, from the room's power levels as the
+/// homeserver has them now: the sync store can still hold the levels from
+/// before a role change, so the list kept showing the old role (on-screen
+/// bug, Nov 18). The store's levels are the fallback when the server read fails.
 pub async fn roles(room: &Room, members: &[OwnedUserId]) -> Roles {
-    let Ok(levels) = room.power_levels().await else { return Roles::default() };
-    let me = room.own_user_id();
-    let of = members.iter().filter_map(|m| role_of(&levels, m).map(|r| (m.clone(), r))).collect();
-    let i_am_owner = role_of(&levels, me) == Some(Role::Owner) && levels.user_can_send_state(me, StateEventType::RoomPowerLevels);
+    let server = crate::home::call_power_levels::server_levels(room).await.ok()
+        .and_then(|content| crate::home::call_power_levels::typed_levels(room, content));
+    let levels = match server {
+        Some(levels) => levels,
+        None => match room.power_levels().await {
+            Ok(levels) => levels,
+            // No readable levels: nobody gets a role tag or the role menu (fail closed).
+            Err(_) => return Roles::default(),
+        },
+    };
+    roles_under(&levels, members, room.own_user_id())
+}
+
+/// The roles of `members` under `levels`, and whether `me` is the owner.
+pub fn roles_under(levels: &RoomPowerLevels, members: &[OwnedUserId], me: &UserId) -> Roles {
+    let of = members.iter().filter_map(|m| role_of(levels, m).map(|r| (m.clone(), r))).collect();
+    let i_am_owner = role_of(levels, me) == Some(Role::Owner) && levels.user_can_send_state(me, StateEventType::RoomPowerLevels);
     Roles { of, i_am_owner }
 }
 
@@ -134,10 +161,49 @@ pub fn button_text(make: bool) -> &'static str {
     if make { "Make maintainer" } else { "Remove maintainer" }
 }
 
-/// Posted when a role change finished, so the Members list reads the room again.
+/// Posted when a role change finished, or when the room's power levels
+/// changed in sync (any member's change), so the Members list reads the roles again.
 #[derive(Clone, Debug)]
 pub struct RoleChanged {
     pub room_id: matrix_sdk::ruma::OwnedRoomId,
+}
+
+/// The roles read again for a room's listed members ([`spawn_reread`]).
+#[derive(Clone, Debug)]
+pub struct RolesLoaded {
+    pub room_id: matrix_sdk::ruma::OwnedRoomId,
+    pub owner: OwnedUserId,
+    pub roles: Roles,
+    /// Whom this account may remove now (`None`: members unreadable, keep the list's).
+    pub removable: Option<std::collections::HashSet<OwnedUserId>>,
+    request: u64,
+}
+
+/// The newest role read; an older one finishing later is dropped.
+static LATEST_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl RolesLoaded {
+    /// Whether no newer role read has started since this one.
+    pub fn is_latest(&self) -> bool {
+        self.request == LATEST_READ.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Reads `room`'s roles again for `members` in the background, without
+/// reloading the list (no scroll jump on another member's change).
+pub fn spawn_reread(room: Room, members: Vec<OwnedUserId>) {
+    let request = LATEST_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    crate::sliding_sync::spawn_async_task(async move {
+        let roles = roles(&room, &members).await;
+        // A role change can also change whom this account may remove (GPT review).
+        let removable = match room.members(matrix_sdk::RoomMemberships::JOIN | matrix_sdk::RoomMemberships::BAN).await {
+            Ok(listed) => Some(super::member_remove::removable(&room, &listed).await),
+            // Unreadable members: the list keeps its removal rights until its next full read.
+            Err(_) => None,
+        };
+        let (room_id, owner) = (room.room_id().to_owned(), room.own_user_id().to_owned());
+        makepad_widgets::Cx::post_action(RolesLoaded { room_id, owner, roles, removable, request });
+    });
 }
 
 /// Make or remove `target` as maintainer in the background; the result shows as a popup.
@@ -188,5 +254,25 @@ mod tests {
         assert_eq!(removed["users"]["@bob:x"], 25, "others untouched");
         assert!(with_role(levels, &user("@own:x"), false).is_err(), "the owner keeps their role");
         assert_eq!(Role::Maintainer.tag(), "Maintainer");
+    }
+
+    /// On-screen bug (Nov 18): bird at 50 after "Make maintainer" must read
+    /// as a Maintainer, with "Remove maintainer" offered to the owner.
+    #[test]
+    fn roles_follow_the_rooms_current_power_levels() {
+        let rules = matrix_sdk::ruma::room_version_rules::AuthorizationRules::V1;
+        let content = json!({"users": {"@anna:x": 100, "@bird:x": 50, "@cat:x": 0}});
+        let levels = crate::home::call_power_levels::levels_from(content, &rules, vec![]).unwrap();
+        let members = [user("@anna:x"), user("@bird:x"), user("@cat:x")];
+        let roles = roles_under(&levels, &members, &user("@anna:x"));
+        assert!(roles.i_am_owner);
+        assert_eq!(roles.of.get(&user("@anna:x")), Some(&Role::Owner));
+        assert_eq!(roles.of.get(&user("@bird:x")), Some(&Role::Maintainer));
+        assert_eq!(roles.of.get(&user("@cat:x")), None);
+        assert_eq!(change_for(&roles, Some(&user("@anna:x")), &user("@bird:x")), Some(false), "Remove maintainer for bird");
+        assert_eq!(button_text(false), "Remove maintainer");
+        let removed = crate::home::call_power_levels::levels_from(json!({"users": {"@anna:x": 100}}), &rules, vec![]).unwrap();
+        assert_eq!(roles_under(&removed, &members, &user("@anna:x")).of.get(&user("@bird:x")), None, "removed: no tag");
+        assert_eq!((role_at(100), role_at(50), role_at(49)), (Some(Role::Owner), Some(Role::Maintainer), None));
     }
 }

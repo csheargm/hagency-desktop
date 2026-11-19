@@ -48,7 +48,7 @@ use ruma::{OwnedUserId, api::client::receipt::create_receipt::v3::ReceiptType, e
 
 use matrix_sdk_ui::sync_service::State;
 use crate::{
-    app::{AppStateAction, SelectedRoom}, avatar_cache, event_preview::{plaintext_body_of_timeline_item, text_preview_of_encrypted_message, text_preview_of_member_profile_change, text_preview_of_other_message_like, text_preview_of_other_state, text_preview_of_room_membership_change, text_preview_of_timeline_item}, home::{edited_indicator::EditedIndicatorWidgetRefExt, link_preview::{LinkPreviewCache, LinkPreviewRef, LinkPreviewWidgetRefExt}, loading_pane::LoadingPaneWidgetExt, room_image_viewer::{fetch_full_image_for_viewer, get_image_name_and_filesize}, rooms_list::{RoomsListAction, RoomsListRef}, rooms_list_header::RoomsListHeaderAction, tombstone_footer::SuccessorRoomDetails}, media_cache::{MediaCache, MediaCacheEntry}, profile::{
+    app::{AppStateAction, SelectedRoom}, avatar_cache, event_preview::{plaintext_body_of_timeline_item, text_preview_of_encrypted_message, text_preview_of_member_profile_change, text_preview_of_other_message_like, text_preview_of_room_membership_change, text_preview_of_timeline_item}, home::{edited_indicator::EditedIndicatorWidgetRefExt, link_preview::{LinkPreviewCache, LinkPreviewRef, LinkPreviewWidgetRefExt}, loading_pane::LoadingPaneWidgetExt, room_image_viewer::{fetch_full_image_for_viewer, get_image_name_and_filesize}, rooms_list::{RoomsListAction, RoomsListRef}, rooms_list_header::RoomsListHeaderAction, tombstone_footer::SuccessorRoomDetails}, media_cache::{MediaCache, MediaCacheEntry}, profile::{
         user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId, UserProfilePaneAction, UserProfilePaneInfo, UserProfileSlidingPaneRef, UserProfileSlidingPaneWidgetExt},
         user_profile_cache,
     },
@@ -7610,6 +7610,19 @@ impl SmallStateEventContent for PollState {
     }
 }
 
+/// The timeline line for `state`, naming a person whose role changed by
+/// their cached display name (their Matrix ID's local part until it is known).
+// TODO: the account-wide name, not the room's own one: SmallStateEventContent
+// gets no room ID (GPT review, deferred: changing the trait touches every impl).
+fn other_state_line(cx: &mut Cx, state: &timeline::OtherState) -> crate::event_preview::TextPreview {
+    let mut name_of = |id: &str| {
+        let cached = matrix_sdk::ruma::OwnedUserId::try_from(id).ok()
+            .and_then(|user| user_profile_cache::get_user_display_name_for_room(cx, user, None, true).into_option());
+        cached.unwrap_or_else(|| crate::utils::user_localpart(id))
+    };
+    crate::event_preview::text_preview_of_other_state_named(state, false, &mut name_of)
+}
+
 impl SmallStateEventContent for timeline::OtherState {
     fn populate_item_content(
         &self,
@@ -7622,10 +7635,8 @@ impl SmallStateEventContent for timeline::OtherState {
         _item_drawn_status: ItemDrawnStatus,
         mut new_drawn_status: ItemDrawnStatus,
     ) -> (WidgetRef, ItemDrawnStatus) {
-        item.label(cx, ids!(content)).set_text(
-            cx,
-            &text_preview_of_other_state(self, false).format_with(username, false),
-        );
+        let line = other_state_line(cx, self).format_with(username, false);
+        item.label(cx, ids!(content)).set_text(cx, &line);
         new_drawn_status.content_drawn = true;
         (item, new_drawn_status)
     }
