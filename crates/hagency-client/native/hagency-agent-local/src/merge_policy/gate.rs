@@ -38,11 +38,11 @@ impl Ledger {
         use rusqlite::OptionalExtension;
         Ok(self.db.query_row("SELECT enabled FROM auto_merge WHERE agent=?", [agent], |r| r.get::<_, i64>(0)).optional()? == Some(1))
     }
-    /// `reviewer` asked for changes: none of its approvals of `pr` count any more.
+    /// `reviewer` asked for changes: none of its approvals of `pr` (any owner/repo case, GPT P1-2) count any more.
     pub(crate) fn withdraw_agent_review(&mut self, pr: &str, reviewer: &str) -> Result<()> {
-        self.db.execute("DELETE FROM auto_merge_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_room_reviews WHERE lower(pr)=lower(?) AND reviewer=?", (pr, reviewer))?;
         // A held approval must not settle afterwards and restore it.
-        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE pr=? AND reviewer=?", (pr, reviewer))?;
+        self.db.execute("DELETE FROM auto_merge_pending_room_reviews WHERE lower(pr)=lower(?) AND reviewer=?", (pr, reviewer))?;
         Ok(())
     }
     /// `reviewer` approved `pr` at `head` in `room`; it counts only for a merge from that room.
