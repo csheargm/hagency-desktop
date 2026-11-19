@@ -15,6 +15,9 @@ use super::{MobileChatInfo, RoomAgentsLoaded};
 /// another scope (its private chat) or one that cannot be re-bound.
 const ALREADY_IN_ROOM_CODES: [&str; 2] = ["room_binding_scope_conflict", "binding_not_bindable"];
 
+/// The picker's status line before a choice: plain words, no "bind" or "pool".
+pub(super) const CHOOSE_AGENT_TEXT: &str = "Add one of your agents to this room.";
+
 /// An Agent is already here when its puppet is a joined member, or this room
 /// is the Agent's own private chat with its owner.
 pub(super) fn agent_in_room<'a>(agent: &Value, room: &RoomId, mut members: impl Iterator<Item = &'a UserId>) -> bool {
@@ -99,7 +102,7 @@ impl MobileChatInfo {
     pub(super) fn selected_agent_status(&self, cx: &mut Cx) -> String {
         match self.selected_agent(cx).filter(|agent| self.agent_here(agent)) {
             Some(agent) => already_in_room_text(agent_name(agent)),
-            None => crate::i18n::tr("Choose an Agent you own to bind to this Room.").to_owned(),
+            None => crate::i18n::tr(CHOOSE_AGENT_TEXT).to_owned(),
         }
     }
 
@@ -154,6 +157,27 @@ mod tests {
         assert_eq!(bind_outcome_code(&Ok(serde_json::json!({}))), "missing_command_state");
         assert_eq!(bind_outcome_code(&Err("room_binding_scope_conflict".into())), "room_binding_scope_conflict");
         assert_eq!(bind_outcome_code(&Err(String::new())), "empty_error_code");
+    }
+
+    /// Regression: the dialog said "pool Agent", "resource authorization" and
+    /// "bind"; non-technical owners get plain words in both languages.
+    #[test]
+    fn add_agent_dialog_uses_plain_words() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut info = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);vm.bx.captured_errors=Some(Vec::new());crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.MobileChatInfo {}});
+            MobileChatInfo::script_from_value(vm, value)
+        });
+        let hint = info.view.label(&mut cx, ids!(agent_picker_modal.agent_picker_hint)).text();
+        assert_eq!(hint, "Not listed? Check it's running in My Agents.");
+        assert_eq!(info.selected_agent_status(&mut cx), "Add one of your agents to this room.");
+        use crate::i18n::{Language, text_for};
+        assert_eq!(text_for(Language::Chinese, &hint), "没看到？请到“我的 Agent”确认它正在运行。");
+        assert_eq!(text_for(Language::Chinese, CHOOSE_AGENT_TEXT), "把你的一个 Agent 添加到此聊天室。");
+        for jargon in ["pool", "resource authorization", "bind"] {
+            assert!(!hint.contains(jargon) && !CHOOSE_AGENT_TEXT.contains(jargon), "{jargon}");
+        }
     }
 
     /// The reported flow: Add agent in ann5agent's own private chat.

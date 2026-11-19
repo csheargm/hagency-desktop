@@ -205,9 +205,9 @@ script_mod! {
                     popup_menu_position: PopupMenuPosition.BelowInput
                     draw_text.text_style: theme.font_regular{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}
                     popup_menu: RobrixSettingsPopupMenu {width: 310 menu_item: RobrixSettingsPopupMenuItem {height: 36}}}
-                ModalBody {margin: Inset{top: 12}
-                    text: #(crate::i18n::tr("Only available Agents are listed. If a pool Agent is missing, check its resource authorization in Agent → My Agents."))
-                    i18n_text: "Only available Agents are listed. If a pool Agent is missing, check its resource authorization in Agent → My Agents."
+                agent_picker_hint := ModalBody {margin: Inset{top: 12}
+                    text: #(crate::i18n::tr("Not listed? Check it's running in My Agents."))
+                    i18n_text: "Not listed? Check it's running in My Agents."
                     draw_text.color: mod.widgets.RINX_MUTED
                 }
                 buttons_view := ModalButtonsRow {
@@ -766,7 +766,7 @@ impl MobileChatInfo {
                 self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,labels);
                 self.view.drop_down(cx,ids!(my_agents)).set_selected_item(cx,0);
                 if self.agents.is_empty() {"No active Agents owned by you are available."}
-                else {"Choose an Agent you own to bind to this Room."}
+                else {add_agent_picker::CHOOSE_AGENT_TEXT}
             },
             Err(code) if code == crate::hagency::group_rooms::PRIVATE_AGENT_REFUSAL => {error=Some(code.as_str());PRIVATE_AGENT_CHOICE},
             Err(code) => {error=Some(code.as_str());agent_binding_error(code)},
