@@ -58,16 +58,16 @@ class AuthStatus(unittest.TestCase):
 
 class SignedOutAgents(unittest.TestCase):
     def test_cli_signed_out_blocks_every_claude_agent_not_codex(self):
-        out = provider.signed_out_agents(False, {})
+        out = provider.signed_out_agents({"anna": False, "betty": False}, {})
         self.assertEqual(set(out), {"anna-claude", "yue-claude", "bird-claude"})
         self.assertTrue(all(provider.SIGNED_OUT_NOTE in v for v in out.values()))
 
     def test_log_error_blocks_only_that_owners_claude_agents(self):
-        out = provider.signed_out_agents(True, {"anna": [LOGIN_LINE], "betty": []})
+        out = provider.signed_out_agents({"anna": True, "betty": True}, {"anna": [LOGIN_LINE], "betty": []})
         self.assertEqual(set(out), {"anna-claude", "yue-claude"})
 
     def test_all_usable(self):
-        self.assertEqual(provider.signed_out_agents(None, {"anna": [], "betty": []}), {})
+        self.assertEqual(provider.signed_out_agents({"anna": None}, {"anna": [], "betty": []}), {})
 
     def test_preflight_reads_logs_and_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,10 +75,71 @@ class SignedOutAgents(unittest.TestCase):
             anna.write_text(OTHER_LINE + "\n")
             betty.write_text(LOGIN_LINE + "\n")
             with mock.patch.object(provider.config, "DESKTOP_LOGS", {"anna": anna, "betty": betty}), \
+                    mock.patch.object(provider, "desktop_config_dir", return_value=None), \
                     mock.patch.object(provider, "claude_cli_logged_in", return_value=True):
                 out, log = provider.preflight(NOW)
         self.assertEqual(set(out), {"bird-claude"})
         self.assertTrue(any("bird-claude" in x for x in log))
+
+
+class ConfigDir(unittest.TestCase):
+    """`claude auth status` must check the login the desktop's Agents use."""
+    PS = ("/x/Hagency-fresh-anna.app/Contents/MacOS/rinx HOME=/Users/u "
+          "CLAUDE_CONFIG_DIR=/Users/u/.hagency-claude/anna HAGENCY_GH_TOKEN_FILE=/t")
+
+    def test_reads_config_dir_from_process_env(self):
+        self.assertEqual(provider.env_config_dir(self.PS), "/Users/u/.hagency-claude/anna")
+        self.assertIsNone(provider.env_config_dir("/x/rinx HOME=/Users/u PATH=/bin"))
+        self.assertIsNone(provider.env_config_dir("/x/rinx MY_CLAUDE_CONFIG_DIR=/nope"))
+
+    def test_reads_only_a_literal_config_dir_from_the_launch_script(self):
+        self.assertEqual(provider.script_config_dir('open -n A.app --env HOME="$HOME" '
+                                                    '--env CLAUDE_CONFIG_DIR="/srv/claude-a" \\'), "/srv/claude-a")
+        self.assertIsNone(provider.script_config_dir('--env CLAUDE_CONFIG_DIR="$AGENT_DIR"'))
+        self.assertIsNone(provider.script_config_dir('--env HOME="$HOME" --env RUST_LOG=warn'))
+
+    def _desktop_dir(self, ps_out, script):
+        with tempfile.TemporaryDirectory() as tmp:
+            pid, sh = Path(tmp) / "desktop.pid", Path(tmp) / "up.sh"
+            pid.write_text("70973\n")
+            sh.write_text(script)
+            ran = mock.Mock(stdout=ps_out)
+            with mock.patch.object(provider.config, "DESKTOP_PIDS", {"anna": pid}), \
+                    mock.patch.object(provider.config, "DEMO_UP_SCRIPT", sh), \
+                    mock.patch.object(provider.subprocess, "run", return_value=ran) as run:
+                return provider.desktop_config_dir("anna"), run
+
+    def test_process_env_wins_then_script_then_none(self):
+        got, run = self._desktop_dir(self.PS, '--env CLAUDE_CONFIG_DIR=/srv/other')
+        self.assertEqual(got, "/Users/u/.hagency-claude/anna")
+        self.assertEqual(run.call_args[0][0], ["ps", "-E", "-p", "70973", "-o", "command="])
+        self.assertEqual(self._desktop_dir("/x/rinx HOME=/h", '--env CLAUDE_CONFIG_DIR=/srv/other')[0], "/srv/other")
+        self.assertIsNone(self._desktop_dir("/x/rinx HOME=/h", '--env HOME="$HOME"')[0])
+
+    def _auth_env(self, config_dir, inherited):
+        ran = mock.Mock(stdout='{"loggedIn": true}')
+        with mock.patch.dict(provider.os.environ, inherited, clear=False), \
+                mock.patch.object(provider.subprocess, "run", return_value=ran) as run:
+            self.assertIs(provider.claude_cli_logged_in(config_dir), True)
+        return run.call_args.kwargs["env"]
+
+    def test_auth_status_runs_under_the_desktops_config_dir(self):
+        env = self._auth_env("/Users/u/.hagency-claude/anna", {"CLAUDE_CONFIG_DIR": "/elsewhere"})
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], "/Users/u/.hagency-claude/anna")
+
+    def test_auth_status_unsets_config_dir_when_the_desktop_has_none(self):
+        env = self._auth_env(None, {"CLAUDE_CONFIG_DIR": "/elsewhere"})
+        self.assertNotIn("CLAUDE_CONFIG_DIR", env)
+        self.assertIn("PATH", env)
+
+    def test_one_probe_per_distinct_dir_and_per_owner_result(self):
+        probe = mock.Mock(side_effect=lambda d: d is None)
+        got = provider.owner_cli_status({"anna": None, "betty": "/srv/b"}, probe)
+        self.assertEqual(got, {"anna": True, "betty": False})
+        self.assertEqual(probe.call_count, 2)
+        out = provider.signed_out_agents(got, {}, {"anna": None, "betty": "/srv/b"})
+        self.assertEqual(set(out), {"bird-claude"})
+        self.assertIn("CLAUDE_CONFIG_DIR=/srv/b", out["bird-claude"])
 
 
 def _ctx(signed_out=None):
@@ -95,7 +156,7 @@ class ScenarioGate(unittest.TestCase):
         self.assertIn(provider.SIGNED_OUT_NOTE, r.note)
 
     def test_codex_scenario_not_blocked_by_claude_sign_out(self):
-        ctx = _ctx(provider.signed_out_agents(False, {}))
+        ctx = _ctx(provider.signed_out_agents({"anna": False, "betty": False}, {}))
         self.assertIsNone(scenario.blocked("3", ctx, ["bird-codex"]))
 
     def test_issue_loop_blocked_when_loop_agent_signed_out(self):

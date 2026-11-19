@@ -3,10 +3,13 @@ every Claude Agent silent; that is a missing precondition (BLOCKED), not a
 product finding (FAIL), and never a pass (R14).
 
 Two signals, either one blocks:
-- `claude auth status` (JSON; only `loggedIn` is read, nothing is printed);
+- `claude auth status` (JSON; only `loggedIn` is read, nothing is printed),
+  run under the CLAUDE_CONFIG_DIR the owner's desktop has (its process env,
+  else a literal one in int-demo-up.sh; unset when none);
 - the owner's desktop log: the agent runtime's CLAUDE_LOGIN_REQUIRED profile
   error (hagency-agent-local runtime.rs) in the last few minutes."""
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -21,6 +24,8 @@ RECENT_WINDOW = timedelta(minutes=5)
 AUTH_STATUS_TIMEOUT_S = 20
 NO_ANSWER_MARKS = ("(nothing)", "no answer")
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_CONFIG_DIR_ENV = re.compile(r"(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)")
+_CONFIG_DIR_SCRIPT = re.compile(r"--env\s+CLAUDE_CONFIG_DIR=[\"']?([^\"'\s]+)")
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z")
 
 
@@ -59,22 +64,67 @@ def parse_auth_status(stdout: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def claude_cli_logged_in() -> bool | None:
+def env_config_dir(ps_output: str) -> str | None:
+    """CLAUDE_CONFIG_DIR from `ps -E -p <pid> -o command=` output (only that
+    variable is extracted; the rest of the environment is never kept)."""
+    m = _CONFIG_DIR_ENV.search(ps_output)
+    return m.group(1) if m else None
+
+
+def script_config_dir(script_text: str) -> str | None:
+    """A literal `--env CLAUDE_CONFIG_DIR=...` in int-demo-up.sh; a value
+    with shell expansions cannot be resolved here, so it counts as none."""
+    m = _CONFIG_DIR_SCRIPT.search(script_text)
+    return m.group(1) if m and "$" not in m.group(1) else None
+
+
+def desktop_config_dir(owner: str) -> str | None:
+    """The CLAUDE_CONFIG_DIR the owner's running desktop has (its process
+    env), else the literal one int-demo-up.sh passes; None = CLI default."""
     try:
-        out = subprocess.run(["claude", "auth", "status"], capture_output=True, text=True,
+        pid = config.DESKTOP_PIDS[owner].read_text().strip()
+        if pid.isdigit():
+            out = subprocess.run(["ps", "-E", "-p", pid, "-o", "command="], capture_output=True,
+                                 text=True, timeout=AUTH_STATUS_TIMEOUT_S).stdout
+            if (found := env_config_dir(out)):
+                return found
+    except (OSError, subprocess.TimeoutExpired):  # no pid file / ps failed: fall back to the launch script
+        pass
+    try:
+        return script_config_dir(config.DEMO_UP_SCRIPT.read_text())
+    except OSError:  # no launch script: the CLI default login is the one the desktop inherits
+        return None
+
+
+def claude_cli_logged_in(config_dir: str | None = None) -> bool | None:
+    """`claude auth status` under `config_dir` (CLAUDE_CONFIG_DIR unset when None)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    try:
+        out = subprocess.run(["claude", "auth", "status"], capture_output=True, text=True, env=env,
                              timeout=AUTH_STATUS_TIMEOUT_S).stdout
     except (OSError, subprocess.TimeoutExpired):  # CLI missing or hung: unknown, the log signal still applies
         return None
     return parse_auth_status(out)
 
 
-def signed_out_agents(cli_logged_in: bool | None, owner_log_errors: dict) -> dict:
-    """Claude Agent -> reason, from the CLI state and each owner's recent log errors."""
-    out = {}
+def owner_cli_status(dirs: dict, probe=None) -> dict:
+    """owner -> loggedIn under that owner's config dir (one probe per distinct dir)."""
+    probe, cache = probe or claude_cli_logged_in, {}
+    for d in dict.fromkeys(dirs.values()):
+        cache[d] = probe(d)
+    return {o: cache[d] for o, d in dirs.items()}
+
+
+def signed_out_agents(cli_by_owner: dict, owner_log_errors: dict, dirs: dict | None = None) -> dict:
+    """Claude Agent -> reason, from each owner's CLI state and recent log errors."""
+    out, dirs = {}, dirs or {}
     for agent in claude_agents():
         owner = config.AGENTS[agent][0]
-        if cli_logged_in is False:
-            out[agent] = f"{SIGNED_OUT_NOTE}: `claude auth status` loggedIn=false"
+        if cli_by_owner.get(owner) is False:
+            where = f"CLAUDE_CONFIG_DIR={dirs[owner]}" if dirs.get(owner) else "default config"
+            out[agent] = f"{SIGNED_OUT_NOTE}: `claude auth status` ({where}) loggedIn=false"
         elif owner_log_errors.get(owner):
             out[agent] = f"{SIGNED_OUT_NOTE}: {owner}'s desktop log: {owner_log_errors[owner][-1][-160:]}"
     return out
@@ -83,10 +133,12 @@ def signed_out_agents(cli_logged_in: bool | None, owner_log_errors: dict) -> dic
 def preflight(now: datetime | None = None) -> tuple:
     """(signed_out {agent: reason}, log lines for the report)."""
     now = now or datetime.now(timezone.utc)
-    cli = claude_cli_logged_in()
+    dirs = {o: desktop_config_dir(o) for o in config.DESKTOP_LOGS}
+    cli = owner_cli_status(dirs)
     errors = {o: recent_login_errors(evidence.log_since(p, 0), now) for o, p in config.DESKTOP_LOGS.items()}
-    signed_out = signed_out_agents(cli, errors)
-    log = [f"claude auth status loggedIn: {'unknown' if cli is None else cli}"]
+    signed_out = signed_out_agents(cli, errors, dirs)
+    log = [f"{o}: claude auth status ({dirs[o] or 'default config'}) loggedIn: "
+           f"{'unknown' if cli[o] is None else cli[o]}" for o in dirs]
     log += [f"{o} desktop log: {len(e)} Claude login error(s) in the last "
             f"{int(RECENT_WINDOW.total_seconds() // 60)} min" for o, e in errors.items()]
     log += [f"{a}: {why}" for a, why in signed_out.items()] or ["all Claude Agents' providers usable"]

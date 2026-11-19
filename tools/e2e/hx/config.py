@@ -39,6 +39,8 @@ ROOM_REPOS_STATE = "io.hagency.room_repos"  # ADR 0023: {"repos": [...]}, state 
 TEST_MARK = "[e2e]"  # every issue/PR/branch the runner creates carries this
 
 DESKTOP_LOGS = {"anna": RUN / "fresh-anna" / "desktop.log", "betty": RUN / "fresh-betty" / "desktop.log"}
+DESKTOP_PIDS = {"anna": RUN / "fresh-anna" / "desktop.pid", "betty": RUN / "fresh-betty" / "desktop.pid"}
+DEMO_UP_SCRIPT = ROOT / "int-demo-up.sh"  # launches the desktops; may pass --env CLAUDE_CONFIG_DIR
 SERVER_LOGS = {"alpha": RUN / "fed" / "server-alpha.log", "beta": RUN / "fed" / "server-beta.log"}
 OWNER_LEDGER_GLOB = "owners/*/owned-agent-owners/*/agent-local.sqlite"
 OWNER_RESOURCES = Path.home() / ".hagency-owner-resources"
