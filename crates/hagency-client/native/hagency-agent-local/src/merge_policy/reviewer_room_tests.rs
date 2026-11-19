@@ -32,7 +32,7 @@ impl PrSource for Pr115 {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = PrFacts { open: true, files: vec![file("README.md", 2)], checks: vec![] };
         let head_ref = Some(HeadRef { branch: "bird-claude/issue-114-readme-thanks".into(), created_at: 1_795_061_485 });
-        Some(PrView { url: URL.into(), base_sha: "2".repeat(40), head_sha: HEAD.into(), author: "csheargm".into(), opened_by: Some("bird-claude".into()), head_ref, facts })
+        Some(PrView { base_ref: "main".into(), url: URL.into(), base_sha: "2".repeat(40), head_sha: HEAD.into(), author: "csheargm".into(), opened_by: Some("bird-claude".into()), head_ref, facts })
     }
 }
 

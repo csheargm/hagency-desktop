@@ -411,5 +411,15 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
         return Some(false);
     }
     let decision = super::review_loop::judge(ledger, command, repo, view, (agent, room), source).await?;
-    Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
+    if decision != Decision::Merge {
+        return Some(false);
+    }
+    // TODO(R4): gate.rs is over budget; split the merge's head/base binding into gate/bind.rs.
+    // `--match-head-commit` binds the head only, and GitHub's merge takes no
+    // base: a retarget (`gh pr edit --base`) keeps the head, so the base this
+    // judged is read again last and must not have moved (GPT P1-b).
+    if !view.same_target(&source.pull_request(command).await?) {
+        return Some(false);
+    }
+    Some(ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
 }

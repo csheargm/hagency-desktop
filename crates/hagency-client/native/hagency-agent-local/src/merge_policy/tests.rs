@@ -128,7 +128,7 @@ fn only_exact_merge_and_approving_review_commands_reach_the_gate() {
 
 #[test]
 fn github_pr_json_becomes_facts_and_checks() {
-    let view = json!({"url": URL, "state": "OPEN", "baseRefOid": BASE, "headRefOid": HEAD,
+    let view = json!({"url": URL, "state": "OPEN", "baseRefName": "main", "baseRefOid": BASE, "headRefOid": HEAD,
         "statusCheckRollup": [{"conclusion": "SUCCESS"}, {"conclusion": "", "status": "IN_PROGRESS"}, {"state": "FAILURE"}]});
     let files = json!([{"filename": "README.md", "status": "modified", "additions": 3, "deletions": 1, "changes": 4, "has_patch": true}]);
     let pr = github::view_from_json(&view, &files).unwrap();
@@ -137,7 +137,7 @@ fn github_pr_json_becomes_facts_and_checks() {
     assert_eq!(pr.facts.checks, [Check::Passed, Check::Pending, Check::Failed]);
     assert_eq!(github::repo_of_url(URL, 7), Some("csheargm/hagency-demo-sandbox"));
     assert_eq!(github::repo_of_url(URL, 8), None, "the URL must be the pull request asked about");
-    let bad = json!({"url": URL, "state": "OPEN", "baseRefOid": "main", "headRefOid": HEAD});
+    let bad = json!({"url": URL, "state": "OPEN", "baseRefName": "main", "baseRefOid": "main", "headRefOid": HEAD});
     assert!(github::view_from_json(&bad, &json!([])).is_none(), "the policy ref is a commit, never a branch name");
 }
 
@@ -148,16 +148,32 @@ pub(super) struct Fake {
     /// GitHub's approving reviews: (commit, submitted at); `None` when unreadable.
     pub(super) posted: std::cell::RefCell<Option<Vec<(String, i64)>>>,
     pub(super) opened_by: Option<String>,
+    /// Reads served so far, and the read from which on the pull request is
+    /// retargeted to `main` at another base commit (`None`: never).
+    pub(super) reads: std::cell::Cell<usize>,
+    pub(super) retarget_from: std::cell::Cell<Option<usize>>,
 }
+pub(super) const RETARGETED_BASE: &str = "4444444444444444444444444444444444444444";
 impl Fake {
     pub(super) fn new(files: Vec<ChangedFile>) -> Self {
-        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed], posted: std::cell::RefCell::new(None), opened_by: None }
+        let (reads, retarget_from) = (std::cell::Cell::new(0), std::cell::Cell::new(None));
+        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed], posted: std::cell::RefCell::new(None), opened_by: None, reads, retarget_from }
+    }
+    fn retargeted(&self) -> bool {
+        self.retarget_from.get().is_some_and(|from| self.reads.get() > from)
+    }
+    fn base_ref(&self) -> String {
+        if self.retargeted() { "main".into() } else { "develop".into() }
+    }
+    fn base_sha(&self) -> String {
+        if self.retargeted() { RETARGETED_BASE.into() } else { BASE.into() }
     }
 }
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
+        self.reads.set(self.reads.get() + 1);
         let facts = facts(self.files.clone(), self.checks.clone());
-        Some(PrView { url: URL.into(), base_sha: BASE.into(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), head_ref: None, facts })
+        Some(PrView { url: URL.into(), base_ref: self.base_ref(), base_sha: self.base_sha(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), head_ref: None, facts })
     }
     async fn approvals_on(&self, _: &GhPr, _: &str, head: &str) -> Option<Vec<i64>> {
         self.posted.borrow().as_ref().map(|all| all.iter().filter(|(commit, _)| commit == head).map(|(_, at)| *at).collect())

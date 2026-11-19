@@ -51,7 +51,7 @@ struct AtHead(&'static str);
 impl crate::merge_policy::github::PrSource for AtHead {
     async fn pull_request(&self, _: &crate::merge_policy::gate::GhPr) -> Option<crate::merge_policy::github::PrView> {
         let facts = crate::merge_policy::PrFacts { open: true, files: vec![], checks: vec![] };
-        Some(crate::merge_policy::github::PrView { url: format!("https://github.com/{REPO}/pull/107"), base_sha: "1".repeat(40), head_sha: self.0.into(), author: "x".into(), opened_by: None, head_ref: None, facts })
+        Some(crate::merge_policy::github::PrView { base_ref: "main".into(), url: format!("https://github.com/{REPO}/pull/107"), base_sha: "1".repeat(40), head_sha: self.0.into(), author: "x".into(), opened_by: None, head_ref: None, facts })
     }
 }
 
