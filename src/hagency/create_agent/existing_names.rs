@@ -29,19 +29,122 @@ impl CreateAgentDialog {
         });
     }
 
-    /// An untouched suggestion moves to the first free name; a typed name stays.
+    /// The owner's own edit of the Name field: from now on it is never replaced.
+    pub(super) fn name_typed(&mut self, cx: &mut Cx, name: String) {
+        self.name_edited = true;
+        self.state.name = name;
+        self.render_create(cx);
+    }
+
+    /// Until the owner types a name, the field takes the first free name for
+    /// the harness shown. Once Create is pressed the name is left alone: the
+    /// spec is rebuilt after the repository check and must keep what was clicked.
     pub(super) fn handle_name_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
             let Some(loaded) = action.downcast_ref::<NamesLoaded>() else { continue };
-            if loaded.request != self.request { continue; }
-            let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
-            let untouched = self.state.name == self.suggested(&runtime);
+            if loaded.request != self.request || self.busy { continue; }
             self.taken = loaded.names.clone();
-            if untouched {
-                self.state.name = self.suggested(&runtime);
-                self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
-                self.render_create(cx);
-            }
+            self.follow_suggestion(cx);
+            self.render_create(cx);
         }
+    }
+
+    /// An untyped name becomes the first free name for the harness shown
+    /// (lookup, harness change, display name); a typed one is left alone,
+    /// and so is any name once Create is pressed.
+    pub(super) fn follow_suggestion(&mut self, cx: &mut Cx) {
+        if self.name_edited || self.busy { return; }
+        let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
+        self.state.name = self.suggested(&runtime);
+        self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hagency::create_agent::parse_models;
+    use ::hagency::simple_agent::Runtime;
+
+    /// A dialog where only Codex answered, the field still showing the
+    /// opening's "anna-claude" (the GPT-review case).
+    fn codex_only_dialog(cx: &mut Cx) -> CreateAgentDialog {
+        let mut dialog = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            vm.bx.captured_errors = Some(Vec::new());
+            let value = script_eval!(vm, {mod.widgets.CreateAgentDialog {}});
+            CreateAgentDialog::script_from_value(vm, value)
+        });
+        dialog.stem = "anna".into();
+        dialog.request = 7;
+        dialog.state.name = "anna-claude".into();
+        dialog.state.probes = std::array::from_fn(|_| Some(Err("provider_models_unavailable".into())));
+        dialog.state.probes[1] = Some(Ok(parse_models(&serde_json::json!({"models": [{"model": "gpt-5", "displayName": "GPT-5"}]}))));
+        assert_eq!(dialog.state.runtime(), Some(Runtime::Codex));
+        dialog
+    }
+    fn deliver(dialog: &mut CreateAgentDialog, cx: &mut Cx, names: &[&str]) {
+        let loaded = NamesLoaded { request: dialog.request, names: names.iter().map(|n| n.to_string()).collect() };
+        let actions = cx.capture_actions(|cx| cx.action(loaded));
+        dialog.handle_name_actions(cx, &actions);
+    }
+
+    #[test]
+    fn an_untyped_name_moves_to_the_free_name_for_the_shown_harness() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        deliver(&mut dialog, &mut cx, &["anna-codex", "anna-claude"]);
+        assert_eq!(dialog.state.name, "anna-codex-2", "not left as a duplicate anna-claude");
+        assert_eq!(dialog.view.text_input(&mut cx, ids!(name)).text(), "anna-codex-2");
+    }
+
+    #[test]
+    fn a_typed_name_is_never_replaced_even_when_it_equals_the_suggestion() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.name_typed(&mut cx, "anna-codex".into());
+        deliver(&mut dialog, &mut cx, &["anna-codex"]);
+        assert_eq!(dialog.state.name, "anna-codex");
+    }
+
+    /// The same rule on a harness change: Codex → Claude.
+    #[test]
+    fn a_harness_change_moves_only_an_untyped_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.state.probes[0] = Some(Ok(parse_models(&serde_json::json!({"models": [{"model": "sonnet"}]}))));
+        dialog.taken = vec!["anna-claude".into()];
+        dialog.choose_harness(&mut cx, 0);
+        assert_eq!(dialog.state.runtime(), Some(Runtime::Claude));
+        assert_eq!(dialog.state.name, "anna-claude-2");
+        dialog.name_typed(&mut cx, "anna-codex".into());
+        dialog.choose_harness(&mut cx, 1);
+        assert_eq!(dialog.state.name, "anna-codex", "typed: kept even though it equals a suggestion");
+    }
+
+    /// And on a display-name refresh (tests have no signed-in user: stem "my").
+    #[test]
+    fn a_display_name_refresh_moves_only_an_untyped_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.taken = vec!["my-codex".into()];
+        dialog.refresh_stem(&mut cx);
+        assert_eq!(dialog.state.name, "my-codex-2", "anna-claude was untyped: follows the shown harness");
+        let mut typed = codex_only_dialog(&mut cx);
+        typed.name_typed(&mut cx, "anna-codex".into());
+        typed.refresh_stem(&mut cx);
+        assert_eq!(typed.state.name, "anna-codex");
+    }
+
+    #[test]
+    fn a_late_lookup_after_create_does_not_change_the_submitted_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.state.name = "anna-codex".into();
+        dialog.busy = true; // Create pressed: `create` sets it before the repository check.
+        deliver(&mut dialog, &mut cx, &["anna-codex"]);
+        let spec = dialog.state.spec(crate::hagency::quick_setup::default_spec).expect("ready");
+        assert_eq!(spec.name, "anna-codex");
     }
 }
