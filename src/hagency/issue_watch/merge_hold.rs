@@ -165,6 +165,12 @@ fn hold_step(missing: &[(Missing, String)]) -> String {
     format!("{HOLD_STEP}{}", words.iter().map(|m| m.word()).collect::<Vec<_>>().join("-"))
 }
 
+/// Whether the room's Assist level is all that holds the merge: every rule,
+/// approval and CI passed (the gate judges autonomy last), so a person merges.
+fn only_assist(missing: &[(Missing, String)]) -> bool {
+    matches!(missing, [(Missing::Autonomy, reason)] if reason == ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON)
+}
+
 /// Post `notice` unless step `step` was taken for this head, then take it.
 async fn once(io: &impl LoopIo, target: &Target, step: &str, notice: LoopNotice) -> Result<(), String> {
     let key = json!({"step": step, "pr": target.url, "head": target.head});
@@ -186,8 +192,12 @@ pub async fn follow_gate(io: &impl LoopIo, target: &Target, readiness: &Value, c
         Gate::Merge => once(io, target, "merge", LoopNotice::Approved { target: target.clone(), fixer: ctx.agent.clone(), name: ctx.name.to_owned() }).await?,
         Gate::Hold(missing) => {
             let step = hold_step(missing);
-            let lines = missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect();
-            once(io, target, &step.clone(), LoopNotice::Held { target: target.clone(), step, missing: lines }).await?;
+            let notice = if only_assist(missing) {
+                LoopNotice::AwaitsPerson { target: target.clone(), step: step.clone() }
+            } else {
+                LoopNotice::Held { target: target.clone(), step: step.clone(), missing: missing.iter().map(|(m, reason)| m.line(reason, &target.repo)).collect() }
+            };
+            once(io, target, &step, notice).await?;
         }
         Gate::WaitReview | Gate::WaitCi | Gate::WaitFacts | Gate::Unreadable(_) => {}
     }

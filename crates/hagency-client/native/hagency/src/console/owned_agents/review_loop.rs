@@ -159,8 +159,10 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
         reply["readiness"] = readiness_json(judged.as_ref().map(|(view, decision, _)| (view.head_sha.as_str(), decision)));
         // The approvals the judge itself counted (never the PR's author Agents or
         // the merger, round-2 GPT review): tells "no review yet" from "a person must decide".
-        if let Some((_, _, counted)) = &judged {
+        if let Some((view, _, counted)) = &judged {
             reply["readiness"]["approvers"] = (*counted).into();
+            // Recorded reviews of this head in this room, counted or not: one never asks again (PR #109).
+            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(&view.url, &view.head_sha, &ask.room)?.into();
         }
     }
     Ok(reply)

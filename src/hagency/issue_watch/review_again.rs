@@ -33,10 +33,12 @@ pub enum Again {
 
 /// Whether GitHub holds an approving verdict of exactly `head`, posted by
 /// `login` (the GitHub account this owner's Agents post as), while the gate,
-/// judging that same head, counts no approval at all.
+/// judging that same head, counts no approval at all and the ledger recorded
+/// none (`recorded`; live PR #109: a recorded review was asked for again).
 pub fn unrecorded_verdict(readiness: &Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> bool {
     readiness["kind"] == "approvals"
         && readiness["approvers"].as_u64() == Some(0)
+        && readiness["recorded"].as_u64().unwrap_or(0) == 0
         && readiness["head"].as_str() == Some(head)
         && reviews.iter().any(|(who, state, commit)| who.eq_ignore_ascii_case(login) && state == APPROVE_VERDICT && commit == head)
 }

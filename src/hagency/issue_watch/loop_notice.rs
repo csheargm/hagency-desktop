@@ -52,6 +52,9 @@ pub enum LoopNotice {
     /// The issue loop's pull request cannot merge yet: each line names one
     /// missing thing and how to fix it; `step` keys the set (one notice each).
     Held { target: Target, step: String, missing: Vec<String> },
+    /// Reviewed and within the rules; only the room's Assist level holds it
+    /// (ADR 0030): one line that a person merges it. `step` is the hold step.
+    AwaitsPerson { target: Target, step: String },
     /// The merge step could not reach GitHub several checks in a row.
     Unreachable { target: Target, step: String },
     /// A `review` or `merge` step's dispatch ended without the Agent running
@@ -62,7 +65,7 @@ pub enum LoopNotice {
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } | Self::MarkReady { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::AwaitsPerson { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } | Self::MarkReady { target, .. } => target,
         }
     }
     /// The once-per-head loop step this notice is recorded under.
@@ -70,7 +73,7 @@ impl LoopNotice {
         match self {
             Self::ReviewRequested { .. } => "review",
             Self::MarkReady { .. } => DRAFT_STEP,
-            Self::Held { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } => step,
+            Self::Held { step, .. } | Self::AwaitsPerson { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } => step,
             _ => "merge",
         }
     }
@@ -114,6 +117,7 @@ impl LoopNotice {
                 let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();
                 format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
             }
+            Self::AwaitsPerson { .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
             Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
         }

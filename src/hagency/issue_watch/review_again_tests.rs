@@ -81,6 +81,13 @@ fn pr_105_an_unrecorded_github_verdict_is_what_asks_again() {
     assert!(!unrecorded_verdict(&no_approval(), (&older, "csheargm"), HEAD), "a verdict of another head");
     let recorded = json!({"decision": "human", "head": HEAD, "kind": "approvals", "approvers": 1});
     assert!(!unrecorded_verdict(&recorded, (&verdict, "csheargm"), HEAD), "a recorded approval needs no second review");
+    // Live PR #109 (Nov 18): the gate counted 0 but the ledger recorded yue-claude's review.
+    let mut uncounted = no_approval();
+    uncounted["recorded"] = 1.into();
+    assert!(!unrecorded_verdict(&uncounted, (&verdict, "csheargm"), HEAD), "a recorded review is never asked for again");
+    let room = Room::default();
+    assert_eq!(run(asks_again(&room, &target(109), (&uncounted, &verdict, "csheargm"), &claude(), T0)), Ok(false));
+    assert!(room.posted.borrow().is_empty(), "no second \"Review requested\" for PR #109");
     let rules = json!({"decision": "human", "head": HEAD, "kind": "rules", "approvers": 0});
     assert!(!unrecorded_verdict(&rules, (&verdict, "csheargm"), HEAD), "only a missing approval is the reviewer's to fix");
 }

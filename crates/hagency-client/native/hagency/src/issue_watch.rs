@@ -11,7 +11,7 @@ use hagency_agent_local::issue_watch::wire::{USER_AGENT, next_page, page_url, pa
 pub use hagency_agent_local::issue_watch::wire::{APPROVE_VERDICT, Claim, Comment, PullRequest, claim_authors, claim_body, claim_holder, approved_by_other, others_ready_pulls, own_ready_pulls};
 
 /// The issue loop's follow-through records and state machine (ADR 0020).
-pub use hagency_agent_local::issue_track;
+pub use hagency_agent_local::{automated_requests, issue_track};
 #[path = "issue_watch_safeguards.rs"] pub mod safeguards;
 // TODO(R4): over budget; split the GitHub reads (fetch_*) from the re-exports into issue_watch_github.rs.
 #[path = "issue_watch_merged.rs"] mod merged;

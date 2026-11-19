@@ -137,18 +137,26 @@ fn an_old_head_reviewed_then_a_silent_new_head_is_told_once_after_its_wait() {
     assert_eq!(fake.bodies().len(), 1, "one notice for the silent head");
 }
 
-/// ADR 0030: in Assist (or for a member's agent) the gate holds the merge
-/// and the room is told a person merges, never to run the merge.
+/// ADR 0030: in Assist the gate holds the merge and the room is told, in one
+/// line, that the pull request is reviewed and a person merges it (live PR
+/// #109, Nov 18), never to run the merge. Another autonomy hold keeps its reason.
 #[test]
 fn the_rooms_level_is_named_instead_of_telling_the_agent_to_merge() {
-    let fake = Fake::new(human("autonomy", "room is in Assist — a person delivers"));
-    assert_eq!(check(&fake, Some("admin"), false), Gate::Hold(vec![(Missing::Autonomy, "room is in Assist — a person delivers".into())]), "no wait for a review");
+    use ::hagency::issue_watch::safeguards::room_autonomy::{ASSIST_REASON, PAUSED_REASON};
+    let fake = Fake::new(human("autonomy", ASSIST_REASON));
+    assert_eq!(check(&fake, Some("admin"), false), Gate::Hold(vec![(Missing::Autonomy, ASSIST_REASON.into())]), "no wait for a review");
     check(&fake, Some("admin"), true);
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 1, "{bodies:?}");
-    assert!(bodies[0].contains("room is in Assist — a person delivers") && bodies[0].contains("Merge it yourself"), "{}", bodies[0]);
-    assert!(!bodies[0].contains("gh pr merge"), "no merge instruction in Assist");
+    assert!(bodies[0].starts_with("✅ PR #") && bodies[0].contains("is reviewed and ready") && bodies[0].contains("so a person merges it: https://github.com/"), "{}", bodies[0]);
+    assert!(!bodies[0].contains("gh pr merge") && !bodies[0].contains("cannot be merged"), "no merge instruction in Assist");
     assert_eq!(Missing::Autonomy.step(), "hold-autonomy");
+    let paused = Fake::new(human("autonomy", PAUSED_REASON));
+    check(&paused, Some("admin"), true);
+    assert!(paused.bodies()[0].contains("cannot be merged yet") && paused.bodies()[0].contains("the room is paused"), "{}", paused.bodies()[0]);
+    let assist_and_permission = Fake::new(human("autonomy", ASSIST_REASON));
+    check(&assist_and_permission, Some("read"), true);
+    assert!(assist_and_permission.bodies()[0].contains("cannot be merged yet"), "more than Assist missing: the full list");
 }
 
 #[test]
@@ -185,11 +193,11 @@ fn each_fixed_blocker_lets_the_next_through_until_the_agent_is_told_to_merge() {
     assert_eq!(fake.bodies().len(), 1);
     assert!(fake.bodies()[0].contains("an Agent approval"));
     // An approval is recorded, but the room is in Assist: said once more.
-    *fake.readiness.borrow_mut() = human("autonomy", "room is in Assist — a person delivers");
+    *fake.readiness.borrow_mut() = human("autonomy", ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON);
     check(&fake, Some("admin"), true);
     check(&fake, Some("admin"), true);
     assert_eq!(fake.bodies().len(), 2);
-    assert!(!fake.bodies()[1].contains("an Agent approval") && fake.bodies()[1].contains("room is in Assist"));
+    assert!(!fake.bodies()[1].contains("an Agent approval") && fake.bodies()[1].contains("so a person merges it"));
     // A maintainer switches the room to Autonomous: the fixer gets the pinned merge, once.
     *fake.readiness.borrow_mut() = merge();
     for _ in 0..3 {

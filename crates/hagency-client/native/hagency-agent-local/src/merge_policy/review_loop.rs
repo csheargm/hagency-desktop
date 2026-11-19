@@ -92,6 +92,11 @@ fn local_approvers(ledger: &Ledger, repo: &str, number: u64, view: &PrView, room
 }
 
 impl Ledger {
+    /// How many Agents' approvals of `pr` at exactly `head` were given in `room`
+    /// and recorded, whoever wrote it: a recorded review is never asked for again.
+    pub fn recorded_room_reviews(&self, pr: &str, head: &str, room: &str) -> Result<usize> {
+        Ok(self.agent_reviewers_in(pr, head, Some(room))?.len())
+    }
     /// The Agents the issue tracker handed issues to whose pull request is `number` in `repo`.
     pub(crate) fn pr_author_agents(&self, repo: &str, number: u64) -> Result<Vec<String>> {
         let mut statement = self.db.prepare("SELECT DISTINCT agent FROM issue_track WHERE lower(repo)=lower(?) AND pr=?")?;
@@ -129,7 +134,11 @@ async fn judge_counted(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &P
     let (approvers, excluded) = match &judged.rules {
         None => (local, merger.to_owned()),
         Some(_) => {
-            let counted = judged.count_local.then(|| local.clone());
+            // A shared login wrote it, but the tracker knows which Agent: the
+            // others' approvals count (live PR #109, Nov 18: yue-claude's
+            // recorded review was read as none and asked for again).
+            let author_known = !ledger.pr_author_agents(repo, command.number).ok()?.is_empty();
+            let counted = (judged.count_local || author_known).then(|| local.clone());
             (approvers(command, repo, view, &judged.trusted_reviewers, (judged.own_login.as_deref(), counted), source).await?, judged.excluded.clone())
         }
     };
