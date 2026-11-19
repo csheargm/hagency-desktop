@@ -10,7 +10,8 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
 use matrix_sdk::Room;
-use matrix_sdk::ruma::{OwnedRoomId, RoomId};
+use matrix_sdk::latest_events::LatestEventValue;
+use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId, RoomId, events::AnySyncTimelineEvent, serde::Raw};
 
 /// Rooms whose preview refresh is queued and has not read the store yet.
 static QUEUED: LazyLock<Mutex<HashSet<OwnedRoomId>>> = LazyLock::new(Default::default);
@@ -25,6 +26,22 @@ fn queue(room: &RoomId) -> bool {
 /// queues a fresh refresh rather than being missed.
 fn unqueue(room: &RoomId) {
     QUEUED.lock().unwrap_or_else(|e| e.into_inner()).remove(room);
+}
+
+/// The run card event a raw event shows: an edit's target (`m.replace`, whose
+/// `m.new_content` holds the card), else the event's own id.
+pub(crate) fn card_event_of(raw: &Raw<AnySyncTimelineEvent>) -> Option<OwnedEventId> {
+    let event = raw.deserialize_as::<serde_json::Value>().ok()?;
+    let relates = &event["content"]["m.relates_to"];
+    let id = if relates["rel_type"] == "m.replace" { &relates["event_id"] } else { &event["event_id"] };
+    OwnedEventId::try_from(id.as_str()?).ok()
+}
+
+/// The card event of `room`'s rooms-list latest event (the SDK's raw remote
+/// latest event; the UI value has no id). None: its preview is the placeholder.
+pub(crate) fn latest_card_event(room: &Room) -> Option<OwnedEventId> {
+    let LatestEventValue::Remote(event) = std::ops::Deref::deref(room).latest_event() else { return None };
+    card_event_of(event.raw())
 }
 
 /// Cards were admitted in `room`: recompute only that room's preview.
@@ -54,7 +71,7 @@ mod tests {
         let msgtype = serde_json::from_value::<matrix_sdk::ruma::events::room::message::RoomMessageEventContent>(content.clone())
             .unwrap().msgtype;
         let sender = matrix_sdk::ruma::UserId::parse(sender).unwrap();
-        crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: None }).format_with("anna-claude", true)
+        crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: Some(matrix_sdk::ruma::event_id!("$z1xp-_l7lgXgzFGVl4r3rj1yO7PNdlI3Xu0BBKc-CKI")) }).format_with("anna-claude", true)
     }
 
     /// Live, Nov 19 03:23: "anna-claude: Agent run" stayed in the rooms list

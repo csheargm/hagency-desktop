@@ -7421,7 +7421,10 @@ fn populate_thread_root_summary(
                     .unwrap_or(embedded_event.sender.as_str()),
                 _ => embedded_event.sender.as_str(),
             };
-            let scope = crate::event_preview::CardScope { room: timeline_kind.room_id(), event: None };
+            let scope = crate::event_preview::CardScope { room: timeline_kind.room_id(), event: match &embedded_event.identifier {
+                matrix_sdk_ui::timeline::TimelineEventItemId::EventId(id) => Some(id),
+                matrix_sdk_ui::timeline::TimelineEventItemId::TransactionId(_) => None,
+            } };
             match embedded_event.content.as_message() {
                 Some(msg) => crate::thread_reply_preview::preview_of_message(msg.msgtype(), &embedded_event.sender, sender_username, scope).into(),
                 None => {

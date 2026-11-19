@@ -4948,6 +4948,7 @@ async fn add_new_room(
     let latest = get_latest_event_details(
         &new_room.room.latest_event().await,
         room_list_service.client(),
+        crate::hagency::run_card_previews::latest_card_event(&new_room.room).as_deref(),
         new_room.room.room_id(),
     ).await;
     let room_name_id = RoomNameId::from((new_room.display_name.clone(), new_room.room_id.clone()));
@@ -5676,8 +5677,9 @@ async fn text_preview_of_latest_thread_reply(
     let sender_name = sender_room_member.as_ref()
         .and_then(|rm| rm.display_name())
         .unwrap_or(sender_id.as_str());
-    // A thread's latest reply may be an edit, whose id is not the card's: bind to the room only.
-    let scope = crate::event_preview::CardScope { room: room.room_id(), event: None };
+    // A latest reply that is an edit shows the card it replaces.
+    let card_event = crate::hagency::run_card_previews::card_event_of(raw);
+    let scope = crate::event_preview::CardScope { room: room.room_id(), event: card_event.as_deref() };
     if let Some(preview) = crate::thread_reply_preview::preview_of_raw_event(raw, sender_name, scope) { return Some(preview); }
     let text_preview = text_preview_of_raw_timeline_event(raw, sender_name, scope).unwrap_or_else(|| {
         let event_type = raw.get_field::<String>("type").ok().flatten();
@@ -5701,10 +5703,11 @@ async fn text_preview_of_latest_thread_reply(
 async fn get_latest_event_details(
     latest_event_value: &LatestEventValue,
     client: &Client,
+    card_event: Option<&EventId>,
     room_id: &matrix_sdk::ruma::RoomId,
 ) -> Option<LatestEventPreview> {
-    // The latest event's id is not known here: a run card binds to the room only.
-    let scope = crate::event_preview::CardScope { room: room_id, event: None };
+    // The UI value has no event id; `card_event` is the SDK's raw latest event's card.
+    let scope = crate::event_preview::CardScope { room: room_id, event: card_event };
     macro_rules! get_sender_username {
         ($profile:expr, $sender:expr, $is_own:expr) => {{
             match $profile {
@@ -5764,6 +5767,7 @@ pub(crate) async fn update_latest_event(room: &Room) {
     if let Some(latest) = get_latest_event_details(
         &room.latest_event().await,
         &room.client(),
+        crate::hagency::run_card_previews::latest_card_event(room).as_deref(),
         room.room_id(),
     ).await {
         enqueue_rooms_list_update(RoomsListUpdate::UpdateLatestEvent {

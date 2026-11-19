@@ -36,15 +36,40 @@ fn preview(content: &Value, sender: &str, room: &str, event: Option<&str>) -> St
 
 const ANSWER: &str = "The docs index was proposed";
 
+/// The card event a raw latest event (rooms list, thread latest reply) shows.
+fn card_event(value: &Value) -> Option<String> {
+    let raw = matrix_sdk::ruma::serde::Raw::from_json(serde_json::value::to_raw_value(value).unwrap());
+    super::run_card_previews::card_event_of(&raw).map(|id| id.to_string())
+}
+
 #[test]
 fn a_rooms_list_preview_shows_the_answer_only_in_the_room_the_card_was_admitted_in() {
     let _guard = pq::test_serial();
     let (card, edit) = admitted_card_and_edit();
     let sender = card["sender"].as_str().unwrap();
     let shown = &edit["content"]["m.new_content"];
-    assert!(preview(shown, sender, ROOM, None).contains(ANSWER), "the admitted room shows the answer");
-    let replay = preview(shown, sender, OTHER_ROOM, None);
+    let target = card_event(&edit);
+    assert_eq!(target.as_deref(), card["event_id"].as_str(), "an edit shows the card it replaces");
+    assert!(preview(shown, sender, ROOM, target.as_deref()).contains(ANSWER), "the admitted card's own edit: the answer");
+    let replay = preview(shown, sender, OTHER_ROOM, target.as_deref());
     assert!(replay.contains(crate::i18n::tr("Agent run")) && !replay.contains(ANSWER), "{replay}");
+}
+
+/// GPT review P2 (round 2): the rooms list and thread latest reply bound to the
+/// room only. Same room and sender, another event reusing the run id: placeholder.
+#[test]
+fn a_latest_event_reusing_an_admitted_run_id_from_another_event_shows_the_placeholder() {
+    let _guard = pq::test_serial();
+    let (card, _) = admitted_card_and_edit();
+    let sender = card["sender"].as_str().unwrap();
+    let mut replay = card.clone();
+    replay["event_id"] = "$neverAdmittedReplayOfTheRunId".into();
+    let target = card_event(&replay);
+    assert_eq!(target.as_deref(), Some("$neverAdmittedReplayOfTheRunId"), "an unedited event shows itself");
+    let shown = preview(&replay["content"], sender, ROOM, target.as_deref());
+    assert!(shown.contains(crate::i18n::tr("Agent run")) && !shown.contains(ANSWER), "{shown}");
+    let unknown = preview(&replay["content"], sender, ROOM, None);
+    assert!(unknown.contains(crate::i18n::tr("Agent run")) && !unknown.contains(ANSWER), "no event known: {unknown}");
 }
 
 #[test]

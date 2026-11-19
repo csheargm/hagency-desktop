@@ -15,7 +15,7 @@ fn list_preview(content: &Value, sender: &str) -> String {
     let msgtype = serde_json::from_value::<matrix_sdk::ruma::events::room::message::RoomMessageEventContent>(content.clone())
         .unwrap().msgtype;
     let sender = matrix_sdk::ruma::UserId::parse(sender).unwrap();
-    crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: None }).format_with("anna-claude", true)
+    crate::event_preview::text_preview_of_message(&msgtype, &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: Some(matrix_sdk::ruma::event_id!("$z1xp-_l7lgXgzFGVl4r3rj1yO7PNdlI3Xu0BBKc-CKI")) }).format_with("anna-claude", true)
 }
 
 fn claim_once(key: &Key) -> bool {
