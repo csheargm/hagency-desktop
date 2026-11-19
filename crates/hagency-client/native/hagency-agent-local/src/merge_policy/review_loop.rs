@@ -72,7 +72,7 @@ pub(crate) async fn approvers(command: &GhPr, repo: &str, view: &PrView, trusted
 pub async fn merge_readiness(ledger: &mut Ledger, command: &GhPr, (merger, room): (&str, &str), source: &impl PrSource) -> Option<(PrView, Decision)> {
     let view = source.pull_request(command).await?;
     let repo = repo_of_url(&view.url, command.number)?.to_owned();
-    let decision = judge(ledger, command, &repo, &view, (merger, Some(room)), source).await?;
+    let decision = judge(ledger, command, &repo, &view, (merger, room), source).await?;
     Some((view, decision))
 }
 
@@ -99,13 +99,13 @@ impl Ledger {
 
 /// The merge decision for `view` under every policy that applies (the
 /// room's rules, required, and the owner's; each can only tighten).
-/// `room` is the merge's room: only approvals given there count.
-pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, Option<&str>), source: &impl PrSource) -> Option<Decision> {
-    let judged = super::work::judged(ledger, merger, command, repo, view, source).await?;
+/// `room` is the merge's room: its rules judge, and only approvals given there count.
+pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view: &PrView, (merger, room): (&str, &str), source: &impl PrSource) -> Option<Decision> {
+    let judged = super::work::judged(ledger, (merger, room), command, repo, view, source).await?;
     if let Some(reason) = judged.author_reason {
         return Some(Decision::NeedsHuman(reason));
     }
-    let local = local_approvers(ledger, repo, command.number, view, room).ok()?;
+    let local = local_approvers(ledger, repo, command.number, view, Some(room)).ok()?;
     // The room's rules are required (ADR 0029).
     let room_rules = match &judged.room {
         super::room_rules::RoomRules::Rules(policy) => policy,
@@ -129,7 +129,7 @@ pub(crate) async fn judge(ledger: &mut Ledger, command: &GhPr, repo: &str, view:
     }
     // The room's autonomy level (ADR 0030): only an Autonomous, running room
     // delivers without a person, and only by an Agent that may work there.
-    let delivered = room.map_or(Err(crate::room_autonomy::NOT_READ_REASON), |room| ledger.loop_may_deliver(merger, room));
+    let delivered = ledger.loop_may_deliver(merger, room);
     Some(delivered.map_or_else(|reason| Decision::NeedsHuman(reason.to_owned()), |()| Decision::Merge))
 }
 

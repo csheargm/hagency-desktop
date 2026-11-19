@@ -66,8 +66,27 @@ async fn only_the_watch_rooms_rules_count() {
     let other = RoomRulesSnapshot { room_id: "!elsewhere:x".into(), ..snapshot(Some("low_risk_paths: [\"**\"]\n")) };
     ledger.set_room_merge_rules(OWNER, &other, unix_now()).unwrap();
     assert_eq!(approved_merge(&mut ledger, temp.path(), &Fake::new(vec![file("docs/a.md", 3)])).await, None);
-    assert_eq!(ledger.watch_room("fixer", SANDBOX).unwrap().as_deref(), Some(ROOM), "the only watch room on this device");
-    assert_eq!(ledger.watch_room("fixer", "acme/unwatched").unwrap(), None);
+    assert!(ledger.watch_links(SANDBOX, ROOM).unwrap(), "the only watch room on this device");
+    assert!(!ledger.watch_links(SANDBOX, "!elsewhere:x").unwrap());
+    assert!(!ledger.watch_links("acme/unwatched", ROOM).unwrap());
+}
+
+/// Batch GPT review: a merge asked in a room the repository is not linked to
+/// never borrows the linked room's rules, even with every other check of the
+/// merge's own room (autonomy, role, approvals) passing.
+#[tokio::test]
+async fn a_merge_from_an_unlinked_room_never_borrows_the_linked_rooms_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
+    set_room_rules(&mut ledger, SANDBOX, Some(SANDBOX_RULES));
+    // The watch now links the sandbox to another room, which has generous rules.
+    let moved = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Trusted, repo: SANDBOX.into(), room_id: "!elsewhere:x".into(), ..Default::default() };
+    ledger.set_issue_watch(OWNER, "watcher-csheargm-hagency-demo-sandbox", moved, 2).unwrap();
+    ledger.set_room_merge_rules(OWNER, &RoomRulesSnapshot { room_id: "!elsewhere:x".into(), ..snapshot(Some("low_risk_paths: [\"**\"]\nrequire_ci: false\n")) }, unix_now()).unwrap();
+    assert_eq!(approved_merge(&mut ledger, temp.path(), &Fake::new(vec![file("src/main.rs", 1)])).await, None, "the merge's room is not linked: a person decides");
+    let command = gate::parse_command(&bash(&merge_line(), temp.path(), "fixer")).unwrap();
+    let (_, decision) = crate::merge_policy::review_loop::merge_readiness(&mut ledger, &command, ("fixer", ROOM), &Fake::new(vec![file("src/main.rs", 1)])).await.unwrap();
+    assert_eq!(decision, Decision::NeedsHuman(NO_WATCH_ROOM.into()));
 }
 
 #[tokio::test]
@@ -82,7 +101,7 @@ async fn a_paused_watch_supplies_no_rules() {
     ledger.set_room_merge_rules(OWNER, &RoomRulesSnapshot { room_id: "!paused:x".into(), ..snapshot(Some("low_risk_paths: [\"**\"]\nrequire_ci: false\n")) }, unix_now()).unwrap();
     let off = crate::issue_watch::WatchSetting { mode: crate::issue_watch::WatchMode::Off, repo: SANDBOX.into(), room_id: "!paused:x".into(), ..Default::default() };
     ledger.set_issue_watch(OWNER, "fixer", off, 2).unwrap();
-    assert_eq!(ledger.watch_room("fixer", SANDBOX).unwrap().as_deref(), Some(ROOM), "the active watch's room, not the paused one");
+    assert!(!ledger.watch_links(SANDBOX, "!paused:x").unwrap(), "a paused watch links nothing");
     assert_eq!(approved_merge(&mut ledger, temp.path(), &Fake::new(vec![file("src/main.rs", 1)])).await, None, "the paused room's generous rules do not count");
 }
 

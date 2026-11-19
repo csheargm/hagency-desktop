@@ -71,29 +71,46 @@ impl AgentDevice {
         let may_link = |id: &str| OwnedUserId::try_from(id).is_ok_and(|u| levels.user_can_send_state(&u, StateEventType::from(ROOM_REPOS_STATE_TYPE)));
         let seen = accepted(&status.events, |id| status.members.get(id).cloned().unwrap_or_default(), |agent| owners.get(agent).cloned(), now).seen;
         let published = seen.iter().filter(|s| may_link(&s.publisher)).map(|s| s.issue.repo.as_str());
-        // Card-free issue filing (ADR 0030) only for the room's owner or a maintainer,
-        // by the server's power levels read now, never the sync store's.
-        // The list's sender must be a person still joined, as the desktop accepts room state (GPT review).
-        let sender = OwnedUserId::try_from(status.linked_by.as_str()).ok();
-        let sender_joined = match &sender {
-            Some(user) => joined.get_member_no_sync(user).await.map_err(|_| RuntimeError::Transport)?.is_some_and(|m| *m.membership() == MembershipState::Join),
-            None => false,
-        };
-        let maintainer = sender_joined && server_levels(&joined).await.is_some_and(|l| may_file_issues(&l, &asker, &status.linked_by));
-        let linked = if maintainer { status.linked.clone() } else { Vec::new() };
-        Ok((room_repos(published, &status.linked), linked))
+        // Card-free issue filing (ADR 0030): the linked list, its sender, the asker's
+        // membership and the power levels all as the homeserver holds them now, never
+        // the sync store's (batch GPT review); unreadable: none (fail closed).
+        let state = server_state(&joined).await.unwrap_or_default();
+        let levels = power_levels_of(&joined, &state);
+        Ok((room_repos(published, &status.linked), issue_grant(&state, levels.as_ref(), &asker)))
     }
 }
 
-/// `room`'s power levels as the homeserver holds them now; `None` when unreadable.
-async fn server_levels(room: &matrix_sdk::Room) -> Option<matrix_sdk::ruma::events::room::power_levels::RoomPowerLevels> {
-    use matrix_sdk::ruma::api::client::state::get_state_event_for_key::v3 as get_state;
+/// `room`'s full state as the homeserver holds it now (one read, never the
+/// sync store); `None` when unreadable.
+async fn server_state(room: &matrix_sdk::Room) -> Option<Vec<Value>> {
+    use matrix_sdk::ruma::api::client::state::get_state_events::v3 as get_state;
+    let reply = room.client().send(get_state::Request::new(room.room_id().to_owned())).await.ok()?;
+    reply.room_state.iter().map(|e| serde_json::to_value(e).ok()).collect()
+}
+
+/// The state event of `kind` keyed `key` among `state`.
+fn state_event<'a>(state: &'a [Value], kind: &str, key: &str) -> Option<&'a Value> {
+    state.iter().find(|e| e["type"] == kind && e["state_key"] == key)
+}
+
+/// `room`'s power levels from the server's `state`; `None` when unreadable.
+fn power_levels_of(room: &matrix_sdk::Room, state: &[Value]) -> Option<matrix_sdk::ruma::events::room::power_levels::RoomPowerLevels> {
     use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource};
-    let request = get_state::Request::new(room.room_id().to_owned(), StateEventType::RoomPowerLevels, String::new());
-    let reply = room.client().send(request).await.ok()?;
-    let content: RoomPowerLevelsEventContent = serde_json::from_str(reply.event_or_content.get()).ok()?;
+    let content: RoomPowerLevelsEventContent = serde_json::from_value(state_event(state, "m.room.power_levels", "")?["content"].clone()).ok()?;
     let rules = room.clone_info().room_version_rules_or_default().authorization;
     Some(RoomPowerLevels::new(RoomPowerLevelsSource::Original(content), &rules, room.creators()?))
+}
+
+/// The room's own linked repositories a card-free issue may be filed on for
+/// `asker`, by the server's `state` and `levels`: the asker and the list's
+/// sender are joined, the asker is the room's owner or a maintainer and the
+/// sender may still link them ([`may_file_issues`]). Else none.
+pub(in crate::console) fn issue_grant(state: &[Value], levels: Option<&matrix_sdk::ruma::events::room::power_levels::RoomPowerLevels>, asker: &matrix_sdk::ruma::UserId) -> Vec<String> {
+    let joined = |user: &str| state_event(state, "m.room.member", user).is_some_and(|m| m["content"]["membership"] == "join");
+    let Some(list) = state_event(state, ROOM_REPOS_STATE_TYPE, "") else { return Vec::new() };
+    let sender = list["sender"].as_str().unwrap_or_default();
+    let granted = joined(asker.as_str()) && joined(sender) && levels.is_some_and(|l| may_file_issues(l, asker, sender));
+    if granted { linked(&list["content"]) } else { Vec::new() }
 }
 
 /// Whether `asker`'s request may file issues card-free on the room's linked
@@ -126,5 +143,22 @@ mod tests {
         assert!(!may_file_issues(&levels(), &user("@mo:x"), "@anna:x"), "a list a member could not have linked counts for nothing");
         assert!(!may_file_issues(&levels(), &user("@mo:x"), ""), "no list");
         assert!(!may_file_issues(&levels(), &user("@mo:x"), "@_hagency_agt_bird:x"), "never a list an Agent sent");
+    }
+
+    /// Batch GPT review: the issue grant goes by the server's state only. A
+    /// maintainer whose server membership is gone, a list whose sender left,
+    /// no list or unreadable levels: no grant.
+    #[test]
+    fn the_issue_grant_follows_the_servers_state() {
+        let member = |id: &str, membership: &str| serde_json::json!({"type": "m.room.member", "state_key": id, "content": {"membership": membership}});
+        let list = serde_json::json!({"type": ROOM_REPOS_STATE_TYPE, "state_key": "", "sender": "@own:x", "content": {"repos": ["acme/app"]}});
+        let mo = OwnedUserId::try_from("@mo:x").unwrap();
+        let state = vec![member("@own:x", "join"), member("@mo:x", "join"), list.clone()];
+        assert_eq!(issue_grant(&state, Some(&levels()), &mo), ["acme/app"]);
+        assert!(issue_grant(&state, None, &mo).is_empty(), "levels unreadable");
+        assert!(issue_grant(&[member("@own:x", "join"), member("@mo:x", "leave"), list.clone()], Some(&levels()), &mo).is_empty(), "the asker left");
+        assert!(issue_grant(&[member("@own:x", "leave"), member("@mo:x", "join"), list], Some(&levels()), &mo).is_empty(), "the list's sender left");
+        assert!(issue_grant(&[member("@own:x", "join"), member("@mo:x", "join")], Some(&levels()), &mo).is_empty(), "no list");
+        assert!(issue_grant(&[], Some(&levels()), &mo).is_empty(), "the server's state unread");
     }
 }

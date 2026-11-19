@@ -327,7 +327,7 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);
     }
-    let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
+    let judged = super::work::judged(ledger, (agent, room), command, repo, view, source).await?;
     let merge = command.kind == Kind::Merge;
     let scoped: Vec<&super::MergePolicy> = if merge { judged.policies().collect() } else { judged.review_policies().collect() };
     // No rules at all (no room rules, no owner rules): the card asks.
@@ -351,6 +351,6 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     if command.head.as_deref() != Some(view.head_sha.as_str()) {
         return Some(false);
     }
-    let decision = super::review_loop::judge(ledger, command, repo, view, (agent, Some(room)), source).await?;
+    let decision = super::review_loop::judge(ledger, command, repo, view, (agent, room), source).await?;
     Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
 }

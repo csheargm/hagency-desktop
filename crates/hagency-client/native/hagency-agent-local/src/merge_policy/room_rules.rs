@@ -9,8 +9,8 @@
 //! homeserver itself and records a snapshot per repository and room through
 //! the owner API ([`Ledger::set_room_merge_rules`]): event id, sender, text
 //! and when it was read. No Agent tool writes here. A merge is judged by the
-//! snapshot of the room the merging Agent's watch of the repository reports
-//! to, and only while it is younger than [`ROOM_RULES_TTL_SECS`]; no watch,
+//! snapshot of the merge's own room, only when a watch links the repository
+//! to that room, and only while it is younger than [`ROOM_RULES_TTL_SECS`]; no watch,
 //! no snapshot, a stale one or one that does not parse all need a person.
 use super::{parse_policy, MergePolicy};
 use crate::issue_watch::{valid_repo, valid_room_id};
@@ -36,7 +36,7 @@ pub const NO_ROOM_RULES: &str = "no merge rules in this room — a room admin ca
 pub const STALE_ROOM_RULES: &str = "the room's merge rules were not re-read in the last 5 minutes (the owner's Hagency desktop re-reads them while it runs)";
 pub const INVALID_ROOM_RULES: &str = "the room's merge rules are not valid — a room admin can fix them in Room info → Status";
 pub const UNREAD_ROOM_RULES: &str = "the owner's Hagency desktop could not read the room's merge rules on its last check, so every merge needs a person until it reads them again";
-pub const NO_WATCH_ROOM: &str = "no watch reports this repository to a room, so no room merge rules apply";
+pub const NO_WATCH_ROOM: &str = "no watch links this repository to this room, so no room merge rules apply here";
 
 /// The editor's suggested low-risk paths: Markdown, docs, plain-text files
 /// and the extension-less doc files at the repository root (owner, Nov 18).
@@ -201,30 +201,47 @@ impl Ledger {
             Some(Some(policy)) => RoomRules::Rules(policy),
         })
     }
-    /// The room whose rules judge a merge of `repo` by `agent`: the room its
-    /// own active watch of `repo` reports to, else the one room every other
-    /// active watch of `repo` on this device reports to. Several rooms and no
-    /// own watch: none.
-    pub fn watch_room(&self, agent: &str, repo: &str) -> Result<Option<String>> {
-        let room_of = |a: &str| -> Result<Option<String>> {
-            // A paused watch supplies no merge authority (GPT review).
-            Ok(self.watch_entries(a)?.into_iter().find(|e| e.active && e.repo.eq_ignore_ascii_case(repo) && !e.room_id.is_empty()).map(|e| e.room_id))
-        };
-        if let Some(room) = room_of(agent)? {
-            return Ok(Some(room));
+    /// Whether `repo` is linked to `room` on this device: an active watch
+    /// (or work list entry) of `repo`, by any Agent here, reports to `room`.
+    /// A paused watch links nothing (GPT review).
+    pub fn watch_links(&self, repo: &str, room: &str) -> Result<bool> {
+        for agent in self.watching_agents()? {
+            if self.watch_entries(&agent)?.iter().any(|e| e.active && e.repo.eq_ignore_ascii_case(repo) && e.room_id == room) {
+                return Ok(true);
+            }
         }
-        let mut rooms = std::collections::BTreeSet::new();
-        for other in self.watching_agents()? {
-            rooms.extend(room_of(&other)?);
-        }
-        Ok((rooms.len() == 1).then(|| rooms.into_iter().next()).flatten())
+        Ok(false)
     }
-    /// The room rules a merge of `repo` by `agent` is judged by now.
-    pub(crate) fn rules_for_merge(&self, agent: &str, repo: &str) -> Result<RoomRules> {
-        match self.watch_room(agent, repo)? {
-            Some(room) => self.room_merge_rules(repo, &room, unix_now()),
-            None => Ok(RoomRules::Missing(NO_WATCH_ROOM)),
+    /// Whether this device knows `room` as a project room: the desktop
+    /// recorded its autonomy level (it snapshots every joined room with linked
+    /// repositories or a level) or its merge rules, an Agent may work there,
+    /// or a watch or work list entry (active or not) reports to it. Absence of
+    /// a snapshot then never reads as a private chat (batch GPT review).
+    pub fn project_room(&self, room: &str) -> Result<bool> {
+        let recorded: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_autonomy WHERE room=?1) OR EXISTS(SELECT 1 FROM room_merge_rules WHERE room=?1) OR EXISTS(SELECT 1 FROM room_work WHERE room=?1)",
+            [room],
+            |r| r.get(0),
+        )?;
+        if recorded {
+            return Ok(true);
         }
+        for agent in self.watching_agents()? {
+            if self.watch_entries(&agent)?.iter().any(|e| e.room_id == room) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    /// The room rules a merge (or review) of `repo` from `room` is judged by
+    /// now: that room's own rules, and only when `repo` is linked to it, so
+    /// the rules, the autonomy level, the role and the approvals all refer to
+    /// the same room (batch GPT review: a merge borrowed another room's rules).
+    pub(crate) fn rules_for_merge(&self, repo: &str, room: &str) -> Result<RoomRules> {
+        if !self.watch_links(repo, room)? {
+            return Ok(RoomRules::Missing(NO_WATCH_ROOM));
+        }
+        self.room_merge_rules(repo, room, unix_now())
     }
 }
 
