@@ -198,10 +198,20 @@ fn set_note(account: String, room: &RoomId, text: String) {
     Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
 }
 
-/// Read `room`'s agent work from the homeserver.
+/// Whether `room`'s agent work was read on this desktop (shown in its header or Status tab).
+pub(super) fn was_read(room: &RoomId) -> bool {
+    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&(account(), room.to_owned()))
+}
+
+/// Read `room`'s agent work from the homeserver; from then on also on each
+/// change another member makes ([`super::autonomy_watch`]).
 pub fn refresh(room: &RoomId) {
     let account = account();
-    let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else {
+    let client = crate::sliding_sync::get_client();
+    if let Some(client) = &client {
+        super::autonomy_watch::attach(client);
+    }
+    let Some(joined) = client.and_then(|c| c.get_room(room)) else {
         return set(account, room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
     };
     crate::sliding_sync::spawn_async_task(async move { read_into(account, &joined).await });
@@ -227,13 +237,10 @@ fn act(room: &RoomId, act: Act) {
     };
     crate::sliding_sync::spawn_async_task(async move {
         let outcome = match act {
-            Act::Level(level) => server::set_level(&joined, level).await.map(|()| String::new()),
-            Act::Pause => match server::pause(&joined).await {
-                // This desktop stops its own loop runs now; other owners' desktops on their next check.
-                Ok(()) => Ok(stopped_line(crate::hagency::room_autonomy::stop::stop_loop_runs(&joined).await)),
-                Err(error) => Err(error),
-            },
-            Act::Resume => server::resume(&joined).await.map(|()| String::new()),
+            Act::Level(level) => server::set_level(&joined, level).await.map(Option::unwrap_or_default),
+            // This desktop stops its own loop runs now; other owners' desktops on their next check.
+            Act::Pause => pause_then_stop(server::pause(&joined), crate::hagency::room_autonomy::stop::stop_loop_runs(&joined)).await,
+            Act::Resume => server::resume(&joined).await.map(Option::unwrap_or_default),
             Act::Setup(repo) => super::autonomy_setup::run(&joined, &repo).await.map(|done| super::autonomy_setup::done_line(&done)),
         };
         set_note(account.clone(), joined.room_id(), outcome.unwrap_or_else(|error| error));
@@ -242,11 +249,42 @@ fn act(room: &RoomId, act: Act) {
     });
 }
 
+/// Pause, then stop this desktop's loop runs once the pause is saved, even
+/// when its room line was refused (GPT review); the note names both.
+async fn pause_then_stop(
+    pause: impl std::future::Future<Output = Result<server::Announced, String>>,
+    stop: impl std::future::Future<Output = usize>,
+) -> Result<String, String> {
+    let announced = pause.await?;
+    let notes = [stopped_line(stop.await), announced.unwrap_or_default()];
+    Ok(notes.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" "))
+}
+
 /// After Pause: how many of this desktop's loop runs were stopped.
 fn stopped_line(stopped: usize) -> String {
     match stopped {
         0 => String::new(),
         1 => crate::i18n::tr("Stopped 1 run of your agents' work here.").to_owned(),
         n => crate::i18n::format("Stopped {count} runs of your agents' work here.", &[("count", n.to_string())]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    /// GPT review (P2): a saved pause stops the runs even when its room line was refused.
+    #[test]
+    fn a_saved_pause_stops_runs_even_when_the_room_line_fails() {
+        let note = run(pause_then_stop(async { Ok(Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned())) }, async { 2 }));
+        assert_eq!(note, Ok("Stopped 2 runs of your agents' work here. The change is saved, but the room was not told: M_FORBIDDEN".to_owned()));
+        let stopped = std::cell::Cell::new(false);
+        let refused = run(pause_then_stop(async { Err("Could not pause the room: no".to_owned()) }, async { stopped.set(true); 1 }));
+        assert_eq!(refused, Err("Could not pause the room: no".to_owned()));
+        assert!(!stopped.get(), "an unsaved pause stops nothing");
     }
 }

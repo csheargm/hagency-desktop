@@ -3813,7 +3813,6 @@
   "Could not pause the room: {error}": "Could not pause the room: {error}",
   "Only the room's owner and maintainers can resume agent work here.": "Only the room's owner and maintainers can resume agent work here.",
   "Could not resume the room: {error}": "Could not resume the room: {error}",
-  "Could not post to the room: {error}": "Could not post to the room: {error}",
   "this desktop has not joined the room": "this desktop has not joined the room",
   "the room was not read": "the room was not read",
   "The rooms' agent work settings could not be recorded: {error}": "The rooms' agent work settings could not be recorded: {error}",
@@ -3860,5 +3859,8 @@
   "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.",
   "The room's power levels are unreadable.": "The room's power levels are unreadable.",
   "Only the room's owner can make or remove maintainers.": "Only the room's owner can make or remove maintainers.",
-  "Could not record the move: {error}": "Could not record the move: {error}"
+  "Could not record the move: {error}": "Could not record the move: {error}",
+  "Another change to the room's power levels landed at the same time and undid this one. Try again.": "Another change to the room's power levels landed at the same time and undid this one. Try again.",
+  "The change is saved, but the room was not told: {error}": "The change is saved, but the room was not told: {error}",
+  "\"May work\" could not be saved for {name}: {error}": "\"May work\" could not be saved for {name}: {error}"
 }

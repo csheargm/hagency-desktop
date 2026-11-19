@@ -3813,7 +3813,6 @@
   "Could not pause the room: {error}": "无法暂停房间：{error}",
   "Only the room's owner and maintainers can resume agent work here.": "只有房间所有者和维护者可以恢复这里的智能体工作。",
   "Could not resume the room: {error}": "无法恢复房间：{error}",
-  "Could not post to the room: {error}": "无法在房间中发消息：{error}",
   "this desktop has not joined the room": "此桌面端尚未加入该房间",
   "the room was not read": "未读取到该房间",
   "The rooms' agent work settings could not be recorded: {error}": "无法记录各房间的智能体工作设置：{error}",
@@ -3860,5 +3859,8 @@
   "The agent was created, but its repositories were not saved: {0}. Add them in the room's Room info → Status → Let agents work on a repo.": "智能体已创建，但它的仓库没有保存：{0}。请在房间的“房间信息 → 状态 → 让智能体处理一个仓库”中添加。",
   "The room's power levels are unreadable.": "无法读取房间的权限等级。",
   "Only the room's owner can make or remove maintainers.": "只有房间所有者可以设置或取消维护者。",
-  "Could not record the move: {error}": "无法记录迁移：{error}"
+  "Could not record the move: {error}": "无法记录迁移：{error}",
+  "Another change to the room's power levels landed at the same time and undid this one. Try again.": "另一项对房间权限等级的更改同时生效并撤销了这次更改。请重试。",
+  "The change is saved, but the room was not told: {error}": "更改已保存，但未能通知房间：{error}",
+  "\"May work\" could not be saved for {name}: {error}": "无法为 {name} 保存“可以工作”：{error}"
 }
