@@ -27,6 +27,11 @@ fn review_body() -> String {
     format!("🔎 Review requested — @codex:test {}: {PR}\nTo review: read it", review_ask(94, REPO, HEAD))
 }
 
+/// The desktop's "still a draft" notice, as `loop_notice::MarkReady` writes it.
+fn ready_body() -> String {
+    format!("{READY_NOTICE_LEAD}bird-claude (@bird:test) {}: if the fix is done, run exactly `gh pr ready 94 --repo {REPO}`. {PR}", ready_ask(94, REPO, HEAD))
+}
+
 fn ledger() -> (tempfile::TempDir, Ledger) {
     let temp = tempfile::tempdir().unwrap();
     let mut l = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
@@ -220,3 +225,36 @@ fn a_given_back_step_not_re_posted_yet_waits_while_the_budget_is_used_up_again()
 
 #[path = "step_resend_scope_tests.rs"]
 mod scope;
+
+/// Round-2 GPT review (P2): the ready request reached an Agent that never
+/// ran (a used-up budget, a signed-out provider), and its once-per-head step
+/// stayed taken, so the draft was never readied nor reviewed. It is tagged
+/// like the other dispatched steps and given back the same way.
+#[test]
+fn a_ready_request_the_agent_never_ran_is_given_back_like_a_merge() {
+    assert_eq!(loop_step_of(&ready_body()), Some((READY_STEP, PR.to_owned(), HEAD.to_owned(), BIRD.to_owned())));
+    assert_eq!(loop_step_of(&format!("> quoting: {}", ready_body())), None, "a quote is no notice");
+    assert_eq!(loop_step_of(&ready_body().replace(HEAD, &HEAD[..12])), None, "only a full head pins the step");
+    let (_temp, mut l) = ledger();
+    let ready = (READY_STEP, PR, HEAD);
+    receive(&mut l, "ready-1", &ready_body(), ME, T0, NO_RUN);
+    l.claim_dispatched_step(AGENT, READY_STEP, PR, HEAD).unwrap();
+    assert_eq!(l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0 + 1).unwrap().taken, true, "after the back-off only");
+    let due = l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0 + RESEND_AFTER_SECS).unwrap();
+    assert_eq!(due, StepDue { taken: false, again: 1, say: say(Why::NoRun, false, 0) }, "given back once, with one line");
+    receive(&mut l, "ready-2", &ready_body(), ME, T0 + RESEND_AFTER_SECS + 5, RAN);
+    l.claim_dispatched_step(AGENT, READY_STEP, PR, HEAD).unwrap();
+    assert_eq!(l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0 + 10 * RESEND_AFTER_SECS).unwrap().taken, true, "a request that ran stays taken");
+}
+
+/// Round-2 GPT review: a ready request claimed before the upgrade has no
+/// round row nor tagged dispatch; it is given back once, never stuck.
+#[test]
+fn a_ready_request_claimed_before_the_upgrade_is_given_back_once() {
+    let (_temp, mut l) = ledger();
+    let ready = (READY_STEP, PR, HEAD);
+    l.claim_loop_step(AGENT, READY_STEP, PR, HEAD).unwrap();
+    let due = l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0).unwrap();
+    assert_eq!((due.taken, due.again), (false, 1), "{due:?}");
+    assert_eq!(due.say.map(|s| s.why), Some(Why::Unrecorded));
+}

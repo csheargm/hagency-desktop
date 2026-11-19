@@ -4,6 +4,7 @@ use super::*;
 use crate::hagency::room_autonomy::state::RoomState;
 use ::hagency::issue_watch::safeguards::room_autonomy::{Level, Pause};
 use serde_json::json;
+use std::collections::BTreeSet;
 
 fn state(level: Level, paused: bool, linked: &[&str]) -> Result<RoomState, String> {
     Ok(RoomState {
@@ -26,7 +27,7 @@ fn only_running_rooms_work_and_each_held_room_says_why() {
     assert!(held.iter().any(|h| h.starts_with("a/paused: the room is paused")));
     assert!(held.iter().any(|h| h == "a/unread: no answer"), "an unreadable room holds, fail closed");
     assert_eq!(rooms.paused(), vec!["!p:x".to_owned()]);
-    let snapshots = rooms.snapshots();
+    let snapshots = rooms.snapshots(&BTreeSet::new());
     assert!(snapshots.iter().find(|s| s.room_id == "!u:x").is_some_and(|s| s.unread), "an unread room is recorded unread");
     assert!(snapshots.iter().find(|s| s.room_id == "!p:x").is_some_and(|s| s.paused));
 }
@@ -70,4 +71,19 @@ fn a_paused_room_never_takes_a_repository_from_a_running_room() {
     assert_eq!(pairs, vec![("acme/app", "!b:x"), ("acme/only-a", "!a:x")], "the running room gets it; the paused room keeps its own");
     let (kept, _) = running_only(&json!({"work": serde_json::to_value(&work).unwrap()}), &rooms);
     assert_eq!(kept["work"][0]["repo"], "acme/app", "so it runs");
+}
+
+/// Round-2 GPT review (P1): discovered rooms sorting before the loop's own
+/// room pushed its snapshot past the owner API's cap, silently. The loop's
+/// rooms go first, and every room is recorded, in changes the cap allows.
+#[test]
+fn the_loops_own_rooms_are_recorded_first_and_no_room_is_left_out() {
+    use ::hagency::issue_watch::safeguards::room_autonomy::MAX_ROOM_SNAPSHOTS;
+    let mut many: Vec<(String, Result<RoomState, String>)> = (0..MAX_ROOM_SNAPSHOTS + 2).map(|i| (format!("!a{i:04}:x"), state(Level::Off, false, &[]))).collect();
+    many.push(("!zz-work:x".into(), state(Level::Autonomous, false, &["acme/app"])));
+    let rooms = Rooms(many.into_iter().collect());
+    let snapshots = rooms.snapshots(&loop_rooms(&json!({"mayWork": ["!zz-work:x"]})));
+    assert_eq!(snapshots[0].room_id, "!zz-work:x", "the room the loop works in is never crowded out");
+    assert_eq!(snapshots.len(), MAX_ROOM_SNAPSHOTS + 3, "none dropped");
+    assert_eq!(snapshots.chunks(MAX_ROOM_SNAPSHOTS).count(), 2, "sent in two changes");
 }

@@ -170,6 +170,7 @@ impl LiveTrack<'_> {
         if let Some(peer) = &self.peer && super::review_again::asks_again(io, target, (&readiness, &reviews, &self.login), &peer.reviewer, now).await? {
             return Ok(Gate::WaitReview);
         }
+        let readiness = super::review_again::noted_other_owner(readiness, self.peer.as_ref().is_some_and(|p| !p.own));
         let seen_at = merge_hold::lock_clock().seen_at(&pr.url, &pr.head_sha, now);
         let settled = merge_hold::review_settled(&reviews, &pr.head_sha, pr.created_at, seen_at, now);
         merge_hold::follow_gate(io, target, &readiness, ctx, settled).await
@@ -235,7 +236,8 @@ impl TrackIo for LiveTrack<'_> {
         Ok(says_cannot_fix(&comments, &self.login, track.handed_at - CLOCK_SLACK_SECS))
     }
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String> {
-        if pr.draft {
+        // A ready request run after a newer push waits like a draft (round-2 GPT review).
+        if pr.draft || super::review_again::ready_moved(&pr.url, &pr.head_sha, pr.draft) {
             return Ok(Followed::Draft);
         }
         let Some(peer) = self.peer.as_ref().map(|p| &p.reviewer) else { return Ok(Followed::NeedsPerson) };

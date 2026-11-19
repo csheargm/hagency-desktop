@@ -35,6 +35,8 @@ pub(crate) struct Candidate {
 pub(crate) struct Pick {
     pub reviewer: OwnedUserId,
     pub notice: Option<String>,
+    /// One of this owner's own Agents: its GitHub verdicts post as this owner's login.
+    pub own: bool,
 }
 
 /// The reviewer for a pull request opened by an Agent running `author`.
@@ -43,13 +45,13 @@ pub(crate) fn pick(author: Option<&str>, candidates: &[Candidate], prefer_differ
     let ordered: Vec<&Candidate> = candidates.iter().filter(|c| c.own).chain(candidates.iter().filter(|c| !c.own)).collect();
     let first = *ordered.first()?;
     let Some(author) = author.filter(|_| prefer_different) else {
-        return Some(Pick { reviewer: first.puppet.clone(), notice: None });
+        return Some(Pick { reviewer: first.puppet.clone(), notice: None, own: first.own });
     };
     if let Some(other) = ordered.iter().find(|c| c.runtime.is_some_and(|r| r != author)) {
-        return Some(Pick { reviewer: other.puppet.clone(), notice: None });
+        return Some(Pick { reviewer: other.puppet.clone(), notice: None, own: other.own });
     }
     let args = [("wanted", wanted(author).to_owned()), ("name", first.name.clone())];
-    Some(Pick { reviewer: first.puppet.clone(), notice: Some(crate::i18n::format(NO_OTHER_MODEL, &args)) })
+    Some(Pick { reviewer: first.puppet.clone(), notice: Some(crate::i18n::format(NO_OTHER_MODEL, &args)), own: first.own })
 }
 
 pub const NO_OTHER_MODEL: &str = "No {wanted} reviewer in the room; asked {name}";
@@ -83,7 +85,7 @@ mod tests {
     #[test]
     fn a_claude_pr_goes_to_a_codex_reviewer_on_any_server() {
         let room = [agent("anna-claude", Some("claude"), true), agent("bo-codex", Some("codex"), false)];
-        assert_eq!(pick(Some("claude"), &room, true), Some(Pick { reviewer: room[1].puppet.clone(), notice: None }), "the other owner's Codex Agent");
+        assert_eq!(pick(Some("claude"), &room, true), Some(Pick { reviewer: room[1].puppet.clone(), notice: None, own: false }), "the other owner's Codex Agent");
         let reverse = [agent("anna-codex", Some("codex"), true), agent("bo-claude", Some("claude"), false)];
         assert_eq!(pick(Some("codex"), &reverse, true).unwrap().reviewer, reverse[1].puppet, "and the reverse");
     }
@@ -101,8 +103,8 @@ mod tests {
     #[test]
     fn turned_off_or_unknown_it_asks_the_first_agent_quietly() {
         let room = [agent("anna-claude", Some("claude"), true), agent("bo-codex", Some("codex"), false)];
-        assert_eq!(pick(Some("claude"), &room, false), Some(Pick { reviewer: room[0].puppet.clone(), notice: None }));
-        assert_eq!(pick(None, &room, true), Some(Pick { reviewer: room[0].puppet.clone(), notice: None }));
+        assert_eq!(pick(Some("claude"), &room, false), Some(Pick { reviewer: room[0].puppet.clone(), notice: None, own: room[0].own }));
+        assert_eq!(pick(None, &room, true), Some(Pick { reviewer: room[0].puppet.clone(), notice: None, own: room[0].own }));
         assert_eq!(pick(Some("claude"), &[], true), None, "nobody else: a person reviews");
     }
 }

@@ -177,7 +177,7 @@ fn apply_change(ledger: &mut Ledger, owner: &str, agent: &str, change: Change) -
     for snapshot in change.room_merge_rules.iter().flatten().take(hagency_agent_local::watch_info::MAX_LISTED) {
         ledger.set_room_merge_rules(owner, snapshot, now())?;
     }
-    for snapshot in change.room_autonomy.iter().flatten().take(hagency_agent_local::watch_info::MAX_LISTED) {
+    for snapshot in change.room_autonomy.iter().flatten().take(hagency_agent_local::room_autonomy::MAX_ROOM_SNAPSHOTS) {
         ledger.set_room_autonomy(owner, snapshot, now())?;
     }
     if let Some(may) = change.may_work {
@@ -253,6 +253,24 @@ mod tests {
         assert!(apply_change(&mut ledger, "@intruder:x", "agt", other).is_err(), "only the owner");
         assert!(serde_json::from_value::<Change>(json!({"roomAutonomy": [{"roomId": "!r:x", "level": "yolo"}]})).is_err());
         assert!(serde_json::from_value::<Change>(json!({"mayWork": {"roomId": "!r:x", "on": true, "merge": true}})).is_err(), "unknown fields");
+    }
+
+    /// Round-2 GPT review (P1): a desktop in many project rooms sends more
+    /// than 64 snapshots; the rooms it lists last (its own work comes first)
+    /// were silently dropped. Up to the room limit, every one is recorded.
+    #[test]
+    fn many_room_autonomy_snapshots_are_all_recorded_up_to_the_room_limit() {
+        use hagency_agent_local::room_autonomy::{Autonomy, Level, MAX_ROOM_SNAPSHOTS};
+        let temp = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let mut ledger = Ledger::open_scoped(&temp.path().join("l.db"), "@o:x", &"a".repeat(64)).unwrap();
+        let rooms: Vec<Value> = (0..MAX_ROOM_SNAPSHOTS + 1).map(|i| json!({"roomId": format!("!r{i}:x"), "level": "assist"})).collect();
+        let change: Change = serde_json::from_value(json!({"roomAutonomy": rooms})).unwrap();
+        apply_change(&mut ledger, "@o:x", "agt", change).unwrap();
+        let last = format!("!r{}:x", MAX_ROOM_SNAPSHOTS - 1);
+        assert_eq!(ledger.room_autonomy(&last).unwrap(), Autonomy::Level(Level::Assist), "the {MAX_ROOM_SNAPSHOTS}th room is recorded");
+        assert!(MAX_ROOM_SNAPSHOTS > hagency_agent_local::watch_info::MAX_LISTED, "raised above the watch list's cap");
+        let past = format!("!r{MAX_ROOM_SNAPSHOTS}:x");
+        assert!(matches!(ledger.room_autonomy(&past).unwrap(), Autonomy::Unknown(_)), "past the limit: unknown, so paused (the desktop says so)");
     }
 
     #[test]

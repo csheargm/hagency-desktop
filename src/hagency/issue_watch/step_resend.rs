@@ -54,7 +54,11 @@ fn line_of(target: &Target, step: &str, say: &Value) -> Option<(LoopNotice, u64)
 /// The plain room line (English, room content): what could not start, why,
 /// and whether it will be tried again.
 pub(crate) fn not_started_line(what: &str, why: &str, gave_up: bool, t: &Target) -> String {
-    let what = if what == "merge" { "Merge" } else { "Review" };
+    let what = match what {
+        "merge" => "Merge",
+        super::loop_notice::DRAFT_STEP => "The ready request",
+        _ => "Review",
+    };
     let reason = match why {
         "budget" => "the Agent's token budget for this period is used up",
         "noRun" => "an owner limit or a signed-out provider answered before the model started",
