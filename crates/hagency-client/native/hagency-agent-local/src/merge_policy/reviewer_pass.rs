@@ -80,8 +80,8 @@ impl Ledger {
     /// "no run of it reached this device" was said of bird-codex, and the
     /// review was sent again). No dispatch is looked for and nothing is
     /// re-sent: once [`UNSEEN_AFTER_SECS`] passed without the desktop seeing
-    /// its verdict on GitHub, `to` is passed over and the round's one line
-    /// is [`Why::Unanswered`].
+    /// its verdict on GitHub, the round's one line is [`Why::Unanswered`],
+    /// and `to` is passed over once the room took it.
     pub fn remote_review_due(&mut self, agent: &str, (pr, head): (&str, &str), to: &str, now: i64) -> Result<StepDue> {
         let round = self.round(agent, "review", pr, head)?;
         let kept = StepDue { taken: true, again: round.again, say: None };
@@ -104,7 +104,11 @@ impl Ledger {
         if now - first < UNSEEN_AFTER_SECS {
             return Ok(kept);
         }
+        // Passed only once the room took the line (GPT review: a failed send was never offered again).
+        if line.is_some() {
+            return Ok(StepDue { say: line, ..kept });
+        }
         self.pass_reviewer(agent, (pr, head), to, round.again)?;
-        Ok(StepDue { say: line, ..kept })
+        Ok(kept)
     }
 }

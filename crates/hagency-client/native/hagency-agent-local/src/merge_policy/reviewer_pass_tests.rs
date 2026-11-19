@@ -130,9 +130,11 @@ fn another_owners_reviewer_is_never_judged_by_this_devices_runs() {
     assert_eq!(remote(&mut l, T0 + UNSEEN_AFTER_SECS), StepDue { taken: true, again: 0, say: None }, "its own clock started at the first check after the ask");
     let late = T0 + 1 + UNSEEN_AFTER_SECS;
     assert_eq!(remote(&mut l, late), StepDue { taken: true, again: 0, say: say(Why::Unanswered, true, 0) }, "one plain line, never a re-send");
-    assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
+    assert!(l.passed_reviewers(AGENT, PR, HEAD).unwrap().is_empty(), "kept until the room took the line (GPT review)");
+    assert_eq!(remote(&mut l, late + 60).say, say(Why::Unanswered, true, 0), "a failed send is offered again");
     l.step_line_said(AGENT, ("review", PR, HEAD), 0).unwrap();
-    assert_eq!(remote(&mut l, late + 600).say, None, "said once");
+    assert_eq!(remote(&mut l, late + 600), StepDue { taken: true, again: 0, say: None }, "said once");
+    assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
     // This owner's own Agent is asked next, as a new message on its own round.
     assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), (ME, OWN, ROOM), late + 601).unwrap(), StepDue { taken: false, again: 1, say: None });
 }
