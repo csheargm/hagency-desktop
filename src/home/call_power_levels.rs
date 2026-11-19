@@ -21,7 +21,7 @@
 //! lowered or overwritten.
 use matrix_sdk::{
     Room,
-    ruma::{Int, OwnedUserId, UserId, api::client::state::get_state_event_for_key::v3 as get_state, events::{StateEventType, TimelineEventType, room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource}}, room_version_rules::AuthorizationRules},
+    ruma::{Int, OwnedRoomId, OwnedUserId, RoomId, UserId, api::client::state::get_state_event_for_key::v3 as get_state, events::{StateEventType, TimelineEventType, room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, RoomPowerLevelsSource}}, room_version_rules::AuthorizationRules},
 };
 use serde_json::Value;
 
@@ -127,11 +127,33 @@ async fn server_levels(room: &Room) -> anyhow::Result<Value> {
     Ok(serde_json::from_str(room.client().send(request).await?.event_or_content.get())?)
 }
 
-/// One power-level change at a time from this desktop: the Members tab's role
-/// change, a repository link and the after-create follow-up each write the
-/// room's whole `m.room.power_levels`, so two at once would each put back the
-/// other's old value (GPT review: a removed maintainer restored by a link).
-static CHANGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// One power-level change at a time per room from this desktop: the Members
+/// tab's role change, a repository link and the after-create follow-up each
+/// write the room's whole `m.room.power_levels`, so two at once would each put
+/// back the other's old value (GPT review: a removed maintainer restored by a
+/// link). Per room (GPT review): a slow change in one room never makes
+/// another room's link time out.
+static CHANGING: RoomLocks = RoomLocks::new();
+
+/// One async lock per room, made on first use: a lock domain whose holders
+/// wait on the network serialises one room, never every room (GPT review).
+// TODO(R3): `agent_replies_setting::room_lock` can use this too.
+pub struct RoomLocks(std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<OwnedRoomId, std::sync::Arc<tokio::sync::Mutex<()>>>>>);
+
+impl RoomLocks {
+    pub const fn new() -> Self {
+        Self(std::sync::LazyLock::new(Default::default))
+    }
+    /// `room_id`'s lock in this domain.
+    pub fn of(&self, room_id: &RoomId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).entry(room_id.to_owned()).or_default().clone()
+    }
+}
+
+/// The lock serialising `room_id`'s power-level changes on this desktop.
+fn room_lock(room_id: &RoomId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    CHANGING.of(room_id)
+}
 /// Writes of one change: the first, and one more when another write undid it.
 const WRITE_ATTEMPTS: usize = 2;
 
@@ -147,7 +169,8 @@ const WRITE_ATTEMPTS: usize = 2;
 /// a single authoritative writer would close it; a removed maintainer should
 /// be checked on the Members tab after concurrent admin edits.
 pub async fn change_levels(room: &Room, mut change: impl FnMut(Value) -> anyhow::Result<Option<Value>>) -> anyhow::Result<()> {
-    let _one = CHANGING.lock().await;
+    let lock = room_lock(room.room_id());
+    let _one = lock.lock().await;
     for _ in 0..WRITE_ATTEMPTS {
         let Some(updated) = change(server_levels(room).await?)? else { return Ok(()) };
         room.send_state_event_raw("m.room.power_levels", "", updated).await?;

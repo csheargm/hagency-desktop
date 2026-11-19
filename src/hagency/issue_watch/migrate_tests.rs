@@ -75,3 +75,25 @@ fn the_old_watch_keeps_its_filter_and_start_time_in_the_work_list() {
     listed["work"] = json!([{"repo": "Acme/App", "roomId": "!r:x", "since": 7}]);
     assert_eq!(work_with_watch(&listed).unwrap(), None, "a listed repository keeps its own entry (it already governed the watch)");
 }
+
+#[test]
+fn finishing_switches_off_only_the_watch_that_moved() {
+    // GPT review (P1): the owner pointed the watch at repo B or another room while A's room was set up.
+    let snapshot = json!({"issueWatch": {"mode": "trusted", "repo": "acme/app", "roomId": "!a:x", "enabledAt": 5}});
+    let moved = watch_key(&snapshot);
+    let change = finish_change(&snapshot, moved.as_ref()).unwrap();
+    assert_eq!(change["issueWatch"], json!({"mode": "off"}), "the moved watch is switched off");
+    assert_eq!(change["work"][0]["repo"], "acme/app");
+    let mut other_repo = snapshot.clone();
+    other_repo["issueWatch"]["repo"] = json!("acme/site");
+    assert_eq!(finish_change(&other_repo, moved.as_ref()).unwrap(), json!({}), "repo B was never linked: it stays on");
+    let mut other_room = snapshot.clone();
+    other_room["issueWatch"]["roomId"] = json!("!b:x");
+    assert_eq!(finish_change(&other_room, moved.as_ref()).unwrap(), json!({}), "another room was never enabled: it stays on");
+    assert_eq!(finish_change(&snapshot, None).unwrap(), json!({}), "a work-list-only move switches on no watch it never planned");
+    let mut recased = snapshot.clone();
+    recased["issueWatch"]["repo"] = json!("Acme/App");
+    assert_eq!(finish_change(&recased, moved.as_ref()).unwrap()["issueWatch"], json!({"mode": "off"}), "the same repository in other case is the same watch");
+    let roomless = json!({"issueWatch": {"mode": "trusted", "repo": "acme/app"}});
+    assert_eq!(watch_key(&roomless), None, "GPT review: a watch planned() skips is never finished");
+}

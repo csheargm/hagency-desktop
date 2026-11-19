@@ -131,20 +131,29 @@ async fn rules_after(room: &Room) -> Result<Rules, String> {
     }
 }
 
+/// The failures after a link: the power-level follow-up's, if it failed
+/// (GPT review: it may time out behind another change; the link stands, so
+/// the rest still runs), then the Agents'. The flag: an Agent's save failed.
+fn after_link_failures(follow_up: Result<Option<String>, String>, agents: Vec<String>) -> (Vec<String>, bool) {
+    let agents_failed = !agents.is_empty();
+    (follow_up.err().into_iter().chain(agents).collect(), agents_failed)
+}
+
 /// The whole action for `repo` in `room`. Only a failed link is an error
 /// (nothing was done); after it, each part that fails is named in the line
 /// and the rest still runs, so no failure hides another (GPT review).
 pub async fn run(room: &Room, repo: &str) -> Result<Done, String> {
     let client = room.client();
+    crate::home::room_watches::status::change_repos(&client, room.room_id(), repo, true).await?;
     // Linking also adds the room's missing Hagency power-level entries this account may add.
-    crate::home::room_watches::status::set_link(&client, room.room_id(), repo, true).await?;
+    let follow_up = crate::home::room_watches::status::after_link(room).await;
     let repo = repo.trim().trim_start_matches("https://github.com/").trim_end_matches('/').trim_end_matches(".git").to_owned();
-    let Agents { saved, elsewhere, mut failed } = let_agents_work(room).await.unwrap_or_else(|error| Agents { failed: vec![error], ..Agents::default() });
+    let Agents { saved, elsewhere, failed } = let_agents_work(room).await.unwrap_or_else(|error| Agents { failed: vec![error], ..Agents::default() });
     if !saved.is_empty() {
         // The Agent settings' "May work" ticks read again (GPT review).
         makepad_widgets::Cx::post_action(crate::hagency::issue_watch::may_work_section::MayWorkChanged { agent_ids: saved.clone() });
     }
-    let agents_failed = !failed.is_empty();
+    let (mut failed, agents_failed) = after_link_failures(follow_up, failed);
     let (level, level_failed) = match level_after(room, &mut failed).await {
         Ok(level) => (level, false),
         Err(error) => {
@@ -187,5 +196,18 @@ mod tests {
         let rules_only = Done { repo: "acme/app".into(), failed: vec!["Could not save the merge rules: M_FORBIDDEN".to_owned()], level: Some(Level::Assist), ..Done::default() };
         assert!(done_line(&rules_only).contains("none of your agents is in this room yet"), "a rules failure says nothing about the Agents");
         assert_eq!(done_line(&later), "Linked acme/app · \"May work\" could not be saved for bird: storage_unavailable · Could not save the merge rules: M_FORBIDDEN.", "a later failure keeps the earlier one and says no level it does not know");
+    }
+
+    /// GPT review (P2): a power-level follow-up that timed out behind another
+    /// room's role edit is one named step; the Agents' flag is theirs alone.
+    #[test]
+    fn a_failed_power_level_follow_up_is_named_and_the_rest_still_runs() {
+        let timed_out = Err("Members cannot share issue status here yet: timed out".to_owned());
+        let (failed, agents_failed) = after_link_failures(timed_out, Vec::new());
+        assert_eq!((failed.clone(), agents_failed), (vec!["Members cannot share issue status here yet: timed out".to_owned()], false));
+        let done = Done { repo: "acme/app".into(), agents: 1, level: Some(Level::Assist), failed, ..Done::default() };
+        assert_eq!(done_line(&done), "Linked acme/app · 1 of your agents may work here · Members cannot share issue status here yet: timed out · agent work is Assist.");
+        let (failed, agents_failed) = after_link_failures(Ok(None), vec!["\"May work\" could not be saved for bird: x".to_owned()]);
+        assert!(agents_failed && failed.len() == 1);
     }
 }

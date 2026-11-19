@@ -153,3 +153,34 @@ pub(super) async fn mount_server_levels(server: &wiremock::MockServer, levels: &
     Mock::given(path_regex(at)).respond_with(state.clone()).mount(server).await;
     state
 }
+
+/// GPT review (P2): a role edit holding another room's power-level lock (a
+/// slow server) never makes this room's change wait for it; the same room's waits.
+#[tokio::test]
+async fn a_change_in_another_room_never_holds_up_this_one() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/_matrix/client/v3/createRoom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"room_id":"!busy-elsewhere:x"})))
+        .mount(&server).await;
+    mount_server_levels(&server, &json!({"users":{"@o:x":100},"events":{}})).await;
+    let room = signed_in(&server).await.create_room(Default::default()).await.unwrap();
+    let other = room_lock(matrix_sdk::ruma::room_id!("!role-edit:x"));
+    let _held = other.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), allow_call_membership(&room, false))
+        .await.expect("another room's lock must not block this room").unwrap();
+    let same = room_lock(room.room_id());
+    let _this = same.lock().await;
+    assert!(room_lock(room.room_id()).try_lock().is_err(), "the same room still changes one at a time");
+}
+
+/// GPT review (P2): one domain's locks are per room, so a repository change
+/// waiting on a slow room never holds up another room's.
+#[test]
+fn room_locks_serialise_one_room_only() {
+    static LOCKS: RoomLocks = RoomLocks::new();
+    let a = LOCKS.of(matrix_sdk::ruma::room_id!("!a:x"));
+    let _held = a.try_lock().unwrap();
+    assert!(LOCKS.of(matrix_sdk::ruma::room_id!("!b:x")).try_lock().is_ok(), "another room is free");
+    assert!(LOCKS.of(matrix_sdk::ruma::room_id!("!a:x")).try_lock().is_err(), "the same room waits");
+}
