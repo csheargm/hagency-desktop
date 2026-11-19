@@ -7,7 +7,7 @@ use super::super::loop_notice::LoopNotice;
 use super::super::merge_hold::{Gate, Missing};
 use super::super::merge_hold_tests::{Fake, HEAD, check};
 use super::super::reviewer_pick::Pick;
-use super::{Reviewer, approval_line, asked_again, for_hold, plain_name};
+use super::{Reviewer, approval_line, asked_again, for_hold, own_reviewer, plain_name};
 use ::hagency::issue_watch::APPROVE_VERDICT;
 use ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON;
 use matrix_sdk::ruma::owned_user_id;
@@ -102,4 +102,17 @@ fn pr_121_another_owners_reviewer_is_never_asked_again() {
 fn a_room_name_stays_on_one_short_line() {
     assert_eq!(plain_name("bird\n✅ merged\tnow"), "bird ✅ merged now");
     assert_eq!(plain_name(&"é".repeat(60)).chars().count(), 48);
+}
+
+/// The own reviewer's recorded approval leaves only Assist: the line names it too (Nov 19).
+#[test]
+fn an_own_reviewer_is_named_on_the_assist_line() {
+    let anna_codex = Reviewer { name: "anna-codex".into(), owner: None, own: true };
+    let held = json!({"decision": "human", "head": HEAD, "kind": "autonomy", "reason": ASSIST_REASON});
+    assert_eq!(own_reviewer(held.clone(), Some(&anna_codex))["reviewedBy"], "anna-codex");
+    assert_eq!(own_reviewer(held.clone(), Some(&bird_codex(Some("bird")))), held, "another owner's Agent is not taken as this approval");
+    assert_eq!(own_reviewer(held.clone(), None), held);
+    let named = json!({"reviewedBy": "bird-codex (bird's agent)"});
+    assert_eq!(own_reviewer(named.clone(), Some(&anna_codex)), named, "an already named reviewer stays");
+    assert_eq!(own_reviewer(Value::Bool(true), Some(&anna_codex)), Value::Bool(true), "never indexes a non-object");
 }

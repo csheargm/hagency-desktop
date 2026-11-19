@@ -50,3 +50,14 @@ fn a_notice_with_no_agent_stays_plain() {
     let held = LoopNotice::Unreachable { target: target(), step: "hold-unreachable".into() };
     assert!(sent(&held).get("formatted_body").is_none());
 }
+
+/// One template (R3): the reviewer is named when known and no bare short SHA shows.
+#[test]
+fn both_assist_lines_share_one_template_without_the_sha() {
+    let line = |reviewer: Option<&str>| LoopNotice::AwaitsPerson { target: target(), step: "hold-autonomy-assist".into(), reviewer: reviewer.map(str::to_owned) }.body();
+    let tail = format!(". Agent work in this room is Assist, so a person merges it: {URL}");
+    assert_eq!(line(Some("bird-codex (bird's agent)")), format!("✅ PR #132 in acme/app was reviewed by bird-codex (bird's agent) and is ready{tail}"));
+    assert_eq!(line(Some("bird-codex")), format!("✅ PR #132 in acme/app was reviewed by bird-codex and is ready{tail}"));
+    assert_eq!(line(None), format!("✅ PR #132 in acme/app is reviewed and ready{tail}"));
+    assert!(!line(None).contains(&HEAD[..12]), "no short SHA");
+}

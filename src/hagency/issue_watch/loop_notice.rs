@@ -50,6 +50,16 @@ fn review_steps(t: &Target) -> String {
     steps.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo)
 }
 
+/// The one Assist line (R3), whoever reviewed: the head stays pinned in the
+/// marker and the transaction id, never in the words a person reads.
+const ASSIST_READY: &str = "✅ PR #<N> in <repo> <state>. Agent work in this room is Assist, so a person merges it: <url>";
+
+/// [`ASSIST_READY`] for `t`, naming the reviewer when it is known.
+fn assist_ready(t: &Target, reviewer: Option<&str>) -> String {
+    let state = reviewer.map_or_else(|| "is reviewed and ready".to_owned(), |who| format!("was reviewed by {who} and is ready"));
+    ASSIST_READY.replace("<N>", &t.number.to_string()).replace("<repo>", &t.repo).replace("<url>", &t.url).replace("<state>", &state)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopNotice {
     /// Ask `reviewer` (an Agent in the room) to review `Target`.
@@ -137,8 +147,7 @@ impl LoopNotice {
                 let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();
                 format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
             }
-            Self::AwaitsPerson { reviewer: Some(who), .. } => format!("✅ PR #{} in {} was reviewed by {who} and is ready. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
-            Self::AwaitsPerson { reviewer: None, .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
+            Self::AwaitsPerson { reviewer, .. } => assist_ready(t, reviewer.as_deref()),
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
             Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
             Self::Unanswered { reviewer, .. } => format!("⏳ {reviewer} has not answered the review request for PR #{} yet: {}", t.number, t.url),

@@ -91,6 +91,15 @@ pub fn for_hold(mut readiness: Value, (reviews, login): (&[(String, String, Stri
     readiness
 }
 
+/// `readiness` naming this owner's own `reviewer` for the Assist line when
+/// the gate holds only for Assist and no reviewer is named yet; else as is.
+pub(super) fn own_reviewer(mut readiness: Value, reviewer: Option<&Reviewer>) -> Value {
+    if let Some(r) = reviewer.filter(|r| r.own) && readiness.is_object() && readiness[REVIEWED_BY_KEY].is_null() {
+        readiness[REVIEWED_BY_KEY] = r.label().into();
+    }
+    readiness
+}
+
 /// The reviewer asked again for an unrecorded verdict: only this owner's
 /// own, never another owner's Agent, whose verdict only its owner's device
 /// records, so asking again cannot help (PR #121).
