@@ -117,21 +117,34 @@ pub(crate) fn running_only(saved: &Value, rooms: &Rooms) -> (Value, Vec<String>)
     (kept, held)
 }
 
-/// Read every loop room of `saved`, and every joined project room, from the homeserver now.
+/// How many rooms' state is read from the homeserver at once.
+const ROOM_READS_AT_ONCE: usize = 16;
+/// One room's read may take this long; past it the room counts as unread (fails closed).
+const ROOM_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Read every loop room of `saved`, and every joined project room, from the
+/// homeserver now — in parallel and each bounded, so many discovered rooms can
+/// never push the check past its deadline (final GPT check: serial reads did).
 pub(crate) async fn read(saved: &Value) -> Rooms {
-    let client = crate::sliding_sync::get_client();
-    let mut rooms = Rooms::default();
+    use futures_util::StreamExt;
     let mut all = loop_rooms(saved);
     all.extend(super::room_discovery::project_rooms().await);
-    for room_id in all {
-        let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.as_ref()?.get_room(&id));
-        let state = match joined {
-            Some(room) => crate::hagency::room_autonomy::server::read(&room).await,
-            None => Err(crate::i18n::tr("this desktop has not joined the room").to_owned()),
-        };
-        rooms.0.insert(room_id, state);
+    let reads = futures_util::stream::iter(all).map(|room_id| async move {
+        let state = tokio::time::timeout(ROOM_READ_TIMEOUT, read_one(&room_id)).await
+            .unwrap_or_else(|_| Err(crate::i18n::tr("the room's state did not arrive in time").to_owned()));
+        (room_id, state)
+    });
+    Rooms(reads.buffer_unordered(ROOM_READS_AT_ONCE).collect().await)
+}
+
+/// One joined room's autonomy state from the homeserver.
+async fn read_one(room_id: &str) -> Result<RoomState, String> {
+    let client = crate::sliding_sync::get_client();
+    let joined = matrix_sdk::ruma::RoomId::parse(room_id).ok().and_then(|id| client.as_ref()?.get_room(&id));
+    match joined {
+        Some(room) => crate::hagency::room_autonomy::server::read(&room).await,
+        None => Err(crate::i18n::tr("this desktop has not joined the room").to_owned()),
     }
-    rooms
 }
 
 /// Everything before a check's work: the saved state, its rooms read now,

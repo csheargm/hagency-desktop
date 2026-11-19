@@ -3814,6 +3814,7 @@
   "Only the room's owner and maintainers can resume agent work here.": "只有房间所有者和维护者可以恢复这里的智能体工作。",
   "Could not resume the room: {error}": "无法恢复房间：{error}",
   "this desktop has not joined the room": "此桌面端尚未加入该房间",
+  "the room's state did not arrive in time": "房间状态未能及时到达",
   "the room was not read": "未读取到该房间",
   "The rooms' agent work settings could not be recorded: {error}": "无法记录各房间的智能体工作设置：{error}",
   "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it may have posted on GitHub cannot be matched here": "审查者是另一位所有者的智能体，本设备不知道其 GitHub 登录名，因此无法在此匹配它可能在 GitHub 上发布的结论",
