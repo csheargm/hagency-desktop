@@ -147,37 +147,56 @@ pub(crate) fn pinned_command(words: &[&str]) -> String {
 
 /// A body file push trust may publish: see [`PrCommand::allowed`].
 fn body_file_ok(file: &str, root: &Path, repo: &str) -> bool {
-    let roots = [root.to_path_buf()];
-    if !Path::new(file).is_absolute() || !outside::inside_all(file, &roots, root) || outside::is_git_metadata(Path::new(file)) {
-        return false;
-    }
-    // An existing regular file, through every link.
-    let Some(real) = Path::new(file).canonicalize().ok().filter(|r| !outside::is_git_metadata(r) && r.is_file()) else { return false };
-    super::local_git::checkout_containing(&real, root).is_some_and(|checkout| super::local_git::own_checkout(&checkout, repo))
+    checked_real(file, root, repo).is_some()
 }
 
-/// The text of body file `file`, read once through a descriptor that
-/// is checked to be the very file [`body_file_ok`] approved: opened without
-/// following a final link, a regular file with one name, the same inode as
-/// the approved real path after the open (a directory swapped for a link in
-/// between is caught), UTF-8, no NUL, within GitHub's size.
-#[cfg(unix)]
-fn read_body_file(file: &str, root: &Path, repo: &str) -> Option<String> {
-    use rustix::fs::{FileType, Mode, OFlags};
-    use std::io::Read;
-    if !body_file_ok(file, root, repo) {
+/// `file`'s real path when push trust may publish it: absolute, inside
+/// `root`, never git metadata (named or resolved), an existing regular file
+/// of `repo`'s own checkout.
+fn checked_real(file: &str, root: &Path, repo: &str) -> Option<std::path::PathBuf> {
+    let roots = [root.to_path_buf()];
+    if !Path::new(file).is_absolute() || !outside::inside_all(file, &roots, root) || outside::is_git_metadata(Path::new(file)) {
         return None;
     }
-    let real = Path::new(file).canonicalize().ok()?;
+    // An existing regular file, through every link.
+    let real = Path::new(file).canonicalize().ok().filter(|r| !outside::is_git_metadata(r) && r.is_file())?;
+    let checkout = super::local_git::checkout_containing(&real, root)?;
+    super::local_git::own_checkout(&checkout, repo).then_some(real)
+}
+
+/// The text of body file `file`, read once from the very path
+/// [`checked_real`] approved: see [`read_checked`].
+#[cfg(unix)]
+fn read_body_file(file: &str, root: &Path, repo: &str) -> Option<String> {
+    let real = checked_real(file, root, repo)?;
+    read_checked(&root.canonicalize().ok()?, &real)
+}
+
+/// The text at `real` (approved, under the canonical `base`), opened one
+/// component at a time from `base`'s descriptor without following any link,
+/// so the descriptor read is the file at the approved path itself: a parent
+/// directory swapped for a link after the check is refused, not followed
+/// (GPT re-review, Nov 19: the old open and the inode check resolved the
+/// path independently). Then a regular file with one link, UTF-8 without
+/// NUL, within GitHub's size.
+#[cfg(unix)]
+fn read_checked(base: &Path, real: &Path) -> Option<String> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    use std::io::Read;
+    use std::path::Component;
+    let parts: Vec<_> = real.strip_prefix(base).ok()?.components().collect();
+    let (last, parents) = parts.split_last()?;
+    let names = |c: &Component<'_>| match c { Component::Normal(name) => Some(name.to_os_string()), _ => None };
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut dir = rustix::fs::open(base, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty()).ok()?;
+    for part in parents {
+        dir = rustix::fs::openat(&dir, names(part)?.as_os_str(), dir_flags, Mode::empty()).ok()?;
+    }
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let fd = rustix::fs::open(&real, flags, Mode::empty()).ok()?;
+    let fd = rustix::fs::openat(&dir, names(last)?.as_os_str(), flags, Mode::empty()).ok()?;
     let opened = rustix::fs::fstat(&fd).ok()?;
     let regular = FileType::from_raw_mode(opened.st_mode) == FileType::RegularFile;
     if !regular || opened.st_nlink != 1 || opened.st_size as u64 > MAX_PR_BODY_FILE_BYTES {
-        return None;
-    }
-    let now = rustix::fs::lstat(&Path::new(file).canonicalize().ok()?).ok()?;
-    if (now.st_dev, now.st_ino) != (opened.st_dev, opened.st_ino) || !body_file_ok(file, root, repo) {
         return None;
     }
     let mut bytes = Vec::new();
@@ -206,3 +225,27 @@ fn target_repo(target: &str) -> Option<Option<&str>> {
 #[cfg(test)]
 #[path = "agent_shapes_tests.rs"]
 mod agent_shapes_tests;
+
+/// GPT re-review (Nov 19): a parent directory swapped for a link between
+/// the check and the open must not reach the file the link points to.
+#[cfg(all(test, unix))]
+#[test]
+fn a_parent_directory_swapped_for_a_link_after_the_check_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    std::fs::create_dir_all(base.join("app/docs")).unwrap();
+    std::fs::create_dir_all(base.join("outside/docs")).unwrap();
+    std::fs::write(base.join("app/docs/body.md"), "Fixes #1").unwrap();
+    std::fs::write(base.join("outside/docs/body.md"), "SECRET_TOKEN").unwrap();
+    let approved = base.join("app/docs/body.md");
+    assert_eq!(read_checked(&base, &approved).as_deref(), Some("Fixes #1"));
+    // The swap lands after the path was approved, before the open.
+    std::fs::rename(base.join("app/docs"), base.join("app/old-docs")).unwrap();
+    std::os::unix::fs::symlink(base.join("outside/docs"), base.join("app/docs")).unwrap();
+    assert_eq!(read_checked(&base, &approved), None);
+    std::fs::remove_file(base.join("app/docs")).unwrap();
+    // A final-component link is refused too, and a path outside `base` is never read.
+    std::os::unix::fs::symlink(base.join("outside/docs/body.md"), base.join("app/link.md")).unwrap();
+    assert_eq!(read_checked(&base, &base.join("app/link.md")), None);
+    assert_eq!(read_checked(&base.join("app"), &base.join("outside/docs/body.md")), None);
+}
