@@ -839,6 +839,10 @@ impl HomeScreen {
         let rooms = self.view.dock(cx, ids!(dock)).splitter_position(id!(root))
             .unwrap_or(ROOMS_DEFAULT);
         let covers = side.prepare(cx, size.x - rail - inset, rooms, desktop, saved_width);
+        // The room screen's width beside the rooms list and a docked region, from
+        // the numbers this layout decides: room info lays out for it (info_panel_width).
+        let room = desktop.then(|| size.x - rail - inset - rooms - side.docked_width());
+        crate::home::room_screen::info_panel_width::set_room_width(room, (size.x, side.docked_width()));
         // Only the desktop page beside the left bar gives way to an overlay;
         // an unswitched Mobile variant this frame is never touched.
         let page = self.view.widget(cx, ids!(Desktop.home_screen_page_flip));
@@ -1985,5 +1989,33 @@ mod mini_apps_side_tests {
         assert!(!window_panel.is_open());
         assert!(!panel.is_open());
         assert!(!catalog_panel.is_open());
+    }
+
+    // TODO(R4): home_screen.rs is over budget; these side-region tests belong in home_screen/mini_apps_side_tests.rs.
+    /// Live, Nov 19 05:52 (1400-point window): room info open, then the Agents
+    /// panel docked; room info stayed inline beside a ~330-point chat.
+    #[test]
+    fn room_info_beside_the_docked_agents_panel_keeps_the_chat_minimum() {
+        use crate::home::room_screen::info_panel_width::{INFO_DEFAULT, INLINE_MIN, clamp_width, room_width};
+        let width = 1400.0;
+        let (mut cx, mut home, mut state) = home(width);
+        frame(&mut cx, &mut home, &mut state, width);
+        frame(&mut cx, &mut home, &mut state, width);
+        open_chat(&mut cx, &mut home, &mut state);
+        frame(&mut cx, &mut home, &mut state, width);
+        side(&mut cx, &home).hagency_action(&mut cx, &HagencyAction::OpenAgents);
+        frame(&mut cx, &mut home, &mut state, width);
+        frame(&mut cx, &mut home, &mut state, width);
+        assert_eq!(side(&mut cx, &home).layout(), SideLayout::Docked);
+        // What the room screen lays room info out in, even when it peeks the whole row.
+        let room = room_width(width);
+        let dock = rect(&mut cx, &home, ids!(dock));
+        let rooms = home.view.dock(&mut cx, ids!(dock)).splitter_position(id!(root)).unwrap_or(300.0);
+        assert!((dock.size.x - rooms - room).abs() <= HANDLE, "the given width is the room screen's real one: dock {dock:?}, room {room}");
+        let inline = room >= INLINE_MIN;
+        assert!(!inline || room - clamp_width(INFO_DEFAULT, room) >= CHAT_MIN, "inline room info leaves the chat at least CHAT_MIN: {room}");
+        side(&mut cx, &home).close_all(&mut cx);
+        frame(&mut cx, &mut home, &mut state, width);
+        assert!(room_width(width) > room, "closing the Agents panel gives the room screen its width back");
     }
 }
