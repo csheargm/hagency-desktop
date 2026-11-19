@@ -207,16 +207,19 @@ pub async fn fetch_issue_done(client: &Client, api: &str, repo: &str, number: u6
     Ok(value["state"] == "closed" && value["state_reason"] == "completed")
 }
 
-/// Issue `number`'s `(state, state_reason)` as GitHub reports them
-/// ("open"/"closed", "completed"/"not_planned"/""), for the issue loop's
-/// tracker (ADR 0020), which must tell a closed issue from one that only
-/// fell off the open listing.
-pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<(String, String), FetchError> {
+/// Issue `number`'s `(state, state_reason, created_at)` as GitHub reports
+/// them ("open"/"closed", "completed"/"not_planned"/"", Unix seconds or
+/// `None` when unreadable), for the issue loop's tracker (ADR 0020), which
+/// must tell a closed issue from one that only fell off the open listing, and
+/// an issue opened before its work-list entry from a new one (GPT batch review).
+pub async fn fetch_issue_state(client: &Client, api: &str, repo: &str, number: i64, token: &str) -> Result<(String, String, Option<i64>), FetchError> {
     pulls_url(api, repo)?;
     let body = get(client, &format!("{api}/repos/{repo}/issues/{number}"), token).await?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     let text = |k: &str| value[k].as_str().unwrap_or_default().to_owned();
-    Ok((text("state"), text("state_reason")))
+    // The open listing's own parser reads the creation date the same way.
+    let created = parse_issues(&format!("[{body}]")).ok().and_then(|issues| issues.first().map(|i| i.created_at));
+    Ok((text("state"), text("state_reason"), created))
 }
 
 /// The login that merged pull request `number` of `repo` ("" when GitHub names none), if it was merged.

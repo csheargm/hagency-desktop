@@ -14,6 +14,9 @@ use ::hagency::issue_watch::{Issue, PullRequest};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+pub(crate) use super::tracker_lines::{hold_of, terminal_line};
+use super::tracker_lines::{pr_line, waiting_line};
+
 /// GitHub's and this device's clocks may differ by this much (a cannot-fix
 /// comment or pull request this much older than the hand-off still counts).
 pub(super) const CLOCK_SLACK_SECS: i64 = 120;
@@ -60,8 +63,9 @@ pub(crate) trait TrackIo {
     /// The Agent's merged pull request linking `track`'s issue, opened during
     /// its current hand-off, for a record that never saw one open (opened and merged between two checks).
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String>;
-    /// A tracked issue missing from the open list: GitHub's own answer.
-    async fn closed_state(&self, number: i64) -> Result<IssueFact, String>;
+    /// A tracked issue missing from the open list: GitHub's own answer, and
+    /// when it was opened (`None`: unreadable).
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<i64>), String>;
     /// The Agent's cannot-fix comment during the current attempt.
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String>;
     async fn follow_pr(&self, pr: &PullRequest) -> Result<Followed, String>;
@@ -128,7 +132,11 @@ async fn step(io: &impl TrackIo, inputs: &Inputs<'_>, track: &Track, holds: &mut
     let issue = inputs.open_issues.iter().find(|i| i.number == track.number && !i.is_pr);
     let fact = match issue {
         Some(_) => IssueFact::Open,
-        None => io.closed_state(track.number).await?,
+        None => match io.closed_state(track.number).await? {
+            // Beyond the open list, older than the entry (or of unknown age): never advanced (GPT batch review).
+            (IssueFact::Open, created) if created.unwrap_or(i64::MIN) < inputs.since => return Ok(None),
+            (fact, _) => fact,
+        },
     };
     let open_pr = inputs.own_pulls.iter().find(|p| links_issue(p, inputs.repo, track.number));
     let cannot_fix = fact == IssueFact::Open && open_pr.is_none() && io.cannot_fix(track).await?;
@@ -250,51 +258,3 @@ pub const GAVE_UP: &str = "⚠️ #{number}: no pull request after {max} hand-of
 pub const CANNOT_FIX: &str = "🙋 #{number}: the Agent says it cannot fix this — see its comment on the issue: {url}";
 pub const NEEDS_YOU: &str = "👀 PR #{pr} for #{number} needs your review and merge approval: {url}";
 pub const FIXED: &str = "✅ #{number} fixed → PR #{pr} merged";
-
-/// What a followed pull request waits for, in the words the room already saw.
-pub(crate) fn hold_of(followed: &Followed) -> Option<String> {
-    match followed {
-        Followed::Held(missing) => Some(missing.iter().map(|m| m.label()).collect::<Vec<_>>().join("; ")),
-        Followed::NeedsPerson => Some("a person's review and merge approval".to_owned()),
-        Followed::WaitingCi => Some("CI".to_owned()),
-        _ => None,
-    }
-}
-
-fn waiting_line(track: &Track) -> String {
-    let n = track.number.to_string();
-    match (track.state, track.pr) {
-        (State::HandedOff, _) if track.attempts > 1 => crate::i18n::format("#{number} retrying ({attempt}/{max})", &[("number", n), ("attempt", track.attempts.to_string()), ("max", MAX_ATTEMPTS.to_string())]),
-        (State::HandedOff, _) => crate::i18n::format("#{number} waiting for a pull request", &[("number", n)]),
-        (_, Some(pr)) => crate::i18n::format("#{number} PR #{pr} closed unmerged — needs a person", &[("number", n), ("pr", pr.to_string())]),
-        _ => crate::i18n::format("#{number} waiting", &[("number", n)]),
-    }
-}
-fn pr_line(number: i64, pr: u64, followed: Followed) -> String {
-    let args = [("number", number.to_string()), ("pr", pr.to_string())];
-    let template = match followed {
-        Followed::Held(missing) => {
-            let needs = missing.iter().map(|m| crate::i18n::tr(m.label())).collect::<Vec<_>>().join("; ");
-            let [number, pr] = args;
-            return crate::i18n::format("#{number} PR #{pr} needs: {needs}", &[number, pr, ("needs", needs)]);
-        }
-        Followed::Unreachable(failures) => {
-            let [number, pr] = args;
-            return crate::i18n::format("#{number} PR #{pr} can't reach GitHub ({failures} checks in a row), retrying", &[number, pr, ("failures", failures.to_string())]);
-        }
-        Followed::WaitingCi => "#{number} PR #{pr} waiting for CI",
-        Followed::Merging => "#{number} PR #{pr} approved, merging",
-        Followed::Requested => "#{number} PR #{pr} in review",
-        Followed::NeedsPerson => "#{number} PR #{pr} waiting for your review",
-        Followed::Draft => "#{number} PR #{pr} is a draft",
-    };
-    crate::i18n::format(template, &args)
-}
-pub(crate) fn terminal_line(track: &Track) -> Option<String> {
-    let n = track.number.to_string();
-    match track.state {
-        State::Failed => Some(crate::i18n::format("#{number} gave up after {max} attempts", &[("number", n), ("max", MAX_ATTEMPTS.to_string())])),
-        State::NeedsHuman => Some(crate::i18n::format("#{number} needs a person", &[("number", n)])),
-        _ => None,
-    }
-}

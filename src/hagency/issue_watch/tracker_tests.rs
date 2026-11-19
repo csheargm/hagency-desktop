@@ -25,6 +25,8 @@ pub(super) struct Fake {
     pub(super) handed: RefCell<Vec<(i64, u32)>>,
     pub(super) followed: RefCell<Vec<u64>>,
     pub(super) closed: RefCell<HashMap<i64, IssueFact>>,
+    /// When a looked-up issue was opened, by issue (else [`T0`]); `None`: unreadable.
+    pub(super) created: RefCell<HashMap<i64, Option<i64>>>,
     pub(super) cannot_fix: RefCell<HashSet<i64>>,
     pub(super) peer: bool,
     pub(super) merged: RefCell<HashSet<u64>>,
@@ -101,8 +103,9 @@ impl TrackIo for Fake {
     async fn merged_linking_pr(&self, track: &Track) -> Result<Option<u64>, String> {
         Ok(self.merged_link.borrow().get(&track.number).copied())
     }
-    async fn closed_state(&self, number: i64) -> Result<IssueFact, String> {
-        self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())
+    async fn closed_state(&self, number: i64) -> Result<(IssueFact, Option<i64>), String> {
+        let fact = self.closed.borrow().get(&number).cloned().ok_or_else(|| "not found".to_owned())?;
+        Ok((fact, self.created.borrow().get(&number).copied().unwrap_or(Some(T0))))
     }
     async fn cannot_fix(&self, track: &Track) -> Result<bool, String> {
         Ok(self.cannot_fix.borrow().contains(&track.number))
@@ -254,6 +257,24 @@ fn joining_a_room_never_adopts_an_issue_opened_before_the_work_list_entry() {
     let inputs = Inputs { tracks: &tracks, now: T0 + 100 * HANDOFF_TIMEOUT_SECS, ..inputs };
     let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
     assert!(out.lines.iter().all(|l| !l.contains("#31")) && fake.handed.borrow().is_empty(), "{:?}", out.lines);
+}
+
+/// GPT batch review: an old issue beyond the open listing's page cap is looked
+/// up alone; its creation date (or an unreadable one) keeps it from advancing.
+#[test]
+fn an_old_issue_beyond_the_open_listing_is_not_advanced_either() {
+    let later = T0 + 100 * HANDOFF_TIMEOUT_SECS;
+    for (created, advanced) in [(Some(T0 - 2 * 86_400), false), (None, false), (Some(T0 + 1), true)] {
+        let fake = Fake::default();
+        first_hand_off(&fake, 31);
+        fake.closed.borrow_mut().insert(31, IssueFact::Open);
+        fake.created.borrow_mut().insert(31, created);
+        let (tracks, seen) = (fake.tracks(), HashSet::from([31]));
+        let inputs = Inputs { repo: REPO, now: later, tracks: &tracks, seen: &seen, since: T0, open_issues: &[], own_pulls: &[] };
+        let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+        let touched = out.lines.iter().chain(&out.errors).any(|l| l.contains("#31"));
+        assert_eq!(touched, advanced, "{created:?}: {:?} {:?}", out.lines, out.errors);
+    }
 }
 
 #[test]

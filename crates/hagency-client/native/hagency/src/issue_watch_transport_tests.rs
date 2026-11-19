@@ -1,7 +1,7 @@
 //! A GitHub request that cannot connect is reported as "can't reach GitHub"
 //! with its whole cause chain; the same client still works once the server
 //! answers.
-use super::{FetchError, UNREACHABLE, fetch_open_issues, new_client};
+use super::{FetchError, UNREACHABLE, fetch_issue_state, fetch_open_issues, new_client};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -85,4 +85,22 @@ async fn a_public_status_read_sends_no_token_and_an_own_read_does() {
     let (api, server) = recording([open, closed]).await;
     super::fetch_status_items(&new_client(), &api, "owner/repo", Some("tok"), 0).await.unwrap();
     assert!(server.await.unwrap().iter().all(|r| r.contains("authorization: bearer tok")));
+}
+
+/// GPT batch review: an issue looked up alone (beyond the open listing's
+/// page cap) carries its creation date, so the tracker never advances one
+/// opened before its work-list entry.
+#[tokio::test]
+async fn an_issue_looked_up_alone_carries_its_creation_date() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let body = r#"{"number":31,"html_url":"u","title":"Old","state":"open","state_reason":null,"created_at":"2026-11-16T00:00:00Z"}"#;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = socket.read(&mut [0u8; 4096]).await.unwrap();
+        socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    });
+    let state = fetch_issue_state(&new_client(), &api, "owner/repo", 31, "t").await.unwrap();
+    server.await.unwrap();
+    assert_eq!(state, ("open".to_owned(), String::new(), Some(1_794_787_200)));
 }
