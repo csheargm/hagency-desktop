@@ -124,7 +124,7 @@ fn read_scope(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<Str
 /// The repositories of `proposal`'s Room a shared Agent reviews there: the
 /// Room's repository set ([`read_scope`], ADR 0023), the same set its
 /// read-only queries may name.
-fn room_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
+pub(crate) fn room_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<String>> {
     read_scope(db, proposal)
 }
 

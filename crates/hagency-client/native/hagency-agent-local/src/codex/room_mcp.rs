@@ -30,6 +30,12 @@ use tokio::{
 pub(super) const SERVER: &str = "hagency_matrix";
 const MAX_BODY: usize = 16 * 1024;
 const CALL_WAIT: Duration = Duration::from_secs(65);
+/// A repo step may wait for its owner's card before it runs (`repo_cards`).
+pub(super) const REPO_STEP_WAIT: Duration = Duration::from_secs(super::repo_cards::CARD_WAIT.as_secs() + crate::watch_trust::codex_step::STEP_TIMEOUT.as_secs() + 5);
+/// Codex's own wait for one Room MCP call: past the longest host-side wait.
+pub(super) const TOOL_TIMEOUT_SECS: u64 = REPO_STEP_WAIT.as_secs() + 10;
+/// How long one connection (one request) may stay open: past Codex's own wait.
+pub(super) const CONNECTION_LIFETIME: Duration = Duration::from_secs(TOOL_TIMEOUT_SECS + 10);
 type Key = (String, String);
 type Shared = Arc<Mutex<Option<Active>>>;
 struct Active {
@@ -98,7 +104,7 @@ impl Bridge {
             .collect::<String>();
         let mut config = json!({"url":format!("http://{authority}/matrix"),
             "http_headers":{"Authorization":format!("Bearer {token}")},
-            "enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":75});
+            "enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":TOOL_TIMEOUT_SECS});
         for definition in definitions(tools) {
             config["tools"][definition["name"].as_str().expect("host tool name")] =
                 json!({"approval_mode":"approve"});
@@ -122,9 +128,11 @@ impl Bridge {
                                 serve(req, state.clone(), token.clone(), authority.clone(), tools)
                             });
                             // No idle client can retain a connection indefinitely. The
-                            // MCP client may reconnect; this endpoint is stateless.
-                            let _ = tokio::time::timeout(Duration::from_secs(90),
-                                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(socket), service)).await;
+                            // MCP client may reconnect; this endpoint is stateless. One
+                            // request per connection, so its bound is that call's own
+                            // longest wait (a repo step's owner card, GPT review).
+                            let _ = tokio::time::timeout(CONNECTION_LIFETIME,
+                                hyper::server::conn::http1::Builder::new().keep_alive(false).serve_connection(TokioIo::new(socket), service)).await;
                         });
                     }
                 }
@@ -339,7 +347,7 @@ async fn call(state: &Shared, tools: RoomTools, params: &Value) -> Value {
         Err(reason) => return refused(reason),
     };
     let Some(operation) = operation else {
-        return match super::repo_steps::forward(repo_steps, &params["arguments"], cancel, CALL_WAIT).await {
+        return match super::repo_steps::forward(repo_steps, &params["arguments"], cancel, REPO_STEP_WAIT).await {
             Ok((text, is_error)) => text_result(RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable())),
             Err(reason) => refused(reason),
         };

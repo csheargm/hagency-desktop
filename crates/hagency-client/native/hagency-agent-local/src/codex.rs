@@ -15,6 +15,7 @@ use tokio::{
 };
 mod questions;
 mod room_mcp;
+mod repo_cards;
 mod repo_steps;
 mod approvals;
 mod controls;
@@ -1538,7 +1539,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         let mut repo_open = room_turn.as_ref().is_some_and(|room| room.take_repo_steps(repo_sender));
         let mut repo_running = repo_steps::Running::default();
         let repo_turn = repo_steps::Turn { owner, scope, dispatch, workspace: cwd, enabled: self.native_sandbox() == NativeSandbox::RoomFolder,
-            token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()) };
+            token: self.bound_profile.as_ref().and_then(|p| p.environment.agent_github_token()), queue: Some(queue) };
         if let Some(stream) = &mut stream {
             stream.activate();
         }
@@ -1737,6 +1738,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         match call {
                             Some(call) => repo_steps::start(ledger, &repo_turn, call, &mut repo_running).await,
                             None => repo_open = false,
+                        }
+                        continue;
+                    }
+                    // A repo step's owner card answered (e2e 8, Nov 18; see `repo_cards`).
+                    answer = repo_cards::next(&mut repo_running), if !repo_running.cards.is_empty() && !controls.holds_answers() => {
+                        if let Some(answer) = answer {
+                            repo_cards::decided(ledger, &repo_turn, answer, &mut repo_running);
                         }
                         continue;
                     }
