@@ -47,6 +47,13 @@ fn birds_ledger(dir: &std::path::Path, paused: bool) -> Ledger {
     ledger
 }
 
+/// bird-claude's create of PR #115 at 20:11:24 by `agent`, held and run, as the ledger records it.
+fn created_by(ledger: &mut Ledger, dir: &std::path::Path, agent: &str) {
+    let create = format!("gh pr create --repo {SANDBOX} --head bird-claude/issue-114-readme-thanks --draft --title 'docs: add a Thanks line to README' --body 'Closes #114'");
+    ledger.hold_create("toolu_create", &bash(&create, dir, agent), 1_795_061_484).unwrap();
+    ledger.settle_tool_call("toolu_create", true).unwrap();
+}
+
 /// Request `dispatch` received `body`, tagged as the ledger tags loop notices.
 fn received(ledger: &Ledger, dispatch: &str, body: &str) {
     let (step, pr, head, to) = super::step_resend::loop_step_of(body).unwrap();
@@ -73,6 +80,8 @@ async fn pr_115_the_loops_reviewer_is_recorded_on_the_exact_head_it_was_asked_fo
     assert!(ledger.loop_may_work("bird-codex", ROOM).is_err(), "the live setting: bird-codex does not work here");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &step, "unasked", 11, &Pr115).await, None, "not asked by the loop: the card asks");
     received(&ledger, &step.dispatch, ASKED);
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &step, "unknown", 11, &Pr115).await, None, "who created it is unknown: the card asks");
+    created_by(&mut ledger, temp.path(), "bird-claude");
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &step, "codex:step-1", 11, &Pr115).await, Some(true), "the gate judges and allows it");
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "nothing counts before the post ran");
     ledger.settle_agent_review("codex:step-1", true).unwrap();
@@ -81,7 +90,8 @@ async fn pr_115_the_loops_reviewer_is_recorded_on_the_exact_head_it_was_asked_fo
 }
 
 /// The request binds the review: another request, another head, another
-/// addressee or a room member's request records nothing.
+/// addressee, a room member's request, or the asked Agent being the
+/// pull request's own creator records nothing.
 #[tokio::test]
 async fn pr_115_a_request_for_another_head_turn_or_agent_records_nothing() {
     let temp = tempfile::tempdir().unwrap();
@@ -90,6 +100,7 @@ async fn pr_115_a_request_for_another_head_turn_or_agent_records_nothing() {
     received(&ledger, "d-other", ASKED);
     received(&ledger, "d-head", &ASKED.replace(HEAD, &"3".repeat(40)));
     received(&ledger, "d-agent", &ASKED.replace("agt_01m7k6ws4k2z06ysr6shrxeqzf", "agt_someone_else"));
+    created_by(&mut ledger, temp.path(), "bird-claude");
     for dispatch in ["d-bird-codex", "d-head", "d-agent"] {
         let asked = ToolProposal { dispatch: dispatch.into(), ..step.clone() };
         assert_eq!(gate::auto_answer(&mut ledger, OWNER, &asked, dispatch, 11, &Pr115).await, None, "{dispatch}");
@@ -97,6 +108,13 @@ async fn pr_115_a_request_for_another_head_turn_or_agent_records_nothing() {
     received(&ledger, "d-member", ASKED);
     let member = ToolProposal { dispatch: "d-member".into(), scope: crate::Scope { requester: "@mallory:example.org".into(), ..step.scope.clone() }, ..step };
     assert_eq!(gate::auto_answer(&mut ledger, OWNER, &member, "d-member", 11, &Pr115).await, None, "only the owner's loop asks");
+    // GPT review: the asked reviewer that created the pull request itself is no reviewer.
+    let own = tempfile::tempdir().unwrap();
+    let mut authored = birds_ledger(own.path(), false);
+    created_by(&mut authored, own.path(), "bird-codex");
+    let step = repo_step(VERDICT, own.path(), "bird-codex");
+    received(&authored, &step.dispatch, ASKED);
+    assert_eq!(gate::auto_answer(&mut authored, OWNER, &step, "self", 11, &Pr115).await, None, "its own pull request");
     for call in ["d-bird-codex", "d-head", "d-agent", "d-member"] {
         ledger.settle_agent_review(call, true).unwrap();
     }

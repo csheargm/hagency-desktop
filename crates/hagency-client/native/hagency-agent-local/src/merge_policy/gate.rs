@@ -309,7 +309,7 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         return None;
     }
     let view = source.pull_request(&command).await?;
-    if review && !super::admission::works_or_was_asked(ledger, proposal, &view) {
+    if review && !super::admission::works_or_was_asked(ledger, proposal, (command.number, &view)) {
         return None;
     }
     if !qualifies(ledger, &command, &view, (&agent, &proposal.scope.room), source).await? {
