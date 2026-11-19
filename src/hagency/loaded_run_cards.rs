@@ -32,6 +32,10 @@ impl Loaded {
     fn key(&self, generation: u64) -> Key {
         (generation, self.card.clone(), self.edit_id().to_owned())
     }
+    /// The request the run answers (the card is drawn on it).
+    fn request(&self) -> &str {
+        self.original.0["content"]["im.hagency.agent_run"]["eventId"].as_str().unwrap_or_default()
+    }
     /// The revision the card has once its latest edit is applied.
     fn revision(&self) -> u64 {
         let card = |v: &Value| v["im.hagency.agent_run"]["revision"].as_u64();
@@ -92,7 +96,7 @@ fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
 /// Marks `card` handed over only once the store holds it with its latest
 /// edit; otherwise a later timeline update tries it again (`MAX_TRIES`).
 fn settle(generation: u64, room: &str, card: &Loaded) {
-    let stored = super::run_controls::stored_revision(room, &card.card).is_some_and(|r| r >= card.revision());
+    let stored = stored(room, card);
     let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
     let state = handed.entry(card.key(generation)).or_insert(Handed::Failed(0));
     *state = match *state {
@@ -115,20 +119,49 @@ async fn fetch_edit(room: &Room, card: &Loaded) -> Option<Admit> {
     let id = OwnedEventId::try_from(card.edit_id()).ok()?;
     // A failed lookup falls back to the timeline's JSON; a card left unstored
     // is retried on the next timeline update (`settle`).
-    let event = room.load_or_fetch_event(&id, None).await.ok()?;
+    let event = match room.load_or_fetch_event(&id, None).await {
+        Ok(event) => event,
+        Err(e) => {
+            makepad_widgets::log!("Loaded run cards: edit {id} not in the event cache ({e}); using the timeline's copy");
+            return None;
+        }
+    };
     Some((json(event.raw())?, event.encryption_info().map(|info| (**info).clone())))
 }
 
 /// Admits the run cards among `items` (a room timeline's loaded items).
 pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
-    let cards = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
+    let cards: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
     let generation = super::pending_questions::generation();
+    let found = cards.len();
     let cards = claim(generation, cards);
+    makepad_widgets::log!("Loaded run cards: ingest {} with {} items: {found} run cards, {} to admit (generation {generation})",
+        room.room_id(), items.len(), cards.len());
     if cards.is_empty() {
         return;
     }
     let room = room.clone();
-    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(async move {
+    crate::sliding_sync::spawn_async_task(super::run_controls::as_history(admit_with_retries(room, generation, cards)));
+}
+
+/// Pauses before each try: a card can fail at start-up while the room's
+/// state or the login is still settling, with no later timeline update.
+const TRIES_AFTER: [std::time::Duration; 3] = [
+    std::time::Duration::ZERO, std::time::Duration::from_secs(3), std::time::Duration::from_secs(15),
+];
+
+fn stored(room: &str, card: &Loaded) -> bool {
+    super::run_controls::stored_revision(room, &card.card).is_some_and(|r| r >= card.revision())
+}
+
+/// Admits `cards`, trying the ones not stored again after a pause.
+async fn admit_with_retries(room: Room, generation: u64, mut cards: Vec<Loaded>) {
+    let room_id = room.room_id().to_owned();
+    for (attempt, pause) in TRIES_AFTER.iter().enumerate() {
+        tokio::time::sleep(*pause).await;
+        if super::pending_questions::generation() != generation {
+            break;
+        }
         let mut changed = false;
         for card in &cards {
             let mut events = vec![card.original.clone()];
@@ -136,12 +169,23 @@ pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
                 events.extend(edit_to_admit(card, fetch_edit(&room, card).await));
             }
             changed |= super::pending_questions::admit_loaded(generation, &room, events).await;
-            settle(generation, room.room_id().as_str(), card);
+            makepad_widgets::log!("Loaded run cards: try {} {} (edit {}) stored_revision={:?}, wanted {}, shown on request {}: {} card(s)",
+                attempt + 1, card.card, card.edit_id(), super::run_controls::stored_revision(room_id.as_str(), &card.card),
+                card.revision(), card.request(), super::run_controls::for_event(&room_id, card.request(), true).len());
         }
+        makepad_widgets::log!("Loaded run cards: {room_id} try {} done, changed={changed}{}", attempt + 1,
+            if changed { ", PendingQuestionsChanged posted" } else { "" });
         if changed {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
-    }));
+        let (done, left): (Vec<_>, Vec<_>) = cards.into_iter().partition(|c| stored(room_id.as_str(), c));
+        done.iter().for_each(|c| settle(generation, room_id.as_str(), c));
+        cards = left;
+        if cards.is_empty() {
+            return;
+        }
+    }
+    cards.iter().for_each(|c| settle(generation, room_id.as_str(), c));
 }
 
 #[cfg(test)]
