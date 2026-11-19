@@ -3870,5 +3870,6 @@
   "removed {name} as maintainer.": "removed {name} as maintainer.",
   "made {name} an owner.": "made {name} an owner.",
   "removed {name} as owner.": "removed {name} as owner.",
-  "updated who may change agent work settings.": "updated who may change agent work settings."
+  "updated who may change agent work settings.": "updated who may change agent work settings.",
+  "Hagency added {invitee} to this room.": "Hagency added {invitee} to this room."
 }

@@ -3870,5 +3870,6 @@
   "removed {name} as maintainer.": "取消了 {name} 的维护者身份。",
   "made {name} an owner.": "将 {name} 设为所有者。",
   "removed {name} as owner.": "取消了 {name} 的所有者身份。",
-  "updated who may change agent work settings.": "更新了可更改 Agent 工作设置的成员。"
+  "updated who may change agent work settings.": "更新了可更改 Agent 工作设置的成员。",
+  "Hagency added {invitee} to this room.": "Hagency 已将 {invitee} 添加到此房间。"
 }
