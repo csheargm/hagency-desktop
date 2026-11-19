@@ -57,11 +57,11 @@ pub fn approval_line(reviewer: Option<&Reviewer>, verdict: bool, counted: u64) -
     const ELSEWHERE: &str = "but another owner's Agent's review is recorded only on that owner's device";
     const OWN_AGENTS: &str = "Merge it yourself, or ask one of your own Agents to review it.";
     match reviewer {
-        Some(r) if !r.own && verdict => format!("{lead}. {} approved it on GitHub, {ELSEWHERE}, so it does not count here. {OWN_AGENTS}", r.label()),
+        Some(r) if !r.own && verdict => format!("{lead}. {} was asked to review it and an approval of this version is on GitHub, {ELSEWHERE}, so it does not count here. {OWN_AGENTS}", r.label()),
         Some(r) if !r.own => format!("{lead}. {} was asked to review it, {ELSEWHERE}, so it would not count here. {OWN_AGENTS}", r.label()),
-        Some(r) if verdict => format!("{lead}. {name} approved it on GitHub, but not through Hagency, so it was not recorded, even after {name} was asked again. Merge it yourself, or ask {name} to review it again.", name = r.name),
-        Some(r) => format!("{lead}. {} was asked to review it, and no approval of this version is recorded yet. Merge it yourself, or wait for the review.", r.name),
-        None => format!("{lead}. None is recorded for this version yet. Merge it yourself, or ask an Agent in the room to review it."),
+        Some(r) if verdict => format!("{lead}. An approval of this version is on GitHub, but none that counts here is recorded, even after {name} was asked again. Merge it yourself, or ask {name} to review it again.", name = r.name),
+        Some(r) => format!("{lead}. {} was asked to review it, and no approval from it is recorded for this version yet. Merge it yourself, or wait for the review.", r.name),
+        None => format!("{lead}. No further approval of this version is recorded yet. Merge it yourself, or ask an Agent in the room to review it."),
     }
 }
 

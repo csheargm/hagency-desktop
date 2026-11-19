@@ -57,7 +57,7 @@ fn pr_121_with_autonomy_the_hold_names_the_reviewer_and_why_it_does_not_count() 
     let Gate::Hold(missing) = gate else { panic!("{gate:?}") };
     assert_eq!(missing[0].0, Missing::Approval);
     assert_eq!(bodies.len(), 1);
-    let line = "an Agent approval that counts here. bird-codex (bird's agent) approved it on GitHub, but another owner's Agent's review is recorded only on that owner's device, so it does not count here. Merge it yourself, or ask one of your own Agents to review it.";
+    let line = "an Agent approval that counts here. bird-codex (bird's agent) was asked to review it and an approval of this version is on GitHub, but another owner's Agent's review is recorded only on that owner's device, so it does not count here. Merge it yourself, or ask one of your own Agents to review it.";
     assert!(bodies[0].contains(line), "{}", bodies[0]);
     for jargon in ["merge gate", "head", "…", "was not posted through", "needs 1 approval(s)"] {
         assert!(!bodies[0].contains(jargon), "{jargon}: {}", bodies[0]);
@@ -74,7 +74,7 @@ fn without_a_verdict_or_a_reviewer_nothing_is_said_ready() {
     let elsewhere = json!({"decision": "human", "head": "2".repeat(40), "reason": ASSIST_REASON});
     assert_eq!(for_hold(live(elsewhere), (&verdict(), "csheargm"), Some(&bird_codex(Some("bird"))))["kind"], "approvals", "another head's answer never counts");
     let mallory = for_hold(live(assist()), (&verdict(), "mallory"), Some(&bird_codex(Some("bird"))));
-    assert!(mallory["approvalLine"].as_str().unwrap().contains("was asked to review it"), "a verdict by another login is not the reviewer's");
+    assert!(mallory["approvalLine"].as_str().unwrap().contains("was asked to review it, but"), "a verdict by another login is not the reviewer's");
     let ci = json!({"decision": "human", "head": HEAD, "kind": "ci", "reason": "CI is red"});
     assert_eq!(for_hold(ci.clone(), (&verdict(), "csheargm"), Some(&bird_codex(Some("bird")))), ci, "only a missing approval");
 }
@@ -84,8 +84,10 @@ fn this_owners_own_reviewer_is_named_plainly() {
     let anna_codex = Reviewer { name: "anna-codex".into(), owner: None, own: true };
     let ready = for_hold(live(assist()), (&verdict(), "csheargm"), Some(&anna_codex));
     assert_eq!(ready["reviewedBy"], "anna-codex");
-    assert_eq!(approval_line(Some(&anna_codex), true, 0), "an Agent approval that counts here. anna-codex approved it on GitHub, but not through Hagency, so it was not recorded, even after anna-codex was asked again. Merge it yourself, or ask anna-codex to review it again.");
+    assert_eq!(approval_line(Some(&anna_codex), true, 0), "an Agent approval that counts here. An approval of this version is on GitHub, but none that counts here is recorded, even after anna-codex was asked again. Merge it yourself, or ask anna-codex to review it again.");
     assert!(approval_line(Some(&anna_codex), false, 1).starts_with("more Agent approvals (1 counted so far). anna-codex was asked to review it"));
+    // GPT review P2: a counted approval is never contradicted by "none is recorded".
+    assert_eq!(approval_line(None, false, 1), "more Agent approvals (1 counted so far). No further approval of this version is recorded yet. Merge it yourself, or ask an Agent in the room to review it.");
 }
 
 #[test]

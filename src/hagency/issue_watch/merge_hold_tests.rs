@@ -89,7 +89,7 @@ fn pr_36_an_unrecorded_approval_is_named_once_instead_of_waiting_silently() {
     assert_eq!(bodies.len(), 1, "one notice, not one per check: {bodies:?}");
     assert!(bodies[0].contains("PR #36 in csheargm/hagency-demo-sandbox at ad395c6d9cde cannot be merged yet"), "{}", bodies[0]);
     // Plain words, never the gate's own reason (PR #121).
-    assert!(bodies[0].contains("an Agent approval that counts here. None is recorded for this version yet. Merge it yourself"), "{}", bodies[0]);
+    assert!(bodies[0].contains("an Agent approval that counts here. No further approval of this version is recorded yet. Merge it yourself"), "{}", bodies[0]);
     assert!(!bodies[0].contains(NO_APPROVAL) && !bodies[0].contains("merge gate"), "{}", bodies[0]);
     assert!(bodies[0].ends_with("https://github.com/csheargm/hagency-demo-sandbox/pull/36"));
 }
