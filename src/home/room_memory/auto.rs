@@ -49,6 +49,41 @@ struct State {
 const ROSTER_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
 static ROSTER_LOADING: AtomicBool = AtomicBool::new(false);
+/// After a failed listing read, no new read for 30 s, doubling to 5 min:
+/// every card's clock tick asks for it (GPT P2, Nov 19), so one shared wait.
+static ROSTER_BACKOFF: Mutex<Backoff> = Mutex::new(Backoff::new());
+const BACKOFF_FIRST: Duration = Duration::from_secs(30);
+const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
+
+/// When the next Agent listing read may start, after failures.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Backoff {
+    failures: u32,
+    until: Option<Instant>,
+}
+impl Backoff {
+    pub(crate) const fn new() -> Self {
+        Self { failures: 0, until: None }
+    }
+    /// Whether a read may start at `now`.
+    pub(crate) fn allows(&self, now: Instant) -> bool {
+        self.until.is_none_or(|until| now >= until)
+    }
+    /// A read failed at `now`: wait 30 s, then 60 s, ... up to 5 min.
+    pub(crate) fn failed(&mut self, now: Instant) {
+        let wait = BACKOFF_FIRST.saturating_mul(1 << self.failures.min(8)).min(BACKOFF_MAX);
+        self.failures = self.failures.saturating_add(1);
+        self.until = Some(now + wait);
+    }
+    /// A read succeeded: the next one may start at once.
+    pub(crate) fn succeeded(&mut self) {
+        *self = Self::new();
+    }
+}
+fn backoff() -> MutexGuard<'static, Backoff> {
+    // Plain data: a panic elsewhere cannot leave it half-written.
+    ROSTER_BACKOFF.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 fn lock() -> MutexGuard<'static, State> {
     // Plain data: a panic elsewhere cannot leave it half-written.
     STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -152,8 +187,9 @@ fn own_agent(room: &RoomId, me: Option<&str>, author: &str) -> Option<bool> {
 
 /// Reads this account's Agent listing once, then re-checks the room's cards.
 /// The requester's waiting line asks for it too (`agent_run_requester`).
+/// One read at a time, and none while backing off after a failure.
 pub(crate) fn load_roster(room: &RoomId) {
-    if ROSTER_LOADING.swap(true, Ordering::SeqCst) {
+    if !backoff().allows(Instant::now()) || ROSTER_LOADING.swap(true, Ordering::SeqCst) {
         return;
     }
     let room = room.to_owned();
@@ -169,12 +205,16 @@ pub(crate) fn load_roster(room: &RoomId) {
             lock().roster_at = Some((owner.to_string(), Instant::now()));
             Ok(())
         }.await;
+        match &result {
+            Ok(()) => backoff().succeeded(),
+            Err(_) => backoff().failed(Instant::now()),
+        }
         ROSTER_LOADING.store(false, Ordering::SeqCst);
         match result {
             Ok(()) => makepad_widgets::Cx::post_action(MemoryChanged { room_id: room }),
             // Silent on purpose: without the listing nothing is accepted
             // automatically (fail closed) and the card keeps its manual Accept;
-            // the card's next sync (any memory change in the room) asks again.
+            // the card's next sync asks again once the backoff has passed.
             Err(error) => makepad_widgets::warning!("Agent listing for automatic memory Accept unavailable: {error}"),
         }
     });

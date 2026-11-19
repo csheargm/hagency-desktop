@@ -40,10 +40,10 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
     }
     let message = event.content().as_message()?;
     let agent = first_agent(message.mentions()?.user_ids.iter())?;
-    if is_own_loop_notice(room, event.sender(), agent, message.body()) {
-        return None;
-    }
-    let age = age(now_ms(), u64::from(event.timestamp().0))?;
+    let sender = event.sender();
+    let age = waiting_age(now_ms(), u64::from(event.timestamp().0), sender.as_str(), message.body(),
+        || crate::home::agent_ask_badge::is_own_agent(sender, agent),
+        || crate::home::room_memory::auto::load_roster(room))?;
     let pill = match message.msgtype() {
         MessageType::Text(text) => text.formatted.as_ref().and_then(|f| pill_name(&f.body, agent)),
         _ => None,
@@ -116,18 +116,20 @@ fn waits_for_no_card(sender: &str, body: &str, own_agent: bool) -> bool {
     own_agent && ::hagency::issue_watch::automated_requests::is_automated(sender, sender, body)
 }
 
-/// Whether the viewer's own message is its loop's notice to one of its own
-/// Agents. Unknown until this account's Agent listing is read: the line shows
-/// meanwhile (GPT batch review) and the listing is asked for, since nothing
-/// else reads it unless the member list opened (bird's window, Nov 19: the
-/// line counted on after bird-codex had reviewed). The card's clock tick
-/// re-populates the row, so the line goes once the listing arrives.
-fn is_own_loop_notice(room: &OwnedRoomId, sender: &UserId, agent: &UserId, body: &str) -> bool {
-    let (hide, read_listing) = own_notice_decision(sender.as_str(), body, || crate::home::agent_ask_badge::is_own_agent(sender, agent));
-    if read_listing {
-        crate::home::room_memory::auto::load_roster(room);
+/// How long ago a still-waiting request was sent, `None` once its window
+/// passed or for the viewer's loop notice to its own Agent. The age is checked
+/// first: an expired notice never asks for the Agent listing (GPT P2, Nov 19).
+/// Whether the notice is to an own Agent is unknown until the listing is read:
+/// the line shows meanwhile and `read_listing` asks for it, since nothing else
+/// reads it unless the member list opened (bird's window, Nov 19). The card's
+/// clock tick re-populates the row, so the line goes once the listing arrives.
+fn waiting_age(now_ms: u64, sent_ms: u64, sender: &str, body: &str, own_agent: impl FnOnce() -> Option<bool>, read_listing: impl FnOnce()) -> Option<Duration> {
+    let age = age(now_ms, sent_ms)?;
+    let (hide, read) = own_notice_decision(sender, body, own_agent);
+    if read {
+        read_listing();
     }
-    hide
+    (!hide).then_some(age)
 }
 
 /// (hide the line, read the Agent listing) for a message: only the viewer's
@@ -216,6 +218,22 @@ mod tests {
         assert_eq!(own_notice_decision(sender, &notice, || Some(index.contains_key(&codex))), (true, false), "then it goes");
         assert_eq!(own_notice_decision(sender, &notice, || Some(false)), (false, false), "another owner's Agent posts its card");
         assert_eq!(own_notice_decision(sender, "@bird-codex please review PR #132", || panic!("not consulted")), (false, false), "a typed request still waits");
+    }
+
+    /// GPT P2, Nov 19: the listing was asked for before the age check, so
+    /// expired notices kept triggering reads on every clock tick.
+    #[test]
+    fn an_expired_notice_never_reads_the_listing() {
+        use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+        let codex = OwnedUserId::try_from("@_hagency_bird_bird-codex:localhost:8452").unwrap();
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into() };
+        let notice = LoopNotice::ReviewRequested { target, reviewer: codex }.body();
+        let (sender, expired) = ("@bird:localhost:8452", PENDING_WINDOW.as_millis() as u64 + 1);
+        assert_eq!(waiting_age(expired, 0, sender, &notice, || panic!("not consulted"), || panic!("no read")), None);
+        let mut reads = 0;
+        assert_eq!(waiting_age(5_000, 0, sender, &notice, || None, || reads += 1), Some(Duration::from_secs(5)), "unknown: the line shows");
+        assert_eq!(reads, 1, "and the listing is asked for");
+        assert_eq!(waiting_age(5_000, 0, sender, &notice, || Some(true), || panic!("no read")), None, "own Agent: no line");
     }
 
     /// GPT batch review: the loop's review request to another owner's Agent
