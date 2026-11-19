@@ -159,6 +159,23 @@ fn the_rooms_level_is_named_instead_of_telling_the_agent_to_merge() {
     assert!(assist_and_permission.bodies()[0].contains("cannot be merged yet"), "more than Assist missing: the full list");
 }
 
+/// GPT batch review: an earlier "cannot be merged" autonomy hold (a member's
+/// Agent in an Autonomous room) took `hold-autonomy`, and the Assist "a person
+/// merges" notice for the same head was never said.
+#[test]
+fn the_assist_notice_follows_an_earlier_autonomy_hold_of_the_same_head() {
+    use ::hagency::issue_watch::safeguards::room_autonomy::{ASSIST_REASON, NOT_MAINTAINER_REASON};
+    let fake = Fake::new(human("autonomy", NOT_MAINTAINER_REASON));
+    check(&fake, Some("admin"), true);
+    *fake.readiness.borrow_mut() = human("autonomy", ASSIST_REASON);
+    check(&fake, Some("admin"), true);
+    check(&fake, Some("admin"), true);
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    assert!(bodies[0].contains("cannot be merged yet") && bodies[1].contains("so a person merges it"), "{bodies:?}");
+    assert_eq!(fake.posted.borrow()[1].step(), "hold-autonomy-assist");
+}
+
 #[test]
 fn red_ci_rules_and_a_missing_merge_permission_are_each_named() {
     let cases = [
