@@ -10,7 +10,7 @@ const MAX_NAMED: usize = 8;
 
 /// The Matrix user IDs written in `body`, each once, in order.
 pub fn user_ids_in(body: &str) -> Vec<OwnedUserId> {
-    let edge = |c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '<' | '>');
+    let edge = |c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '<' | '>' | '`');
     let mut out: Vec<OwnedUserId> = Vec::new();
     for word in body.split_whitespace() {
         let word = word.trim_start_matches(|c: char| edge(c) && c != '@').trim_end_matches(edge);
@@ -68,7 +68,11 @@ pub fn with_names<'a>(body: &'a str, names: &[(OwnedUserId, Option<String>)]) ->
         };
         let name = name.as_deref().map(one_line_name);
         let label = super::mention_text::user_label(id, name.as_deref());
-        if spans.iter().any(|span| span.contains(&i)) { out.extend(label.chars().filter(|&c| c != '`')); }
+        if spans.iter().any(|span| span.contains(&i)) {
+            let plain: String = label.chars().filter(|&c| c != '`').collect();
+            // A name of only backticks must not empty the span: the localpart instead.
+            out.push_str(if plain.trim().is_empty() { id.localpart() } else { &plain });
+        }
         else { out.push_str(&super::mention_text::escape_punctuation(label)); }
         i += id.as_str().len();
     }
@@ -143,6 +147,23 @@ mod tests {
         let tick = [(OwnedUserId::try_from(AGENT).unwrap(), Some("a`b".into()))];
         assert_eq!(with_names(&format!("`{AGENT}` x"), &tick), "`ab` x", "a backtick in the name cannot close the span");
         assert_eq!(with_names(&format!("\\`{AGENT}`"), &names), "\\`yue\\-claude`", "an escaped backtick opens no span");
+    }
+
+    /// The rooms-list path from the body alone: IDs found in it, then named.
+    fn preview_of(body: &str, name: &str) -> String {
+        let names: Vec<_> = user_ids_in(body).into_iter().map(|id| (id, Some(name.to_owned()))).collect();
+        let msg = matrix_sdk::ruma::events::room::message::MessageType::text_plain(body);
+        crate::thread_reply_preview::escaped_plain_line(&msg, &names).unwrap()
+    }
+
+    /// GPT review, Nov 19: "`@yue:hs.test`" kept its backticks on the token,
+    /// so the ID was never resolved; a name of only backticks emptied the span.
+    #[test]
+    fn a_compact_code_span_mention_is_resolved_and_never_emptied() {
+        assert_eq!(user_ids_in("ping `@yue:hs.test`").iter().map(|u| u.to_string()).collect::<Vec<_>>(), ["@yue:hs.test"]);
+        assert_eq!(preview_of("ping `@yue:hs.test` now", "yue-claude"), "ping yue-claude now");
+        assert_eq!(preview_of("ping `@yue:hs.test` now", "```"), "ping yue now", "the localpart, not an empty span");
+        assert_eq!(preview_of("ping `@yue:hs.test` now", "` `"), "ping yue now");
     }
 
     #[test]
