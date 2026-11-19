@@ -7,32 +7,30 @@ impl CreateAgentDialog {
     /// first when it lists repositories; otherwise the Agent is created now.
     pub(super) fn create(&mut self, cx: &mut Cx) {
         if self.busy { return; }
-        if let Err(reason) = self.state.spec(quick_setup::default_spec) {
-            self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(reason));
-            return;
-        }
+        let spec = match self.state.spec(quick_setup::default_spec) {
+            Ok(spec) => spec,
+            Err(reason) => return self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(reason)),
+        };
         let plan = match self.work_plan(cx) {
             Ok(plan) => plan,
             Err(reason) => { self.view.label(cx, ids!(work_result)).set_text(cx, &reason); return; }
         };
         let checking = !plan.wanted.is_empty();
         self.work = Some(plan.clone());
+        self.frozen = Some(spec);
         self.busy = true;
         self.render_create(cx);
         if checking { self.start_check(cx, &plan); } else { self.create_now(cx); }
     }
     /// Runs one-click creation with the chosen model and the step's budget.
     pub(super) fn create_now(&mut self, cx: &mut Cx) {
-        let mut spec = match self.state.spec(quick_setup::default_spec) {
+        let spec = match self.submitted_spec() {
             Ok(spec) => spec,
-            Err(reason) => { self.busy = false; self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(reason)); return self.render_create(cx); }
+            Err(reason) => { self.settle(cx); self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr(reason)); return self.render_create(cx); }
         };
-        if let Some(budget) = self.work.as_ref().and_then(|p| p.draft.budget().ok().flatten()) {
-            spec.daily_budget = budget;
-        }
         let service = match Service::for_current() {
             Ok(service) => service,
-            Err(code) => { self.busy = false; self.view.label(cx, ids!(status)).set_text(cx, &code); return self.render_create(cx); }
+            Err(code) => { self.settle(cx); self.view.label(cx, ids!(status)).set_text(cx, &code); return self.render_create(cx); }
         };
         self.busy = true;
         self.render_create(cx);
@@ -44,9 +42,26 @@ impl CreateAgentDialog {
             Cx::post_action(Created { request, identity, result });
         });
     }
+    /// The spec frozen when Create was clicked, with the step's budget: a
+    /// probe that answered during the repository check never changes it
+    /// (Codex shown and clicked, then Claude's probe shifted the list).
+    pub(super) fn submitted_spec(&self) -> Result<simple_agent::SimpleAgentSpec, &'static str> {
+        let mut spec = self.frozen.clone().map_or_else(|| self.state.spec(quick_setup::default_spec), Ok)?;
+        if let Some(budget) = self.work.as_ref().and_then(|p| p.draft.budget().ok().flatten()) {
+            spec.daily_budget = budget;
+        }
+        Ok(spec)
+    }
+    /// Create is no longer busy: the frozen spec goes and late probes apply.
+    pub(super) fn settle(&mut self, cx: &mut Cx) {
+        (self.busy, self.frozen) = (false, None);
+        for (index, models) in std::mem::take(&mut self.late_probes) {
+            self.probe_answered(cx, index, models);
+        }
+    }
     /// Same follow-up as the Agents panel: refresh the tree, then open the private chat.
     pub(super) fn finish(&mut self, cx: &mut Cx, identity: &str, result: &Result<Value, String>) {
-        self.busy = false;
+        self.settle(cx);
         cx.stop_timer(self.timer);
         match result {
             Ok(value) => {

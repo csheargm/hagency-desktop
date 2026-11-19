@@ -97,6 +97,10 @@ pub struct CreateAgentDialog {
     #[rust] state: DialogState,
     #[rust] request: u64,
     #[rust] busy: bool,
+    /// The spec as Create was clicked (name, harness, model, Thinking): submitted unchanged.
+    #[rust] frozen: Option<simple_agent::SimpleAgentSpec>,
+    /// Model probes that answered while Create was busy; applied once it is not.
+    #[rust] late_probes: Vec<(usize, Result<Vec<super::ModelChoice>, String>)>,
     #[rust] timer: Timer,
     /// The "What should it work on?" step as Create read it.
     #[rust] work: Option<work_flow::WorkPlan>,
@@ -159,6 +163,7 @@ impl CreateAgentDialog {
     fn open(&mut self, cx: &mut Cx) {
         self.request = next_request();
         self.busy = false;
+        (self.frozen, self.late_probes) = (None, Vec::new());
         self.name_edited = false;
         self.stem = owner_stem(cx, true);
         let stem = self.stem.clone();
@@ -253,7 +258,7 @@ impl CreateAgentDialog {
     fn render_create(&mut self, cx: &mut Cx) {
         let ready = !self.busy && self.state.spec(quick_setup::default_spec).is_ok();
         self.view.button(cx, ids!(create)).set_enabled(cx, ready);
-        // Create rebuilds the spec after the repository check: the name is frozen while busy.
+        // Create submits the spec frozen at the click: the name is read-only while busy.
         self.view.text_input(cx, ids!(name)).set_is_read_only(cx, self.busy);
         self.view.redraw(cx);
     }

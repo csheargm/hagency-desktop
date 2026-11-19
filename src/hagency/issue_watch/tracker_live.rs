@@ -133,7 +133,7 @@ impl LiveTrack<'_> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
-        review_loop::peer_review::note_review(&io.room(), target, peer, &readiness);
+        review_loop::peer_review::note_review(&io.room(), target, &readiness);
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         if readiness["kind"] != "approvals" || !readiness["head"].is_string() {
             let own = super::approval_note::reviewer_of(&self.peers, super::approval_note::asked_again(peer), &self.room).await;

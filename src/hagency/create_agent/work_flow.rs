@@ -79,7 +79,7 @@ impl CreateAgentDialog {
                         self.create_now(cx);
                     }
                     Err(reason) => {
-                        self.busy = false;
+                        self.settle(cx);
                         self.view.label(cx, ids!(work_result)).set_text(cx, reason);
                         self.view.label(cx, ids!(status)).set_text(cx, crate::i18n::tr("Fix the repositories, or leave them empty, then try again."));
                         self.render_create(cx);
