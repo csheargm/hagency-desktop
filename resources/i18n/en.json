@@ -3876,5 +3876,7 @@
   "And {count} more on {url}": "And {count} more on {url}",
   "#{number} needs a person: no pull request after {tries} tries — {url}": "#{number} needs a person: no pull request after {tries} tries — {url}",
   "#{number} needs a person: the agent said it cannot fix it — {url}": "#{number} needs a person: the agent said it cannot fix it — {url}",
-  "{count} merged": "{count} merged"
+  "{count} merged": "{count} merged",
+  "Hagency ({server}) added {invitee} to this room.": "Hagency ({server}) added {invitee} to this room.",
+  "#{number} needs a person: no pull request after 1 try — {url}": "#{number} needs a person: no pull request after 1 try — {url}"
 }

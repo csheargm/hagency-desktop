@@ -3,7 +3,7 @@
 //! Agent is bound into each ticked room through the Add agent path
 //! (`bring_agent::bind_into_rooms` → `Service::invite_agent_to_room`).
 use super::CreateAgentDialog;
-use crate::hagency::bring_agent::{self, MAX_ROOM_CHOICES, room_choices, ticked_rooms};
+use crate::hagency::bring_agent::{self, MAX_ROOM_CHOICES, room_choices};
 use crate::sliding_sync::{get_client, spawn_async_task};
 use crate::utils::RoomNameId;
 use makepad_widgets::*;
@@ -92,7 +92,8 @@ impl CreateAgentDialog {
     /// Agent is allowed in group rooms and bound into each, asking nothing more.
     pub(super) fn bind_ticked(&self, created: &Value) {
         let Some((id, puppet)) = created_agent(created) else { return };
-        bring_agent::allow_then_bind_into_rooms(id, self.state.name.trim().to_owned(), puppet, ticked_rooms(&self.state.rooms));
+        let rooms = self.work.as_ref().map(|plan| plan.rooms.clone()).unwrap_or_default();
+        bring_agent::allow_then_bind_into_rooms(id, self.state.name.trim().to_owned(), puppet, rooms);
     }
 }
 
@@ -106,6 +107,7 @@ fn created_agent(created: &Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hagency::bring_agent::ticked_rooms;
 
     fn dialog(cx: &mut Cx) -> CreateAgentDialog {
         cx.with_vm(|vm| {
@@ -236,5 +238,18 @@ mod tests {
         let reply = serde_json::json!({"creation":{"agent":{"id":"agt_9","puppetMxid":"@test-helper:s"}}});
         assert_eq!(created_agent(&reply), Some(("agt_9".to_owned(), "@test-helper:s".to_owned())));
         assert_eq!(created_agent(&serde_json::json!({"creation":{"agent":{"puppetMxid":"@x:s"}}})), None, "no id: nothing to allow or bind");
+    }
+
+    /// GPT review: Create clicked before the checklist loaded binds nothing,
+    /// even when the list arrives (open room pre-ticked) while creating.
+    #[test]
+    fn rooms_are_the_ones_ticked_when_create_was_clicked() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = dialog(&mut cx);
+        dialog.state.current_room = Some("!r0:s".into());
+        let plan = dialog.work_plan(&mut cx).unwrap();
+        dialog.apply_rooms(&mut cx, rooms(2));
+        assert_eq!(ticked_rooms(&dialog.state.rooms).len(), 1, "the late list pre-ticks the open room");
+        assert!(plan.rooms.is_empty(), "but Create saw no ticks: {:?}", plan.rooms);
     }
 }

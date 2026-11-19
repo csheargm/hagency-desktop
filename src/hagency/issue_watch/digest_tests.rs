@@ -74,7 +74,7 @@ fn counts_fixed_merged_and_need_you_from_the_ledger() {
     assert_eq!(day.need, 3);
     let text = digest::text(REPO, &day);
     assert!(text.starts_with("📋 acme/app daily digest — Today: 2 merged, 3 issues fixed, 3 need you\n"), "no in-progress count on a day with none: {text}");
-    for line in ["#33 → PR #41 merged", "#36 → PR #43 needs you: https://github.com/acme/app/pull/43", "#37 needs a person: no pull request after 1 tries — https://github.com/acme/app/issues/37", "#38 approval card unanswered: https://github.com/acme/app/issues/38"] {
+    for line in ["#33 → PR #41 merged", "#36 → PR #43 needs you: https://github.com/acme/app/pull/43", "#37 needs a person: no pull request after 1 try — https://github.com/acme/app/issues/37", "#38 approval card unanswered: https://github.com/acme/app/issues/38"] {
         assert!(text.contains(line), "{line} in {text}");
     }
     assert!(!text.contains("#20") && !text.contains("PR #9"), "yesterday's and other repositories' moves stay out: {text}");
@@ -109,6 +109,9 @@ fn the_headline_never_repeats_a_count_and_shows_work_in_progress() {
     ];
     let text = digest::text(REPO, &summarize(REPO, &Inputs { tracks: &tracks, ..Inputs::default() }, &w).unwrap());
     assert_eq!(text.lines().next(), Some("📋 acme/app daily digest — Today: 1 merged, 0 need you, 1 in progress"), "{text}");
+    // GPT review: an issue waiting on an unanswered card needs you, and is not also in progress.
+    let carded = summarize(REPO, &Inputs { tracks: &tracks, unanswered: &[2], ..Inputs::default() }, &w).unwrap();
+    assert_eq!((carded.need, carded.progress), (1, 0));
 }
 
 #[test]

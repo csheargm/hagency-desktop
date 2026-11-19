@@ -132,7 +132,8 @@ pub fn summarize(repo: &str, inputs: &Inputs, window: &Window) -> Option<Digest>
     shown.sort_by_key(|(number, _)| *number);
     let mut items: Vec<String> = shown.into_iter().map(|(_, line)| line).collect();
     items.extend(cards.iter().map(|n| crate::i18n::format("#{number} approval card unanswered: {url}", &[("number", n.to_string()), ("url", issue_url(repo, *n))])));
-    let progress = moved.iter().filter(|t| !t.state.is_terminal() && !waiting.iter().any(|w| w.number == t.number)).count();
+    // Waiting on the owner (held, or an unanswered card) is "need you", never also in progress.
+    let progress = moved.iter().filter(|t| !t.state.is_terminal() && !waiting.iter().any(|w| w.number == t.number) && !cards.contains(&t.number)).count();
     Some(Digest { fixed: fixed.len(), merged: prs.len(), need: waiting.len() + failed + cards.len(), progress, items })
 }
 
@@ -142,6 +143,7 @@ fn item(repo: &str, track: &Track, held: bool) -> String {
     let issue = ("url", issue_url(repo, track.number));
     let Some(pr) = track.pr else {
         return match track.state {
+            State::Failed if tries(track) == 1 => crate::i18n::format("#{number} needs a person: no pull request after 1 try — {url}", &[number, issue]),
             State::Failed => crate::i18n::format("#{number} needs a person: no pull request after {tries} tries — {url}", &[number, ("tries", tries(track).to_string()), issue]),
             State::NeedsHuman => crate::i18n::format("#{number} needs a person: the agent said it cannot fix it — {url}", &[number, issue]),
             State::Closed | State::Merged => crate::i18n::format("#{number} closed", &[number]),

@@ -126,6 +126,7 @@ impl CreateAgentDialog {
             if let Some(probed) = action.downcast_ref::<Probed>() && probed.request == self.request {
                 let models = probed.result.as_ref().map(parse_models).map_err(Clone::clone);
                 self.state.probes[probed.index] = Some(models);
+                self.refresh_stem(cx);
                 self.render(cx);
             }
             if let Some(created) = action.downcast_ref::<Created>() && created.request == self.request {
@@ -150,7 +151,7 @@ impl CreateAgentDialog {
     fn open(&mut self, cx: &mut Cx) {
         self.request = next_request();
         self.busy = false;
-        self.stem = owner_stem(cx);
+        self.stem = owner_stem(cx, true);
         let stem = self.stem.clone();
         self.state = DialogState::new(|runtime| default_name(&stem, runtime));
         self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
@@ -183,6 +184,17 @@ impl CreateAgentDialog {
                 Cx::post_action(Probed { request, index, result });
             });
         }
+    }
+
+    /// The display name may arrive after opening (a profile-cache miss): an
+    /// untouched suggestion then follows it (GPT review).
+    fn refresh_stem(&mut self, cx: &mut Cx) {
+        let stem = owner_stem(cx, false);
+        let Some(runtime) = self.state.runtime() else { return };
+        if stem == self.stem || self.state.name != default_name(&self.stem, &runtime) { return; }
+        self.stem = stem;
+        self.state.name = default_name(&self.stem, &runtime);
+        self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
     }
 
     fn choose_harness(&mut self, cx: &mut Cx, index: usize) {
@@ -236,9 +248,9 @@ impl CreateAgentDialog {
 }
 
 /// The display name's slug when the profile cache knows it, else the localpart.
-fn owner_stem(cx: &mut Cx) -> String {
+fn owner_stem(cx: &mut Cx, fetch: bool) -> String {
     let Some(id) = current_user_id() else { return "my".into() };
-    let display = match crate::profile::user_profile_cache::get_user_display_name_for_room(cx, id.clone(), None, true) {
+    let display = match crate::profile::user_profile_cache::get_user_display_name_for_room(cx, id.clone(), None, fetch) {
         crate::profile::user_profile_cache::CachedName::FoundInProfile(name) | crate::profile::user_profile_cache::CachedName::FoundInRoom(name) => name,
         crate::profile::user_profile_cache::CachedName::NotFound => None,
     };

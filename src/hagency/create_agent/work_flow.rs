@@ -22,6 +22,9 @@ pub(super) struct WorkPlan {
     pub token: Option<String>,
     /// The chosen activity room; `None` posts into the Agent's private chat.
     pub room: Option<String>,
+    /// The rooms ticked when Create was clicked, `(id, name)`: a checklist
+    /// that fills in later never adds a room the owner did not see (GPT review).
+    pub rooms: Vec<(String, String)>,
 }
 
 /// The repositories passed (`Ok`) or were refused (`Err`), for one opening.
@@ -47,7 +50,8 @@ impl CreateAgentDialog {
             choice.ticked = true; // the Agent must be in the room it posts to
             choice.room_id.clone()
         });
-        Ok(WorkPlan { draft, wanted, token, room })
+        let rooms = crate::hagency::bring_agent::ticked_rooms(&self.state.rooms);
+        Ok(WorkPlan { draft, wanted, token, room, rooms })
     }
 
     /// Checks the planned repositories; Create continues on `Checked`.

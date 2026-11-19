@@ -91,8 +91,13 @@ pub(crate) fn name_stem(display_name: Option<&str>, localpart: &str) -> String {
     let slug = display_name.unwrap_or_default().to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty())
         .collect::<Vec<_>>().join("-");
-    if slug.is_empty() { localpart.to_owned() } else { slug }
+    if slug.is_empty() { return localpart.to_owned(); }
+    // Room for the longest harness suffix, so a long name still fits the limit.
+    let kept: String = slug.chars().take(NAME_MAX_CHARS - LONGEST_SUFFIX_CHARS).collect();
+    kept.trim_end_matches('-').to_owned()
 }
+/// "-ollama" / "-claude", the longest `default_name` suffix.
+const LONGEST_SUFFIX_CHARS: usize = 7;
 /// "ann-claude": the owner's name and the harness, like the demo Agents.
 pub(crate) fn default_name(localpart: &str, runtime: &Runtime) -> String {
     let harness = if *runtime == Runtime::Ollama { "ollama" } else { harness_label(runtime) };

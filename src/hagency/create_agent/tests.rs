@@ -91,6 +91,9 @@ fn suggested_name_uses_the_display_name_slug_then_the_localpart() {
     assert_eq!(name_stem(Some("  Anna  Lee! "), "csheargm"), "anna-lee");
     assert_eq!(name_stem(None, "csheargm"), "csheargm");
     assert_eq!(name_stem(Some("安娜"), "csheargm"), "csheargm", "no Latin letters: the localpart");
+    // GPT review: a long display name still leaves a valid name (64 chars).
+    let long = default_name(&name_stem(Some(&"a ".repeat(60)), "x"), &Runtime::Ollama);
+    assert!(long.chars().count() <= 64 && long.ends_with("-ollama") && !long.contains("--"), "{long}");
 }
 #[test]
 fn default_names_follow_the_harness() {
