@@ -5,8 +5,8 @@
 //! guess: another Agent may open the pull request that closes a tracked
 //! issue. What this device authorized is not a guess: each `gh pr create
 //! --head <branch>` and each push of a branch an Agent was allowed to run
-//! is recorded here, and a pull request's authors are every Agent recorded
-//! for its head branch. Authorship counts as known only when a `gh pr
+//! is recorded here, and a pull request's authors are the Agents recorded
+//! for its head branch ([`Ledger::branch_authors`]). Authorship counts as known only when a `gh pr
 //! create` of that branch that is known to have SUCCEEDED (held under its
 //! tool call, settled with its outcome: [`Ledger::settle_publish`]) ran just
 //! before GitHub's opening time; GitHub keeps one open pull request per head
@@ -51,34 +51,56 @@ fn insert(db: &Connection, agent: &str, (kind, repo, branch): (&str, &str, &str)
 }
 
 /// `(repo, branch)` of a `gh pr create` with `-R|--repo` and `-H|--head` in
-/// any segment of `line` (a card may run it after a `cd`). A fork's
-/// `owner:branch` head is not this repository's branch.
+/// any segment of `line` (a card may run it after a `cd`): names an author.
+/// A fork's `owner:branch` head is not this repository's branch.
 fn created_branch(line: &str) -> Option<(String, String)> {
-    shell::parse(line)?.segments.iter().find_map(|words| {
-        let start = words.windows(3).position(|w| w[0] == "gh" && w[1] == "pr" && w[2] == "create")?;
-        let (mut repo, mut head) = (None, None);
-        let mut rest = words[start + 3..].iter();
-        while let Some(word) = rest.next() {
-            let (name, inline) = word.split_once('=').filter(|(n, _)| n.starts_with("--")).map_or((word.as_str(), None), |(n, v)| (n, Some(v)));
-            // A title's or body's value is skipped, never read as an option.
-            let valued = matches!(name, "-R" | "--repo") || crate::watch_trust::gh::CREATE_VALUED.contains(&name);
-            let value = if valued { inline.map(str::to_owned).or_else(|| rest.next().cloned()) } else { None };
-            match name {
-                "-R" | "--repo" => repo = value,
-                "-H" | "--head" => head = value,
-                _ => {}
-            }
+    shell::parse(line)?.segments.iter().find_map(|words| create_args(words, words.windows(3).position(is_create)?))
+}
+
+/// [`created_branch`] when `line` is exactly one `gh pr create` and nothing
+/// else (round-2 GPT review P1-1): only then does the call's success say the
+/// create succeeded; `gh pr create … || true`, a chain, a pipe or an
+/// environment prefix (another `GH_HOST`) could succeed without it.
+fn created_branch_exactly(line: &str) -> Option<(String, String)> {
+    let parsed = shell::parse(line)?;
+    let [words] = parsed.segments.as_slice() else { return None };
+    // `2>&1` is the one redirect the reader drops silently: refuse it too.
+    if parsed.heredoc_at.is_some() || line.contains("2>&1") || !words.get(..3).is_some_and(is_create) {
+        return None;
+    }
+    create_args(words, 0)
+}
+
+fn is_create(w: &[String]) -> bool {
+    w[0] == "gh" && w[1] == "pr" && w[2] == "create"
+}
+
+/// The `-R` and `-H` values of the `gh pr create` at `words[start..]`.
+fn create_args(words: &[String], start: usize) -> Option<(String, String)> {
+    let (mut repo, mut head) = (None, None);
+    let mut rest = words[start + 3..].iter();
+    while let Some(word) = rest.next() {
+        let (name, inline) = word.split_once('=').filter(|(n, _)| n.starts_with("--")).map_or((word.as_str(), None), |(n, v)| (n, Some(v)));
+        // A title's or body's value is skipped, never read as an option.
+        let valued = matches!(name, "-R" | "--repo") || crate::watch_trust::gh::CREATE_VALUED.contains(&name);
+        let value = if valued { inline.map(str::to_owned).or_else(|| rest.next().cloned()) } else { None };
+        match name {
+            "-R" | "--repo" => repo = value,
+            "-H" | "--head" => head = value,
+            _ => {}
         }
-        let repo = super::gate::repo_name(repo.as_deref()?)?.to_owned();
-        head.filter(|h| !h.is_empty() && !h.contains(':')).map(|head| (repo, head))
-    })
+    }
+    let repo = super::gate::repo_name(repo.as_deref()?)?.to_owned();
+    head.filter(|h| !h.is_empty() && !h.contains(':')).map(|head| (repo, head))
 }
 
 impl Ledger {
-    /// Tool call `call` of `proposal`'s Agent may run a `gh pr create`: hold
-    /// it, so it vouches for its pull request once the call succeeded.
+    /// Tool call `call` of `proposal`'s Agent may run exactly one `gh pr
+    /// create`: hold it, so it vouches for its pull request once the call
+    /// succeeded. Residual: the settle sees the exit status, not the URL
+    /// the create printed, so the vouch is bound by branch and time only.
     pub fn hold_create(&mut self, call: &str, proposal: &ToolProposal, now: i64) -> Result<()> {
-        let created = proposal.arguments["command"].as_str().and_then(created_branch);
+        let created = proposal.arguments["command"].as_str().and_then(created_branch_exactly);
         match created {
             Some((repo, branch)) if !call.is_empty() => insert(&self.db, &proposal.scope.agent, ("create", &repo, &branch), (now, call)),
             _ => Ok(()),
@@ -93,14 +115,21 @@ impl Ledger {
     }
     /// The Agents recorded for `view`'s head branch in `repo`, and whether
     /// one of them demonstrably created a pull request of it just before
-    /// GitHub opened this one (else authorship is unknown).
+    /// GitHub opened this one (else authorship is unknown). Round-2 GPT
+    /// review P2-2: a create counts as authorship only inside that window,
+    /// and only if it was allowed (a held create that never succeeded was
+    /// denied or failed), so a reused branch name or a refused duplicate
+    /// create excludes no one. A push since the window opened always counts
+    /// (an older one too: it only withholds a local approval, a person decides).
     pub(crate) fn branch_authors(&self, repo: &str, view: &PrView) -> Result<(Vec<String>, bool)> {
         let Some(head) = &view.head_ref else { return Ok((Vec::new(), false)) };
-        let mut statement = self.db.prepare("SELECT agent, kind = 'create' AND ran = 1, at FROM pr_branch_publishes WHERE repo=lower(?) AND branch=?")?;
-        let rows: Vec<(String, bool, i64)> = statement.query_map((repo, &head.branch), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+        const ROWS: &str = "SELECT agent, kind, call != '', ran = 1, at FROM pr_branch_publishes WHERE repo=lower(?) AND branch=?";
+        let mut statement = self.db.prepare(ROWS)?;
+        let rows: Vec<(String, String, bool, bool, i64)> = statement.query_map((repo, &head.branch), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
         let window = head.created_at - CREATE_LEAD_SECS..=head.created_at + CLOCK_SKEW_SECS;
-        let known = rows.iter().any(|(_, ran_create, at)| *ran_create && window.contains(at));
-        let mut agents: Vec<String> = rows.into_iter().map(|(agent, _, _)| agent).collect();
+        let known = rows.iter().any(|(_, kind, held, ran, at)| kind == "create" && *held && *ran && window.contains(at));
+        let author = |(_, kind, held, ran, at): &(String, String, bool, bool, i64)| kind == "push" || (window.contains(at) && (!held || *ran));
+        let mut agents: Vec<String> = rows.iter().filter(|row| author(row)).map(|row| row.0.clone()).collect();
         agents.sort();
         agents.dedup();
         Ok((agents, known))
