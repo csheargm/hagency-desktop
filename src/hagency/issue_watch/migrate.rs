@@ -5,16 +5,22 @@
 //! level yet and this account may set it — the room's level: Autonomous when
 //! the Agent had "push freely" and "Pull request merges" on, else Assist.
 //! Trial rows are ignored. Two phases (GPT review): every room's repositories
-//! are linked first; only when all are linked is "may work" turned on, the
-//! old watch switched off, the Agent recorded as moved on this device and
-//! each moved room told in one line. A room that refuses (no right to link)
-//! is reported and the whole move retried next check, so a watch is never
-//! dropped silently. Idempotent: a moved Agent's work list never moves again
-//! (an owner who later unticks every room is not overruled).
+//! are linked first; only when all are linked is "may work" turned on (each
+//! room told in one line), the old watch carried into the work list (its
+//! issue filter and start time kept) and switched off, and the Agent recorded
+//! as moved on this device. A room that refuses (no right to link) is
+//! reported and the move retried next check, so a watch is never dropped
+//! silently. Each work-list entry is planned until it is done (its room may
+//! work and has it linked), whatever other rooms already may work, so a
+//! partial move or a room set up first never loses one (batch GPT review).
+//! A label watch stays as it is: the work list has no label filter.
+//! Idempotent: a moved Agent's work list never moves again (an owner who
+//! later unticks every room is not overruled).
 use super::room_loop::{Rooms, may_work_rooms};
 use std::collections::BTreeSet;
 use crate::hagency::backend::Service;
 use ::hagency::issue_watch::safeguards::room_autonomy::Level;
+use ::hagency::issue_watch::{IssueFilter, OwnerRules};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -25,10 +31,26 @@ pub(crate) struct Move {
     pub level: Level,
 }
 
+/// The work-list filter an old watch's mode keeps; `None`: it cannot move
+/// (off, or a label watch, which the work list cannot express).
+fn carried_filter(watch: &Value) -> Option<IssueFilter> {
+    match watch["mode"].as_str() {
+        Some("trusted") => Some(IssueFilter::Trusted),
+        Some("all") => Some(IssueFilter::All),
+        _ => None,
+    }
+}
+
+/// Whether `repo` of `room` already moved: the room may work and links it.
+fn entry_done(saved: &Value, rooms: &Rooms, room: &str, repo: &str) -> bool {
+    may_work_rooms(saved).iter().any(|r| r == room)
+        && rooms.0.get(room).is_some_and(|s| s.as_ref().is_ok_and(|s| s.linked.iter().any(|l| l.eq_ignore_ascii_case(repo))))
+}
+
 /// What the old settings ask for, per room. `auto_merge` is the retired
 /// per-Agent merge switch; `moved`: this device already moved the Agent's
 /// work list. Empty when nothing is left to move.
-pub(crate) fn planned(saved: &Value, auto_merge: bool, moved: bool) -> BTreeMap<String, Move> {
+pub(crate) fn planned(saved: &Value, rooms: &Rooms, auto_merge: bool, moved: bool) -> BTreeMap<String, Move> {
     let mut plan: BTreeMap<String, Move> = BTreeMap::new();
     let watch = &saved["issueWatch"];
     let mut add = |room: &str, repo: &str, push: bool| {
@@ -45,16 +67,42 @@ pub(crate) fn planned(saved: &Value, auto_merge: bool, moved: bool) -> BTreeMap<
             entry.level = Level::Assist;
         }
     };
-    if watch["mode"].as_str().is_some_and(|m| m != "off") {
+    if carried_filter(watch).is_some() {
         add(watch["roomId"].as_str().unwrap_or_default(), watch["repo"].as_str().unwrap_or_default(), watch["pushTrusted"] == true);
     }
-    // The work list moves once: never after this device moved it, nor once may-work rooms exist.
-    if !moved && may_work_rooms(saved).is_empty() {
+    // The work list moves once per device, entry by entry, until each is done.
+    if !moved {
         for entry in saved["work"].as_array().into_iter().flatten() {
-            add(entry["roomId"].as_str().unwrap_or_default(), entry["repo"].as_str().unwrap_or_default(), entry["pushFreely"] == true);
+            let (room, repo) = (entry["roomId"].as_str().unwrap_or_default(), entry["repo"].as_str().unwrap_or_default());
+            if !entry_done(saved, rooms, room, repo) {
+                add(room, repo, entry["pushFreely"] == true);
+            }
         }
     }
     plan
+}
+
+/// The work list with the old watch carried in (its filter and start time
+/// kept, so its eligible backlog stays eligible); unchanged when the watch
+/// cannot move or its repository is listed already.
+pub(crate) fn work_with_watch(saved: &Value) -> Result<Vec<Value>, String> {
+    let watch = &saved["issueWatch"];
+    let mut work = saved["work"].as_array().cloned().unwrap_or_default();
+    let repo = watch["repo"].as_str().unwrap_or_default();
+    let Some(issues) = carried_filter(watch) else { return Ok(work) };
+    if repo.is_empty() || work.iter().any(|w| w["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo))) {
+        return Ok(work);
+    }
+    let entry = OwnerRules {
+        repo: repo.to_owned(),
+        room_id: watch["roomId"].as_str().unwrap_or_default().to_owned(),
+        issues,
+        since: watch["enabledAt"].as_i64().unwrap_or_default(),
+        push_freely: watch["pushTrusted"] == true,
+        ..Default::default()
+    };
+    work.push(serde_json::to_value(entry).map_err(|e| e.to_string())?);
+    Ok(work)
 }
 
 /// The room line for a moved room.
@@ -117,15 +165,13 @@ async fn enable_room(service: &Service, agent_id: &str, room_id: &str, plan: &Mo
     }
 }
 
-/// One line per moved room (room content: English, like the loop's notices).
-async fn tell(agent_id: &str, name: &str, moved: Vec<(String, Vec<String>, Option<Level>)>) {
-    for (room_id, repos, level) in moved {
-        let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(moved_line(name, &repos, level));
-        let txn = matrix_sdk::ruma::OwnedTransactionId::from(format!("hagency-moved-{}", blake3::hash(format!("{agent_id}\n{room_id}").as_bytes()).to_hex()));
-        if let Ok(room_id) = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str()) {
-            // Deliberately not an error: the move is done and saved; a lost line only goes unsaid.
-            let _ = crate::hagency::room_send::send_routed_with(room_id, content, Default::default(), txn).await;
-        }
+/// The line for one moved room (room content: English, like the loop's notices).
+async fn tell(agent_id: &str, name: &str, room_id: &str, repos: &[String], level: Option<Level>) {
+    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(moved_line(name, repos, level));
+    let txn = matrix_sdk::ruma::OwnedTransactionId::from(format!("hagency-moved-{}", blake3::hash(format!("{agent_id}\n{room_id}").as_bytes()).to_hex()));
+    if let Ok(room_id) = matrix_sdk::ruma::OwnedRoomId::try_from(room_id) {
+        // Deliberately not an error: the room may work; a lost line only goes unsaid.
+        let _ = crate::hagency::room_send::send_routed_with(room_id, content, Default::default(), txn).await;
     }
 }
 
@@ -133,34 +179,41 @@ async fn tell(agent_id: &str, name: &str, moved: Vec<(String, Vec<String>, Optio
 /// why; nothing is switched on or off until every room's repositories are linked.
 pub(crate) async fn run(service: &Service, agent: &Value, saved: &Value, rooms: &Rooms) -> Vec<String> {
     let id = agent["id"].as_str().unwrap_or_default();
-    let plan = planned(saved, super::live::auto_merge(id).await, moved(id));
+    let moved_here = moved(id);
+    let plan = planned(saved, rooms, super::live::auto_merge(id).await, moved_here);
     if plan.is_empty() {
-        return Vec::new();
+        // Every entry is done: record it, so a room unticked later is never ticked again.
+        return if moved_here { Vec::new() } else { record_moved(id).err().into_iter().collect() };
     }
+    let failed = |room: &str, error: String| crate::i18n::format("Could not move the watch to room {room}: {error}", &[("room", room.to_owned()), ("error", error)]);
     let mut errors = Vec::new();
     for (room_id, part) in &plan {
         if let Err(error) = link_room(room_id, part, rooms).await {
-            errors.push(crate::i18n::format("Could not move the watch to room {room}: {error}", &[("room", room_id.clone()), ("error", error)]));
+            errors.push(failed(room_id, error));
         }
     }
     if !errors.is_empty() {
         return errors;
     }
-    let mut done = Vec::new();
+    let name = agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent");
     for (room_id, part) in &plan {
         match enable_room(service, id, room_id, part, rooms).await {
-            Ok(level) => done.push((room_id.clone(), part.repos.clone(), level)),
-            Err(error) => return vec![crate::i18n::format("Could not move the watch to room {room}: {error}", &[("room", room_id.clone()), ("error", error)])],
+            Ok(level) => tell(id, name, room_id, &part.repos, level).await,
+            Err(error) => return vec![failed(room_id, error)],
         }
     }
-    if let Err(error) = super::live::saved(service, id, Some(json!({"issueWatch": {"mode": "off"}}))).await {
-        return vec![error];
+    finish(service, id, saved).await.err().into_iter().collect()
+}
+
+/// The old watch carried into the work list and switched off in one save,
+/// then the Agent recorded as moved on this device.
+async fn finish(service: &Service, id: &str, saved: &Value) -> Result<(), String> {
+    let mut change = json!({"work": work_with_watch(saved)?});
+    if carried_filter(&saved["issueWatch"]).is_some() {
+        change["issueWatch"] = json!({"mode": "off"});
     }
-    if let Err(error) = record_moved(id) {
-        return vec![error];
-    }
-    tell(id, agent["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or("Agent"), done).await;
-    Vec::new()
+    super::live::saved(service, id, Some(change)).await?;
+    record_moved(id)
 }
 
 #[cfg(test)]
