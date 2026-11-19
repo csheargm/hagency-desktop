@@ -88,3 +88,15 @@ fn a_membership_only_change_does_not_move_as_of() {
     let after = state_of(&[base[0].clone(), base[1].clone(), later_member], ROOM, may_send, Rights::default());
     assert_eq!(after.as_of, Some(200), "a membership event never moves as_of");
 }
+
+/// GPT review round 4 (P1): only events the gate honours give the source
+/// time; a future-dated pause keyed to someone else (ignored) never moves it.
+#[test]
+fn an_ignored_future_dated_event_does_not_move_as_of() {
+    let honoured = pause_by(MEMBER, "$p");
+    let mut ignored = pause_by(MEMBER, "$x");
+    ignored["state_key"] = MAINTAINER.into();
+    ignored["origin_server_ts"] = 9_999_999_999_999_i64.into();
+    let state = state_of(&[joined(MEMBER), honoured, ignored], ROOM, may_send, Rights::default());
+    assert_eq!(state.as_of, Some(1), "the ignored pause's time does not count");
+}

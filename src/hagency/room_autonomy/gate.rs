@@ -23,12 +23,12 @@ fn reach(level: Level) -> usize {
 }
 
 /// The snapshot the gate gets for `room_id` after `saved`: the fresh `read`
-/// (unreadable: unread, fail closed), never looser than what was saved. When
-/// the read missed the write (the saved change made it stricter), its source
-/// time becomes the saved event's own server time (`saved_ts`), or just past
-/// the read's when that is unknown, so a poll that read the room before the
-/// write never replaces it at the gate (GPT review P1). Neither known: untimed,
-/// which the gate takes only as stricter, keeping its stored time.
+/// (unreadable: unread, fail closed), never looser than what was saved.
+/// A restriction (Pause, Off, Assist) is sticky: the gate holds it against
+/// any looser snapshot for two poll intervals on its own clock (GPT review
+/// round 4). When the read missed the write, its source time is the saved
+/// event's own server time (`saved_ts`), or none when that is unknown —
+/// never invented.
 pub fn pushed_snapshot(room_id: &str, read: &Result<RoomState, String>, saved: Saved, saved_ts: Option<i64>) -> AutonomySnapshot {
     let mut snapshot = match read {
         Ok(state) => state.snapshot(room_id),
@@ -41,8 +41,9 @@ pub fn pushed_snapshot(room_id: &str, read: &Result<RoomState, String>, saved: S
         Saved::Resumed => {}
     }
     if snapshot != as_read {
-        snapshot.as_of = saved_ts.max(snapshot.as_of.map(|t| t.saturating_add(1)));
+        snapshot.as_of = saved_ts;
     }
+    snapshot.sticky = matches!(saved, Saved::Paused | Saved::Level(Level::Off | Level::Assist));
     snapshot
 }
 
@@ -108,7 +109,10 @@ mod tests {
         let polled = read.as_ref().unwrap().snapshot("!r:x");
         assert!(pushed.as_of > polled.as_of, "a poll that read the room before the pause is older at the gate");
         assert_eq!(pushed.as_of, Some(5_000), "the saved pause event's own server time");
-        assert_eq!(pushed_snapshot("!r:x", &read, Saved::Paused, None).as_of, Some(1_001), "unknown: just past the read");
+        assert!(pushed.sticky, "a pushed Pause is sticky at the gate");
+        let unknown = pushed_snapshot("!r:x", &read, Saved::Paused, None);
+        assert_eq!((unknown.as_of, unknown.sticky), (None, true), "unknown: no invented time, still sticky");
+        assert!(!pushed_snapshot("!r:x", &read, Saved::Resumed, None).sticky, "a Resume is not a restriction");
         assert_eq!(pushed.level, Some(Level::Autonomous));
     }
 
