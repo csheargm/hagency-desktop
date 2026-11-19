@@ -16,7 +16,6 @@
 //! refused it there) is given back once after [`UNSEEN_AFTER_SECS`]; a merge
 //! stays guarded by the one automatic merge per head.
 use crate::activity::Outcome;
-use crate::merge_policy::github::commit_sha;
 use crate::{Ledger, Result};
 use rusqlite::OptionalExtension;
 
@@ -35,79 +34,6 @@ pub const MAX_RESENDS: u32 = 3;
 pub const UNSEEN_AFTER_SECS: i64 = 30 * 60;
 /// Give-backs of a step whose notice never showed a dispatch here (counted in its rounds).
 pub const MAX_UNSEEN_RESENDS: u32 = 1;
-
-/// How a merge notice starts; only a message that starts so is a loop notice.
-pub const MERGE_NOTICE_LEAD: &str = "✅ Approved at ";
-/// How a review request notice starts.
-pub const REVIEW_NOTICE_LEAD: &str = "🔎 Review requested — ";
-
-/// The exact merge command a "✅ Approved" notice tells the merger to run.
-pub fn merge_command(number: u64, head: &str, repo: &str) -> String {
-    format!("gh pr merge {number} --squash --match-head-commit {head} --repo {repo}")
-}
-/// The part of a "🔎 Review requested" notice naming the pull request and head.
-pub fn review_ask(number: u64, repo: &str, head: &str) -> String {
-    format!("please review PR #{number} in {repo} at head commit {head}")
-}
-/// How a "still a draft" notice starts.
-pub const READY_NOTICE_LEAD: &str = "📝 Still a draft — ";
-/// The part of a "still a draft" notice naming the pull request and the head it may be readied at.
-pub fn ready_ask(number: u64, repo: &str, head: &str) -> String {
-    format!("mark ready PR #{number} in {repo} at head commit {head}")
-}
-
-/// What one loop notice dispatches: step, pull request URL, head, and the
-/// Matrix ID it addresses.
-pub type LoopStep = (&'static str, String, String, String);
-
-/// The step a loop notice's `body` dispatches: only an exact
-/// [`merge_command`], [`review_ask`] or [`ready_ask`], addressed to the Matrix ID just before it.
-pub fn loop_step_of(body: &str) -> Option<LoopStep> {
-    // The ID may follow the Agent's display name in parentheses: "bird-claude (@agent:x)".
-    let addressee = |lead: &str| body[..body.find(lead)?].split_whitespace().rev().map(|w| w.trim_start_matches('(').trim_end_matches(')')).find(|w| w.starts_with('@')).map(str::to_owned);
-    let parse = |lead: &str, words: &[&str]| -> Option<(u64, String, String)> {
-        let rest = &body[body.find(lead)? + lead.len()..];
-        let mut it = rest.split_whitespace();
-        let number: u64 = it.next()?.trim_start_matches('#').parse().ok().filter(|n| *n > 0)?;
-        let mut out = Vec::new();
-        for word in words {
-            if word.is_empty() { out.push(it.next()?.trim_end_matches(['`', ':'])) } else if it.next()? != *word { return None }
-        }
-        let (head, repo) = if lead.starts_with("gh") { (out[0], out[1]) } else { (out[1], out[0]) };
-        let ok = commit_sha(head).is_some() && crate::issue_watch::valid_repo(repo);
-        ok.then(|| (number, repo.to_owned(), head.to_owned()))
-    };
-    let pick = |step: &'static str, (n, repo, head): (u64, String, String), (phrase, lead): (&str, &str)| {
-        let exact = match step {
-            "merge" => merge_command(n, &head, &repo),
-            READY_STEP => ready_ask(n, &repo, &head),
-            _ => review_ask(n, &repo, &head),
-        };
-        let to = addressee(phrase)?;
-        // A message quoting a notice is no notice (GPT review): a line must start as one,
-        // as a hand-off's lead may (`activity::handoff_issue`).
-        let notice = body.lines().any(|line| line.trim_start().starts_with(lead));
-        (notice && body.contains(&exact)).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head, to))
-    };
-    const ASK: [&str; 6] = ["in", "", "at", "head", "commit", ""];
-    if let Some(found) = parse("gh pr merge ", &["--squash", "--match-head-commit", "", "--repo", ""]) {
-        return pick("merge", found, ("gh pr merge ", MERGE_NOTICE_LEAD));
-    }
-    if let Some(found) = parse("mark ready PR ", &ASK) {
-        return pick(READY_STEP, found, ("mark ready PR ", READY_NOTICE_LEAD));
-    }
-    pick("review", parse("please review PR ", &ASK)?, ("please review PR ", REVIEW_NOTICE_LEAD))
-}
-
-/// Tag a just-received request `dispatch` with the loop step its `body`
-/// dispatches, if any; tags of requests no longer in the inbox are dropped.
-pub(crate) fn remember_loop_step(db: &rusqlite::Connection, dispatch: &str, body: &str) -> Result<()> {
-    if let Some((step, pr, head, to)) = loop_step_of(body) {
-        db.execute("INSERT OR IGNORE INTO loop_step_dispatches VALUES (?,?,?,?,?)", (dispatch, step, pr, head, to))?;
-    }
-    db.execute("DELETE FROM loop_step_dispatches WHERE dispatch NOT IN (SELECT id FROM local_inbox)", [])?;
-    Ok(())
-}
 
 /// Why a dispatched step did not run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,23 +123,36 @@ impl Ledger {
             let held = round.again > 0 && out(self, &round.runner)?;
             return Ok(StepDue { taken: held, ..kept });
         }
+        // The next reviewer after one that never answered gets a round of its own (`reviewer_pass`).
+        if step == "review" && self.hands_on(agent, (pr, head), to, round.again)? {
+            return Ok(StepDue { taken: false, again: self.give_back(agent, (step, pr, head), now, String::new(), round.again + 1)?, say: None });
+        }
         if !DISPATCHED_STEPS.contains(&step) || (step == "merge" && self.head_used(pr, head)?) {
             return Ok(kept);
         }
         let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to, room), (&round, now))? else { return Ok(kept) };
         let why = if out(self, &runner)? { Why::Budget } else { why };
-        let say = (round.said <= round.again).then_some(Say { why, gave_up: round.again >= why.cap(), round: round.again });
-        if round.again >= why.cap() || why == Why::Budget || now - at < RESEND_AFTER_SECS {
+        // Only the current reviewer's rounds count toward its cap.
+        let spent = round.again - if step == "review" { self.reviewer_base(agent, (pr, head))?.min(round.again) } else { 0 };
+        let say = (round.said <= round.again).then_some(Say { why, gave_up: spent >= why.cap(), round: round.again });
+        if spent >= why.cap() && step == "review" {
+            self.pass_reviewer(agent, (pr, head), to, round.again)?;
+        }
+        if spent >= why.cap() || why == Why::Budget || now - at < RESEND_AFTER_SECS {
             return Ok(StepDue { say, ..kept });
         }
         // Given back: the re-post itself shows the retry, so its line counts as said.
-        let said = round.again + 1;
+        Ok(StepDue { taken: false, again: self.give_back(agent, (step, pr, head), now, runner, round.again + 1)?, say })
+    }
+
+    /// Give the step back as round `again`, re-posted to `runner`'s Agent; returns `again`.
+    fn give_back(&mut self, agent: &str, (step, pr, head): (&str, &str, &str), now: i64, runner: String, again: u32) -> Result<u32> {
         self.atomically(|ledger| {
             ledger.db.execute("DELETE FROM review_loop_sent WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
             ledger.db.execute("DELETE FROM review_loop_unseen WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head))?;
-            ledger.set_round(agent, (step, pr, head), &Round { known: true, again: said, released_at: now, said, runner })
+            ledger.set_round(agent, (step, pr, head), &Round { known: true, again, released_at: now, said: again, runner })
         })?;
-        Ok(StepDue { taken: false, again: said, say })
+        Ok(again)
     }
 
     /// The room accepted the line of `round` for this step: it is not offered again.
@@ -285,6 +224,14 @@ AND t.addressee=? AND b.room=? AND i.received_at>=? ORDER BY i.received_at DESC,
         Ok(())
     }
 }
+
+#[path = "step_resend_notice.rs"]
+mod notice;
+pub use notice::{LoopStep, MERGE_NOTICE_LEAD, READY_NOTICE_LEAD, REVIEW_NOTICE_LEAD, loop_step_of, merge_command, ready_ask, review_ask};
+pub(crate) use notice::remember_loop_step;
+#[path = "reviewer_pass.rs"]
+mod reviewer_pass;
+pub(crate) use reviewer_pass::SCHEMA as PASSED_SCHEMA;
 
 #[cfg(test)]
 #[path = "step_resend_tests.rs"]

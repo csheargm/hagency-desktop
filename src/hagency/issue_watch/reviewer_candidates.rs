@@ -5,7 +5,7 @@
 //! has no roster row here), and this server's too while the roster cannot
 //! be read (Nov 18: a timed-out roster read hid bird-codex, and the room
 //! said "No Codex reviewer").
-use super::reviewer_pick::{self, Candidate, Pick};
+use super::reviewer_pick::{self, Candidate, Peers};
 use super::work::Worker;
 use matrix_sdk::{Room, RoomMemberships, ruma::{OwnedRoomId, OwnedUserId}};
 use std::time::Duration;
@@ -15,11 +15,12 @@ const MAX_PROFILES: usize = 32;
 /// How long the pick waits for those profiles.
 const PROFILES_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Another Agent in the room to review, any owner's, preferring one on a
-/// different runtime while the room asks for that (ADR 0025).
-pub(super) async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option<Pick> {
+/// The other Agents in the room that may review, any owner's, and how to
+/// pick one: preferring a different runtime while the room asks for that
+/// (ADR 0025). Empty when the room is not known here.
+pub(super) async fn peers(worker: &Worker<'_>, room: &OwnedRoomId) -> Peers {
     let me = worker.agent["id"].as_str().unwrap_or_default();
-    let joined = crate::sliding_sync::get_client()?.get_room(room)?;
+    let Some(joined) = crate::sliding_sync::get_client().and_then(|c| c.get_room(room)) else { return Peers::default() };
     let mut candidates = own_peers(worker, &joined, me).await;
     let mine: Vec<&str> = worker.peers.iter().chain([worker.agent]).filter_map(|p| p["puppetMxid"].as_str()).collect();
     let roster_read = add_roster(worker, &joined, &mine, &mut candidates).await;
@@ -30,7 +31,7 @@ pub(super) async fn pick_peer(worker: &Worker<'_>, room: &OwnedRoomId) -> Option
         super::room_review::last_read(room).unwrap_or_else(|| reviewer_pick::different_model(None))
     });
     let author = crate::profile::agent_facts::runtime_kind(worker.service, me).await;
-    reviewer_pick::pick(author, &candidates, prefer, complete)
+    Peers { candidates, author, prefer_different: prefer, complete }
 }
 
 /// This owner's other Agents joined to the room.
