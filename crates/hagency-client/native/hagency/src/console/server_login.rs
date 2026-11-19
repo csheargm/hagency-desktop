@@ -99,6 +99,13 @@ pub(super) fn fixture_device(
         revoked,
     )
 }
+#[cfg(test)]
+impl AuthorizedDevice {
+    pub(super) fn with_valid_until(mut self, at: Instant) -> Self {
+        self.valid_until = at;
+        self
+    }
+}
 impl AuthorizedDevice {
     pub fn origin(&self) -> &str {
         &self.origin
@@ -115,12 +122,14 @@ impl AuthorizedDevice {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    /// Whether this device was revoked or its login stopped: unlike the
+    /// local deadline in [`Self::bearer`], this ends answers already received.
+    pub fn is_revoked(&self) -> bool {
+        self.stopped.load(Ordering::Acquire) || self.revoked.load(Ordering::Acquire)
+    }
     /// Check immediately before sending; callers must not persist snapshots.
     pub fn bearer(&self) -> Result<&str, Error> {
-        if self.stopped.load(Ordering::Acquire)
-            || self.revoked.load(Ordering::Acquire)
-            || self.valid_until <= Instant::now()
-        {
+        if self.is_revoked() || self.valid_until <= Instant::now() {
             Err(Error::Unauthorized)
         } else {
             Ok(&self.token)

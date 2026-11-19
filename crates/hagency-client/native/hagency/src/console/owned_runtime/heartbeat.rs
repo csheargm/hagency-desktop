@@ -137,11 +137,31 @@ async fn renew(
             );
             Renewal::Unanswered
         }
-        // Past the local deadline a refusal is the server ending the lease by
-        // expiry, which a restart can recover; before it, a revocation.
-        _ if late => Renewal::Stop("lease_ended_on_server"),
-        _ => Renewal::Stop("lease_renewal_rejected"),
+        Err(error) => Renewal::Stop(refusal_stage(&error.code, device)),
+        Ok(_) => Renewal::Stop("lease_renewal_rejected"),
     })
+}
+/// Refusal codes that end the device's own authority, not just the lease. The
+/// server answers a lease that ended and a scope it no longer grants with the
+/// same `transport_scope_not_authorized`; those restart, and a revoked device
+/// is then refused at acquire.
+const DEVICE_REFUSALS: &[&str] = &[
+    "device_authorization_required",
+    "invalid_device_authorization",
+    "device_not_owned",
+    "execution_device_required",
+    "authentication_required",
+    "user_disabled",
+];
+/// Why a refused renewal stops the heartbeat, by the server's code and the
+/// device's own revocation, never by when the answer arrived (GPT batch
+/// review, Nov 18): a terminal stop, or a lease end a restart can recover.
+fn refusal_stage(code: &str, device: &AuthorizedDevice) -> &'static str {
+    if device.is_revoked() || DEVICE_REFUSALS.contains(&code) {
+        "lease_renewal_rejected"
+    } else {
+        "lease_ended_on_server"
+    }
 }
 /// Refresh the owner's device (and so the owner's server proof) after a
 /// renewal, waiting no later than `until`, the next renewal. The refresh runs
@@ -202,6 +222,19 @@ pub(super) fn device_refresh_given_up(since: Instant, now: Instant) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// GPT batch review (Nov 18): the same refusal was terminal before the
+    /// local deadline and recoverable after it. The server's code and the
+    /// device's own revocation decide, whenever the answer arrives.
+    #[test]
+    fn a_refusal_is_classified_by_its_code_not_its_arrival_time() {
+        let (device, revoked) = crate::console::server_login::fixture_device("https://server.example/", "owner", "@owner:example");
+        assert_eq!(refusal_stage("transport_scope_not_authorized", &device), "lease_ended_on_server");
+        assert_eq!(refusal_stage("authorization_expired", &device), "lease_ended_on_server");
+        assert_eq!(refusal_stage("device_authorization_required", &device), "lease_renewal_rejected");
+        assert_eq!(refusal_stage("user_disabled", &device), "lease_renewal_rejected");
+        revoked.store(true, Ordering::Release);
+        assert_eq!(refusal_stage("transport_scope_not_authorized", &device), "lease_renewal_rejected", "a revoked device is terminal");
+    }
     #[test]
     fn unanswered_device_refresh_is_retried_for_one_lease_length() {
         let since = Instant::now();

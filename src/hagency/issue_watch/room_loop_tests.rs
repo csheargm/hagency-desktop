@@ -59,3 +59,15 @@ fn the_loop_rooms_are_may_work_work_and_an_active_legacy_watch() {
     let off = json!({"issueWatch": {"mode": "off", "roomId": "!l:x"}});
     assert!(loop_rooms(&off).is_empty());
 }
+
+#[test]
+fn a_paused_room_never_takes_a_repository_from_a_running_room() {
+    // Batch GPT review: A (paused) first in mayWork, B (Assist) links the same repo.
+    let saved = json!({"mayWork": ["!a:x", "!b:x", "!c:x"], "work": []});
+    let rooms = rooms(vec![("!a:x", state(Level::Autonomous, true, &["acme/app", "acme/only-a"])), ("!b:x", state(Level::Assist, false, &["acme/app"])), ("!c:x", state(Level::Off, false, &["acme/app"]))]);
+    let work = derived_work(&saved, &rooms, 1);
+    let pairs: Vec<(&str, &str)> = work.iter().map(|w| (w.repo.as_str(), w.room_id.as_str())).collect();
+    assert_eq!(pairs, vec![("acme/app", "!b:x"), ("acme/only-a", "!a:x")], "the running room gets it; the paused room keeps its own");
+    let (kept, _) = running_only(&json!({"work": serde_json::to_value(&work).unwrap()}), &rooms);
+    assert_eq!(kept["work"][0]["repo"], "acme/app", "so it runs");
+}
