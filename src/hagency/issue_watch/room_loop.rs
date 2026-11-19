@@ -34,19 +34,15 @@ pub(crate) fn loop_rooms(saved: &Value) -> BTreeSet<String> {
 
 impl Rooms {
     /// What the owner API records: an unread room as unread (fail closed),
-    /// the loop's own rooms (`first`) before every discovered one, at most
-    /// [`MAX_ROOM_SNAPSHOTS`]; and how many rooms that left out (round-2 GPT
-    /// review: discovered rooms must never crowd out a room the loop works in).
-    pub(crate) fn snapshots(&self, first: &BTreeSet<String>) -> (Vec<AutonomySnapshot>, usize) {
+    /// the loop's own rooms (`first`) before every discovered one (round-2
+    /// GPT review: discovered rooms must never crowd out a room the loop works in).
+    pub(crate) fn snapshots(&self, first: &BTreeSet<String>) -> Vec<AutonomySnapshot> {
         let snapshot = |(room, state): (&String, &Result<RoomState, String>)| match state {
             Ok(state) => state.snapshot(room),
             Err(_) => AutonomySnapshot { room_id: room.clone(), unread: true, ..Default::default() },
         };
         let (mine, rest): (Vec<_>, Vec<_>) = self.0.iter().partition(|(room, _)| first.contains(*room));
-        let mut all: Vec<AutonomySnapshot> = mine.into_iter().chain(rest).map(snapshot).collect();
-        let left_out = all.len().saturating_sub(MAX_ROOM_SNAPSHOTS);
-        all.truncate(MAX_ROOM_SNAPSHOTS);
-        (all, left_out)
+        mine.into_iter().chain(rest).map(snapshot).collect()
     }
     /// Whether the loop may start work in `room` now, else why not.
     pub(crate) fn runs(&self, room: &str) -> Result<(), String> {
@@ -148,14 +144,12 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
     let plans = saved["plans"].as_array().is_some_and(|p| !p.is_empty());
     if loop_rooms(&saved).is_empty() && !plans {
         // No loop here, but the device's project rooms are still recorded (batch GPT review).
-        if let Some(line) = record(service, id, &saved, &read(&saved).await).await? {
-            makepad_widgets::log!("WARN room_autonomy_left_out agent={id}: {line}");
-        }
+        record(service, id, &saved, &read(&saved).await).await?;
         return Ok(None);
     }
     let mut rooms = read(&saved).await;
     let moving = !super::migrate::planned(&saved, &rooms, false, super::migrate::moved(id)).is_empty();
-    let mut held = super::migrate::run(service, agent, &saved, &rooms).await;
+    let held = super::migrate::run(service, agent, &saved, &rooms).await;
     if moving {
         // The move linked repositories: read the rooms again so the work list keeps them.
         rooms = read(&saved).await;
@@ -172,29 +166,21 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
     }
     // Not recorded: nothing runs this check (GPT review: the last positive snapshot
     // would otherwise keep counting for up to its TTL while this check dispatched).
-    held.extend(record(service, id, &saved, &rooms).await?);
+    record(service, id, &saved, &rooms).await?;
     stop_paused(&rooms).await;
     Ok(Some((saved, rooms, held)))
 }
 
 /// Record `rooms`' level and Pause through the owner API, `saved`'s loop
-/// rooms first (none: nothing to record). `Some` status part when the limit
-/// left rooms out: the gate treats those as unread, and the owner is told.
-async fn record(service: &crate::hagency::backend::Service, id: &str, saved: &Value, rooms: &Rooms) -> Result<Option<String>, String> {
-    if rooms.0.is_empty() {
-        return Ok(None);
+/// rooms first, in changes of at most [`MAX_ROOM_SNAPSHOTS`] each, so no room
+/// is ever left out (round-2 GPT review: an unrecorded project room read as a private chat).
+async fn record(service: &crate::hagency::backend::Service, id: &str, saved: &Value, rooms: &Rooms) -> Result<(), String> {
+    for chunk in rooms.snapshots(&loop_rooms(saved)).chunks(MAX_ROOM_SNAPSHOTS) {
+        super::live::saved(service, id, Some(serde_json::json!({"roomAutonomy": chunk}))).await
+            .map_err(|error| crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]))?;
     }
-    let (snapshots, left_out) = rooms.snapshots(&loop_rooms(saved));
-    super::live::saved(service, id, Some(serde_json::json!({"roomAutonomy": snapshots}))).await
-        .map_err(|error| crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]))?;
-    Ok(left_out_line(left_out))
+    Ok(())
 }
-
-/// The status part for `left_out` project rooms past the recording limit.
-pub(crate) fn left_out_line(left_out: usize) -> Option<String> {
-    (left_out > 0).then(|| crate::i18n::format(LEFT_OUT, &[("count", left_out.to_string()), ("max", MAX_ROOM_SNAPSHOTS.to_string())]))
-}
-pub const LEFT_OUT: &str = "{count} project rooms past the limit of {max} were not recorded, so agents treat them as paused";
 
 /// Pause stops the loop's own runs in progress in each paused room.
 async fn stop_paused(rooms: &Rooms) {

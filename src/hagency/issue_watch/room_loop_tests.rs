@@ -27,8 +27,7 @@ fn only_running_rooms_work_and_each_held_room_says_why() {
     assert!(held.iter().any(|h| h.starts_with("a/paused: the room is paused")));
     assert!(held.iter().any(|h| h == "a/unread: no answer"), "an unreadable room holds, fail closed");
     assert_eq!(rooms.paused(), vec!["!p:x".to_owned()]);
-    let (snapshots, left_out) = rooms.snapshots(&BTreeSet::new());
-    assert_eq!(left_out, 0);
+    let snapshots = rooms.snapshots(&BTreeSet::new());
     assert!(snapshots.iter().find(|s| s.room_id == "!u:x").is_some_and(|s| s.unread), "an unread room is recorded unread");
     assert!(snapshots.iter().find(|s| s.room_id == "!p:x").is_some_and(|s| s.paused));
 }
@@ -76,19 +75,15 @@ fn a_paused_room_never_takes_a_repository_from_a_running_room() {
 
 /// Round-2 GPT review (P1): discovered rooms sorting before the loop's own
 /// room pushed its snapshot past the owner API's cap, silently. The loop's
-/// rooms go first, and rooms past the limit are counted for the status line.
+/// rooms go first, and every room is recorded, in changes the cap allows.
 #[test]
-fn the_loops_own_rooms_are_recorded_first_and_rooms_past_the_limit_are_told() {
+fn the_loops_own_rooms_are_recorded_first_and_no_room_is_left_out() {
     use ::hagency::issue_watch::safeguards::room_autonomy::MAX_ROOM_SNAPSHOTS;
     let mut many: Vec<(String, Result<RoomState, String>)> = (0..MAX_ROOM_SNAPSHOTS + 2).map(|i| (format!("!a{i:04}:x"), state(Level::Off, false, &[]))).collect();
     many.push(("!zz-work:x".into(), state(Level::Autonomous, false, &["acme/app"])));
     let rooms = Rooms(many.into_iter().collect());
-    let saved = json!({"mayWork": ["!zz-work:x"]});
-    let (snapshots, left_out) = rooms.snapshots(&loop_rooms(&saved));
-    assert_eq!(snapshots.len(), MAX_ROOM_SNAPSHOTS);
+    let snapshots = rooms.snapshots(&loop_rooms(&json!({"mayWork": ["!zz-work:x"]})));
     assert_eq!(snapshots[0].room_id, "!zz-work:x", "the room the loop works in is never crowded out");
-    assert_eq!(left_out, 3);
-    let line = left_out_line(left_out).expect("told, not dropped silently");
-    assert!(line.starts_with("3 project rooms past the limit of 256 were not recorded"), "{line}");
-    assert_eq!(left_out_line(0), None);
+    assert_eq!(snapshots.len(), MAX_ROOM_SNAPSHOTS + 3, "none dropped");
+    assert_eq!(snapshots.chunks(MAX_ROOM_SNAPSHOTS).count(), 2, "sent in two changes");
 }

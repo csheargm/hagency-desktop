@@ -227,9 +227,10 @@ impl Ledger {
     /// when; `None` while it runs, after it ran, or when nothing is known.
     fn unrun(&self, agent: &str, (step, pr, head): (&str, &str, &str), sender: Sender<'_>, (round, now): (&Round, i64)) -> Result<Option<(Why, String, i64)>> {
         let Some((dispatch, runner, at)) = self.newest_sent((step, pr, head), sender, round.released_at)? else {
-            // Claimed before tagging (no round row): only a merge that never happened.
+            // Claimed before tagging (no round row): a merge that never happened, or a
+            // ready request claimed before it was a dispatched step (round-2 GPT review).
             if !round.known {
-                return Ok((step == "merge").then(|| (Why::Unrecorded, agent.to_owned(), 0)));
+                return Ok((step == "merge" || step == READY_STEP).then(|| (Why::Unrecorded, agent.to_owned(), 0)));
             }
             return self.unseen(agent, (step, pr, head), sender.2, now);
         };

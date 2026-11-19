@@ -161,8 +161,8 @@ pub async fn ask_ready(io: &impl LoopIo, target: &Target, fixer: &OwnedUserId, n
 
 /// Said in the hold line when the reviewer is another owner's Agent: its
 /// GitHub login is not known here, so only this owner's login's verdict is
-/// matched (round-2 GPT review).
-pub const OTHER_OWNER_VERDICT: &str = "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it posted on GitHub was not asked for again";
+/// matched (round-2 GPT review). It claims no verdict and no retry history.
+pub const OTHER_OWNER_VERDICT: &str = "the reviewer is another owner's Agent, whose GitHub login this device does not know, so a verdict it may have posted on GitHub cannot be matched here";
 
 /// `readiness` for the hold line: a missing approval from `other_owner`'s
 /// reviewer says why no unrecorded GitHub verdict was asked for again.

@@ -246,3 +246,15 @@ fn a_ready_request_the_agent_never_ran_is_given_back_like_a_merge() {
     l.claim_dispatched_step(AGENT, READY_STEP, PR, HEAD).unwrap();
     assert_eq!(l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0 + 10 * RESEND_AFTER_SECS).unwrap().taken, true, "a request that ran stays taken");
 }
+
+/// Round-2 GPT review: a ready request claimed before the upgrade has no
+/// round row nor tagged dispatch; it is given back once, never stuck.
+#[test]
+fn a_ready_request_claimed_before_the_upgrade_is_given_back_once() {
+    let (_temp, mut l) = ledger();
+    let ready = (READY_STEP, PR, HEAD);
+    l.claim_loop_step(AGENT, READY_STEP, PR, HEAD).unwrap();
+    let due = l.step_due(AGENT, ready, (ME, BIRD, ROOM), T0).unwrap();
+    assert_eq!((due.taken, due.again), (false, 1), "{due:?}");
+    assert_eq!(due.say.map(|s| s.why), Some(Why::Unrecorded));
+}

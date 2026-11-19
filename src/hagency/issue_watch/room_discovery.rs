@@ -17,7 +17,7 @@ pub const DISCOVERY_READS_PER_CHECK: usize = 32;
 /// The state types that make a room a project room.
 const PROJECT_TYPES: [&str; 2] = [ROOM_REPOS_STATE_TYPE, ROOM_AUTONOMY_STATE_TYPE];
 
-/// Each room's last discovery answer (when, and whether it is a project room), per account.
+/// Each room's last discovery answer (when, and whether it is a project room), per session.
 #[derive(Debug, Default)]
 pub(crate) struct Discovery {
     account: String,
@@ -25,7 +25,7 @@ pub(crate) struct Discovery {
 }
 
 impl Discovery {
-    /// Forget what another account found (a sign-out and sign-in as someone else).
+    /// Forget what another session found (a sign-out, or a sign-in as anyone).
     pub fn for_account(&mut self, account: &str) {
         if self.account != account {
             *self = Self { account: account.to_owned(), ..Default::default() };
@@ -53,36 +53,39 @@ fn lock() -> std::sync::MutexGuard<'static, Discovery> {
     DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether the room's server state holds linked repositories or a level;
-/// an error counts the room in for this check (reading a room is harmless)
-/// and is asked again next check.
+/// Whether the room's server state holds linked repositories or a level.
 async fn on_server(client: &matrix_sdk::Client, room: &matrix_sdk::ruma::RoomId) -> Result<bool, String> {
     crate::home::room_memory::server_state::events_of_types(client, room, &PROJECT_TYPES).await.map(|events| !events.is_empty())
 }
 
+/// How long one discovery read may take; a check's reads run together.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Every joined room the server (or the synced store) shows as a project room.
+/// A room whose read fails counts as one until its next read (fail closed:
+/// it is read and recorded unread), so failing rooms never hold the others back.
 pub(crate) async fn project_rooms() -> BTreeSet<String> {
     let Some(client) = crate::sliding_sync::get_client() else { return BTreeSet::new() };
-    let account = client.user_id().map(|u| u.to_string()).unwrap_or_default();
+    let session = client.session_meta().map(|m| format!("{}/{}", m.user_id, m.device_id)).unwrap_or_default();
     let rooms = client.joined_rooms();
     let joined: Vec<String> = rooms.iter().map(|r| r.room_id().to_string()).collect();
     let now = chrono::Utc::now().timestamp();
     let due = {
         let mut discovery = lock();
-        discovery.for_account(&account);
+        discovery.for_account(&session);
         discovery.due(&joined, now)
     };
-    let mut out = BTreeSet::new();
-    for room in rooms.iter().filter(|r| due.iter().any(|d| d == r.room_id().as_str())) {
-        match on_server(&client, room.room_id()).await {
-            Ok(project) => lock().note(room.room_id().as_str(), now, project),
-            Err(error) => {
-                makepad_widgets::log!("WARN room_discovery_unreadable room={}: {error}", room.room_id());
-                out.insert(room.room_id().to_string());
-            }
+    let reads = rooms.iter().filter(|r| due.iter().any(|d| d == r.room_id().as_str())).map(|room| async {
+        let read = tokio::time::timeout(READ_TIMEOUT, on_server(&client, room.room_id())).await.unwrap_or_else(|_| Err("timed out".to_owned()));
+        (room.room_id().to_string(), read)
+    });
+    for (room, read) in futures::future::join_all(reads).await {
+        if let Err(error) = &read {
+            makepad_widgets::log!("WARN room_discovery_unreadable room={room}: {error}");
         }
+        lock().note(&room, now, read.unwrap_or(true));
     }
-    out.extend(lock().project_rooms(&joined));
+    let mut out = lock().project_rooms(&joined);
     out.extend(in_store(&rooms).await);
     out
 }
