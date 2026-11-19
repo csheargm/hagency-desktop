@@ -78,10 +78,12 @@ pub struct RoomWatchesPanel {
     labels: Vec<String>,
 }
 
-/// The row's two lines: "yue-claude · acme/app" and "Active · owner @a:b".
-pub fn row_text(watch: &::hagency::issue_watch::RoomWatch) -> (String, String) {
+/// The row's two lines: "yue-claude · acme/app" and "Active · owner Betty";
+/// the owner's Matrix ID only when the room has no display name for it.
+pub fn row_text(watch: &::hagency::issue_watch::RoomWatch, names: &std::collections::BTreeMap<String, String>) -> (String, String) {
     let status = crate::i18n::tr(if watch.active { "Active" } else { "Paused" });
-    let detail = crate::i18n::format("{status} · owner {owner}", &[("status", status.to_owned()), ("owner", watch.owner.clone())]);
+    let owner = names.get(&watch.owner).cloned().unwrap_or_else(|| watch.owner.clone());
+    let detail = crate::i18n::format("{status} · owner {owner}", &[("status", status.to_owned()), ("owner", owner)]);
     (format!("{} · {}", watch.agent, watch.repo), detail)
 }
 
@@ -94,7 +96,7 @@ pub fn notice(loaded: Option<&Result<super::Watches, String>>, link_error: Optio
         Some(Err(error)) => parts.push(crate::i18n::format("Room status is unavailable: {error}", &[("error", error.clone())])),
         Some(Ok(w)) => {
             if w.rows.is_empty() && w.status.as_ref().is_ok_and(|s| s.tables.is_empty()) {
-                parts.push(crate::i18n::tr("No Agent watches a repository for this room.").to_owned());
+                parts.push(crate::i18n::tr("No agent is working on this room's repositories right now.").to_owned());
             }
             match &w.status {
                 Ok(status) => parts.extend(status.notes.iter().cloned()),

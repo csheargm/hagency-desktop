@@ -81,8 +81,10 @@ pub fn lines(watches: &Watches, filter: Option<&str>) -> Vec<Line> {
     }
     if !watches.rows.is_empty() {
         out.push(Line::Section(crate::i18n::tr("Your Agents' watches").to_owned()));
+        let none = Default::default();
+        let names = watches.status.as_ref().map_or(&none, |s| &s.names);
         out.extend(watches.rows.iter().map(|w| {
-            let (title, detail) = super::panel::row_text(w);
+            let (title, detail) = super::panel::row_text(w, names);
             Line::Item(title, detail)
         }));
     }

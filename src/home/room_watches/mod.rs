@@ -16,6 +16,7 @@ pub mod merge_rules_model;
 pub mod panel;
 pub mod review_setting;
 pub mod lines;
+pub mod load;
 pub mod status;
 pub mod tasks;
 #[cfg(test)]
@@ -117,23 +118,6 @@ fn watches_of(room: &str, roster: &Value, saved: &[(String, Value)]) -> Result<V
     Ok(out)
 }
 
-async fn load(room: &str) -> Loaded {
-    use crate::hagency::{backend::Service, model::Command};
-    let service = Service::for_current()?;
-    let roster = service.execute(Command::Agents).await?;
-    let mut saved = Vec::new();
-    for agent in roster["agents"].as_array().into_iter().flatten() {
-        let Some(id) = agent["id"].as_str() else { continue };
-        saved.push((id.to_owned(), crate::hagency::issue_watch::live::saved(&service, id, None).await?));
-    }
-    let watches = watches_of(room, &roster, &saved)?;
-    let own: Vec<status::OwnWatch> = watches.iter().map(|(id, w)| (id.clone(), w.repo.clone(), w.active)).collect();
-    let client = crate::sliding_sync::get_client().ok_or("Signed out")?;
-    let room_id = RoomId::parse(room).map_err(|e| e.to_string())?;
-    let status = status::load(&client, &room_id, &own).await;
-    Ok(Watches { rows: watches.into_iter().map(|(_, w)| w).collect(), status })
-}
-
 /// The newest link or unlink failure, or a note on a link, per room, shown above the list.
 static LINK_ERRORS: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
 pub fn link_error(room: &RoomId) -> Option<String> {
@@ -173,14 +157,28 @@ pub fn refresh(room: &RoomId) {
     let key = (account(), room.to_owned());
     let ticket = begin(&key);
     crate::sliding_sync::spawn_async_task(async move {
-        let loaded = load(key.1.as_str()).await;
-        // A reply for an account that signed out meanwhile is dropped.
-        if account() != key.0 {
-            return;
-        }
-        let room_id = key.1.clone();
-        if finish(key, ticket, loaded) {
-            Cx::post_action(WatchesChanged { room_id });
+        // The timeout is shown at once, then retried once after a pause.
+        for attempt in 0..2 {
+            let loaded = load::load(key.1.as_str()).await;
+            let again = attempt == 0 && load::is_too_long(&loaded);
+            if !publish(key.clone(), ticket, loaded) || !again {
+                return;
+            }
+            tokio::time::sleep(load::RETRY_BACKOFF).await;
         }
     });
+}
+
+/// Stores and announces `loaded`; false once the account changed or a newer request began.
+fn publish(key: Key, ticket: u64, loaded: Loaded) -> bool {
+    // A reply for an account that signed out meanwhile is dropped.
+    if account() != key.0 {
+        return false;
+    }
+    let room_id = key.1.clone();
+    let kept = finish(key, ticket, loaded);
+    if kept {
+        Cx::post_action(WatchesChanged { room_id });
+    }
+    kept
 }
