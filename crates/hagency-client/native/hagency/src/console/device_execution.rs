@@ -1089,8 +1089,8 @@ impl Console {
             let value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
             return Err(error(status, &refusal_code(&value)));
         }
-        let current = self.request_device(live).await.map_err(login_error)?;
-        accept_answer(&device, &current)?;
+        let current = self.0.server_login.current_device_now().await;
+        accept_answer(&device, current.as_ref())?;
         let value: Value =
             serde_json::from_slice(&raw).map_err(|_| error(502, "invalid_execution_response"))?;
         if !(200..300).contains(&status) {
@@ -1111,12 +1111,13 @@ fn login_error(error: super::Error) -> DeviceError {
 /// resurrect local authorization revoked while that request was in flight,
 /// but the sending proof passing its local deadline after the server answered
 /// is not a refusal: the server accepted it (GPT batch review, Nov 18).
-fn accept_answer(sent: &AuthorizedDevice, current: &AuthorizedDevice) -> Result<(), DeviceError> {
+/// `current` is read without waiting for a renewal; `None` is signed out.
+fn accept_answer(sent: &AuthorizedDevice, current: Option<&AuthorizedDevice>) -> Result<(), DeviceError> {
     let refused = || error(401, "device_authorization_required");
-    if sent.is_revoked() {
+    let Some(current) = current else { return Err(refused()) };
+    if sent.is_revoked() || current.is_revoked() {
         return Err(refused());
     }
-    current.bearer().map_err(|_| refused())?;
     if DeviceIdentity::from(current) != DeviceIdentity::from(sent) {
         return Err(refused());
     }
@@ -1148,12 +1149,15 @@ mod processing_tests {
         let (sent, revoked) = super::super::server_login::fixture_device(origin, "owner", "@owner:example");
         let sent = sent.with_valid_until(std::time::Instant::now());
         let (current, _) = super::super::server_login::fixture_device(origin, "owner", "@owner:example");
-        assert!(accept_answer(&sent, &current).is_ok(), "local expiry is not a refusal");
+        let lapsed = current.clone().with_valid_until(std::time::Instant::now());
+        assert!(accept_answer(&sent, Some(&current)).is_ok(), "local expiry is not a refusal");
+        assert!(accept_answer(&sent, Some(&lapsed)).is_ok(), "nor is the current proof's");
+        assert!(accept_answer(&sent, None).is_err(), "signed out refuses");
         revoked.store(true, std::sync::atomic::Ordering::Release);
-        assert_eq!(accept_answer(&sent, &current).unwrap_err().status, 401, "revocation in flight still refuses");
+        assert_eq!(accept_answer(&sent, Some(&current)).unwrap_err().status, 401, "revocation in flight still refuses");
         let (other, _) = super::super::server_login::fixture_device(origin, "someone", "@owner:example");
         let (current, _) = super::super::server_login::fixture_device(origin, "owner", "@owner:example");
-        assert!(accept_answer(&current, &other).is_err(), "a changed device refuses");
+        assert!(accept_answer(&current, Some(&other)).is_err(), "a changed device refuses");
     }
     /// The run card reply is recorded with the server's own digest of the
     /// request (field order dispatchId, executionId, body, matrixEventId);
