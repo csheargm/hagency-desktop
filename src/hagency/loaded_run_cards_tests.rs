@@ -262,7 +262,7 @@ fn previews_show_only_an_admitted_cards_text_escaped_and_forged_cards_jump_nowhe
     let link = "<a href=\"https://evil.test\">click</a>";
     edit["content"]["m.new_content"]["im.hagency.agent_run"]["answer"] = link.into();
     let sender = matrix_sdk::ruma::UserId::parse(card["sender"].as_str().unwrap()).unwrap();
-    let preview = |content: &Value| crate::event_preview::text_preview_of_message(&message_type(content), &sender, "anna-claude")
+    let preview = |content: &Value| crate::event_preview::text_preview_of_message(&message_type(content), &sender, "anna-claude", crate::event_preview::CardScope { room: matrix_sdk::ruma::room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), event: None })
         .format_with("anna-claude", true);
     let forged = preview(&edit["content"]["m.new_content"]);
     assert!(forged.contains(crate::i18n::tr("Agent run")) && !forged.contains("<a") && !forged.contains("evil"), "{forged}");

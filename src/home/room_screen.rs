@@ -7300,6 +7300,7 @@ fn draw_replied_to_message(
                     &replied_to_event.content,
                     &replied_to_event.sender,
                     &in_reply_to_username,
+                    crate::event_preview::CardScope { room: timeline_kind.room_id(), event: Some(&in_reply_to_details.event_id) },
                 );
             }
             TimelineDetails::Error(_e) => {
@@ -7420,10 +7421,11 @@ fn populate_thread_root_summary(
                     .unwrap_or(embedded_event.sender.as_str()),
                 _ => embedded_event.sender.as_str(),
             };
+            let scope = crate::event_preview::CardScope { room: timeline_kind.room_id(), event: None };
             match embedded_event.content.as_message() {
-                Some(msg) => crate::thread_reply_preview::preview_of_message(msg.msgtype(), &embedded_event.sender, sender_username).into(),
+                Some(msg) => crate::thread_reply_preview::preview_of_message(msg.msgtype(), &embedded_event.sender, sender_username, scope).into(),
                 None => {
-                    let preview = text_preview_of_timeline_item(&embedded_event.content, &embedded_event.sender, sender_username)
+                    let preview = text_preview_of_timeline_item(&embedded_event.content, &embedded_event.sender, sender_username, scope)
                         .format_with(sender_username, true);
                     utils::replace_linebreaks_separators(&preview, true).into_owned().into()
                 }
@@ -7479,12 +7481,13 @@ fn populate_thread_root_summary(
 
 /// Generates a rich HTML text preview of the given `timeline_item_content`
 /// and populates the given `widget_out` with that content.
-pub fn populate_preview_of_timeline_item(
+pub(crate) fn populate_preview_of_timeline_item(
     cx: &mut Cx,
     widget_out: &HtmlOrPlaintextRef,
     timeline_item_content: &TimelineItemContent,
     sender_user_id: &UserId,
     sender_username: &str,
+    scope: crate::event_preview::CardScope<'_>,
 ) {
     // Reply quotes show one line, so a long request is not repeated in full above its reply.
     if let Some(line) = timeline_item_content.as_message()
@@ -7497,6 +7500,7 @@ pub fn populate_preview_of_timeline_item(
         timeline_item_content,
         sender_user_id,
         sender_username,
+        scope,
     ).format_with(sender_username, true);
     widget_out.show_html(cx, html);
 }

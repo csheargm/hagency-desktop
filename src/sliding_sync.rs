@@ -4948,6 +4948,7 @@ async fn add_new_room(
     let latest = get_latest_event_details(
         &new_room.room.latest_event().await,
         room_list_service.client(),
+        new_room.room.room_id(),
     ).await;
     let room_name_id = RoomNameId::from((new_room.display_name.clone(), new_room.room_id.clone()));
     // Start with a basic text avatar; the avatar image will be fetched asynchronously below.
@@ -5675,8 +5676,10 @@ async fn text_preview_of_latest_thread_reply(
     let sender_name = sender_room_member.as_ref()
         .and_then(|rm| rm.display_name())
         .unwrap_or(sender_id.as_str());
-    if let Some(preview) = crate::thread_reply_preview::preview_of_raw_event(raw, sender_name) { return Some(preview); }
-    let text_preview = text_preview_of_raw_timeline_event(raw, sender_name).unwrap_or_else(|| {
+    // A thread's latest reply may be an edit, whose id is not the card's: bind to the room only.
+    let scope = crate::event_preview::CardScope { room: room.room_id(), event: None };
+    if let Some(preview) = crate::thread_reply_preview::preview_of_raw_event(raw, sender_name, scope) { return Some(preview); }
+    let text_preview = text_preview_of_raw_timeline_event(raw, sender_name, scope).unwrap_or_else(|| {
         let event_type = raw.get_field::<String>("type").ok().flatten();
         TextPreview::from((
             event_type.unwrap_or_else(|| "unknown event type".to_string()),
@@ -5698,7 +5701,10 @@ async fn text_preview_of_latest_thread_reply(
 async fn get_latest_event_details(
     latest_event_value: &LatestEventValue,
     client: &Client,
+    room_id: &matrix_sdk::ruma::RoomId,
 ) -> Option<LatestEventPreview> {
+    // The latest event's id is not known here: a run card binds to the room only.
+    let scope = crate::event_preview::CardScope { room: room_id, event: None };
     macro_rules! get_sender_username {
         ($profile:expr, $sender:expr, $is_own:expr) => {{
             match $profile {
@@ -5724,7 +5730,7 @@ async fn get_latest_event_details(
                 return None;
             }
             let sender_username = get_sender_username!(profile, sender, *is_own);
-            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username);
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, scope);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::Local { timestamp, sender, profile, content, state: _ } => {
@@ -5733,7 +5739,7 @@ async fn get_latest_event_details(
             //                "<span color="red">Failed to send {msg}</span>"
             let is_own = current_user_id().is_some_and(|id| &id == sender);
             let sender_username = get_sender_username!(profile, sender, is_own);
-            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username);
+            let (text, direct_text) = crate::thread_reply_preview::latest_event_preview(content, sender, &sender_username, scope);
             Some(LatestEventPreview { timestamp: *timestamp, text, direct_text, sender: Some(sender.clone()) })
         }
         LatestEventValue::RemoteInvite { timestamp, .. } => {
@@ -5758,6 +5764,7 @@ pub(crate) async fn update_latest_event(room: &Room) {
     if let Some(latest) = get_latest_event_details(
         &room.latest_event().await,
         &room.client(),
+        room.room_id(),
     ).await {
         enqueue_rooms_list_update(RoomsListUpdate::UpdateLatestEvent {
             room_id: room.room_id().to_owned(),

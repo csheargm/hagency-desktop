@@ -1281,6 +1281,7 @@ impl RoomInputBar {
             replying_to.0.content(),
             replying_to.0.sender(),
             &replying_preview_username,
+            crate::event_preview::CardScope { room: timeline_kind.room_id(), event: replying_to.0.event_id() },
         );
 
         replying_preview.set_visible(cx, true);
