@@ -275,7 +275,8 @@ async fn room_roster(room: &str) -> Result<HashMap<OwnedUserId, RosterRow>, Stri
 pub(crate) async fn room_roster_with(service: &crate::hagency::backend::Service, room: &str) -> Result<HashMap<OwnedUserId, RosterRow>, String> {
     let context = service.agents_for_registered_room(room).await?;
     let project = context["projectId"].as_str().filter(|id| !id.is_empty()).ok_or("room_discovery_unavailable")?;
-    let roster = service.execute(Command::RoomRoster { project_id: project.into(), room_id: room.into() }).await?;
+    // A failed read may mean the room moved: look its project up again next time.
+    let roster = service.execute(Command::RoomRoster { project_id: project.into(), room_id: room.into() }).await.inspect_err(|_| service.forget_registered_room(room))?;
     Ok(roster_rows(&roster["agents"]))
 }
 

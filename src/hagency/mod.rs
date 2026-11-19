@@ -5,6 +5,7 @@ pub(crate) mod group_rooms;
 pub mod room_share;
 pub(crate) mod quick_setup;
 pub mod backend;
+pub(crate) mod room_project;
 pub mod model;
 pub mod ui;
 pub mod hosting;
