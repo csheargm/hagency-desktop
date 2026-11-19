@@ -61,12 +61,15 @@ pub enum LoopNotice {
     /// A `review` or `merge` step's dispatch ended without the Agent running
     /// (`why` is the ledger's word); `step` keys the round's one line.
     NotStarted { target: Target, what: String, why: String, gave_up: bool, step: String },
+    /// Another owner's Agent (`reviewer`, as the room reads it) gave no
+    /// verdict of the head on GitHub in time; `step` keys the one line.
+    Unanswered { target: Target, reviewer: String, step: String },
 }
 
 impl LoopNotice {
     fn target(&self) -> &Target {
         match self {
-            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::AwaitsPerson { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } | Self::MarkReady { target, .. } => target,
+            Self::ReviewRequested { target, .. } | Self::Approved { target, .. } | Self::NeedsMaintainer { target, .. } | Self::NeedsOwner { target, .. } | Self::Held { target, .. } | Self::AwaitsPerson { target, .. } | Self::Unreachable { target, .. } | Self::NotStarted { target, .. } | Self::Unanswered { target, .. } | Self::MarkReady { target, .. } => target,
         }
     }
     /// The once-per-head loop step this notice is recorded under.
@@ -74,7 +77,7 @@ impl LoopNotice {
         match self {
             Self::ReviewRequested { .. } => "review",
             Self::MarkReady { .. } => DRAFT_STEP,
-            Self::Held { step, .. } | Self::AwaitsPerson { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } => step,
+            Self::Held { step, .. } | Self::AwaitsPerson { step, .. } | Self::Unreachable { step, .. } | Self::NeedsOwner { step, .. } | Self::NeedsMaintainer { step, .. } | Self::NotStarted { step, .. } | Self::Unanswered { step, .. } => step,
             _ => "merge",
         }
     }
@@ -122,6 +125,7 @@ impl LoopNotice {
             Self::AwaitsPerson { reviewer: None, .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
             Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
+            Self::Unanswered { reviewer, .. } => format!("⏳ {reviewer} has not answered the review request for PR #{} yet: {}", t.number, t.url),
         }
     }
 

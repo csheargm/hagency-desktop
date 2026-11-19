@@ -63,6 +63,9 @@ struct DueStep {
     to: String,
     /// The room the notices go to: only dispatches received there count.
     room: String,
+    /// The review's addressee is another owner's Agent, whose runs this device never sees.
+    #[serde(default)]
+    remote: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -113,14 +116,18 @@ fn assigned(ledger: &Ledger, agent: &str, repo: &str) -> Result<bool> {
 
 /// The re-send of a step whose dispatch never ran (`stepDue`) and the ack of its room line (`stepSaid`).
 fn resend_parts(ledger: &mut Ledger, agent: &str, (due, said): (Option<DueStep>, Option<SaidStep>), now: i64, reply: &mut Value) -> Result<()> {
-    if let Some(DueStep { step, pr, head, requester, to, room }) = due {
+    if let Some(DueStep { step, pr, head, requester, to, room, remote }) = due {
         let step = Step { step, pr, head };
         pr_head(&step)?;
         room_id(&room)?;
         if !requester.starts_with('@') || !to.starts_with('@') {
             return Err(Error::Invalid("requester and addressee must be Matrix user IDs"));
         }
-        reply["due"] = due_json(ledger.step_due(agent, (&step.step, &step.pr, &step.head), (&requester, &to, &room), now)?);
+        if remote && step.step != "review" {
+            return Err(Error::Invalid("only a review step addresses another owner's Agent"));
+        }
+        let due = if remote { ledger.remote_review_due(agent, (&step.pr, &step.head), &to, now)? } else { ledger.step_due(agent, (&step.step, &step.pr, &step.head), (&requester, &to, &room), now)? };
+        reply["due"] = due_json(due);
     }
     if let Some(SaidStep { step, pr, head, round }) = said {
         let step = Step { step, pr, head };
@@ -212,6 +219,8 @@ mod tests {
         assert!(room_id("!r:x").is_ok() && room_id("r:x").is_err() && room_id("!r").is_err() && room_id("!r :x").is_err());
         let due: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x", "to": "@bird:x", "room": "!r:x"}, "stepSaid": {"step": "merge", "pr": "https://github.com/a/b/pull/1", "head": sha, "round": 0}})).unwrap();
         assert!(due.step_due.is_some() && due.step_said.is_some());
+        let remote: ReviewChange = serde_json::from_value(json!({"stepDue": {"step": "review", "pr": "https://github.com/a/b/pull/1", "head": sha, "requester": "@me:x", "to": "@bird:y", "room": "!r:x", "remote": true}})).unwrap();
+        assert!(remote.step_due.is_some_and(|d| d.remote), "another owner's reviewer is said so");
         let passed: ReviewChange = serde_json::from_value(json!({"stepPassed": {"step": "review", "pr": "https://github.com/a/b/pull/1", "head": sha}})).unwrap();
         assert!(passed.step_passed.is_some(), "the reviewers that never answered are asked for by head");
         let step = |s: &str, pr: &str, head: &str| Step { step: s.into(), pr: pr.into(), head: head.into() };
