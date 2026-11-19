@@ -51,11 +51,13 @@ pub fn activity(status: &RoomStatus, agent: &str, owner: Option<&str>) -> String
     }
 }
 
-/// Reviewed and held only by the room's level (Assist, Off, paused): the
-/// room was told "is ready … a person merges it", so the line says so too.
+/// Reviewed and held only by the room's level (`merge_hold::only_assist`):
+/// the room was told "is ready … a person merges it", so the line says so
+/// too. Any other hold, also the Autonomy label of a stale authority or a
+/// missing permission, stays "in review" (GPT review).
 fn awaits_person(issue: &::hagency::repo_status::Published) -> bool {
     issue.state == ::hagency::repo_status::TrackState::Reviewed
-        && issue.hold.as_deref() == Some(crate::hagency::issue_watch::merge_hold::Missing::Autonomy.label())
+        && issue.hold.as_deref() == Some(crate::hagency::issue_watch::merge_hold::LEVEL_ONLY_HOLD)
 }
 
 async fn member(room: &Room, id: &str) -> Member {

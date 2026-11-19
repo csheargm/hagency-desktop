@@ -56,9 +56,12 @@ fn activity_comes_from_published_state_then_tasks_else_idle() {
     let s = status_with(Vec::new(), vec![seen("h/desktop", 37, TrackState::Reviewed, Some(38)), seen("h/desktop", 30, TrackState::Merged, Some(31))], Vec::new());
     assert_eq!(activity(&s, BIRD, Some(BETTY)), "working on #37 (PR #38 in review)");
     let mut ready = seen("h/desktop", 37, TrackState::Reviewed, Some(38));
-    ready.issue.hold = Some(crate::hagency::issue_watch::merge_hold::Missing::Autonomy.label().to_owned());
+    ready.issue.hold = Some(crate::hagency::issue_watch::merge_hold::LEVEL_ONLY_HOLD.to_owned());
     let s_ready = status_with(Vec::new(), vec![ready.clone()], Vec::new());
     assert_eq!(activity(&s_ready, BIRD, Some(BETTY)), "working on #37 (PR #38 ready — a person merges)", "an Assist-held reviewed PR is ready, not in review");
+    let mut stale = ready.clone();
+    stale.issue.hold = Some(crate::hagency::issue_watch::merge_hold::Missing::Autonomy.label().to_owned());
+    assert_eq!(activity(&status_with(Vec::new(), vec![stale], Vec::new()), BIRD, Some(BETTY)), "working on #37 (PR #38 in review)", "a stale-authority or permission hold uses the same label and stays in review");
     ready.issue.hold = Some("green CI".into());
     let s_ci = status_with(Vec::new(), vec![ready], Vec::new());
     assert_eq!(activity(&s_ci, BIRD, Some(BETTY)), "working on #37 (PR #38 in review)", "any other hold stays in review");

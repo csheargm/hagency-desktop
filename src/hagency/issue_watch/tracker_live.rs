@@ -227,7 +227,7 @@ impl TrackIo for LiveTrack<'_> {
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         let settled = review_loop::peer_review::advance(&io, &target, peer.as_ref(), &review_loop::peer_review::LiveFacts { worker: self.worker, peers: &self.peers, room: &self.room }).await?;
         // Told ready for a person at this head and level: nothing more is said (GPT review).
-        if settled { return Ok(Followed::Held(vec![merge_hold::Missing::Autonomy])) }
+        if settled { return Ok(Followed::AwaitsPerson) }
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
         // Everyone passed over: nobody is asked, but a late verdict still merges (GPT review).
         let gate = match self.merge_step(&io, &target, (pr, peer.as_ref(), settled), &fixer).await {
@@ -272,7 +272,7 @@ pub(super) fn followed_of(gate: Gate, asking: bool) -> Followed {
     match gate {
         Gate::Merge => Followed::Merging,
         Gate::WaitCi => Followed::WaitingCi,
-        Gate::Hold(missing) => Followed::Held(missing.into_iter().map(|(m, _)| m).collect()),
+        Gate::Hold(missing) => if merge_hold::only_assist(&missing) { Followed::AwaitsPerson } else { Followed::Held(missing.into_iter().map(|(m, _)| m).collect()) },
         Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) if !asking => Followed::NeedsPerson,
         Gate::WaitReview | Gate::WaitFacts | Gate::Unreadable(_) => Followed::Requested,
     }

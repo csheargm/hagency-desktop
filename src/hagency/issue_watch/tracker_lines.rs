@@ -1,6 +1,7 @@
 //! The status parts of the issue loop's follow-through (split from
 //! `tracker.rs`, R4): one short line per tracked issue, in the words the room
 //! already saw. UI text, translated here.
+use super::merge_hold::{LEVEL_ONLY_HOLD, Missing};
 use super::tracker::Followed;
 use ::hagency::issue_watch::issue_track::{MAX_ATTEMPTS, State, Track};
 
@@ -8,6 +9,7 @@ use ::hagency::issue_watch::issue_track::{MAX_ATTEMPTS, State, Track};
 pub(crate) fn hold_of(followed: &Followed) -> Option<String> {
     match followed {
         Followed::Held(missing) => Some(missing.iter().map(|m| m.label()).collect::<Vec<_>>().join("; ")),
+        Followed::AwaitsPerson => Some(LEVEL_ONLY_HOLD.to_owned()),
         Followed::NeedsPerson => Some("a person's review and merge approval".to_owned()),
         Followed::WaitingCi => Some("CI".to_owned()),
         _ => None,
@@ -40,6 +42,8 @@ pub(super) fn pr_line(number: i64, pr: u64, followed: Followed) -> String {
         Followed::Requested => "#{number} PR #{pr} in review",
         Followed::NeedsPerson => "#{number} PR #{pr} waiting for your review",
         Followed::Draft => "#{number} PR #{pr} is a draft",
+        // The room's line is unchanged: it needs a person (room setting).
+        Followed::AwaitsPerson => return pr_line(number, pr, Followed::Held(vec![Missing::Autonomy])),
     };
     crate::i18n::format(template, &args)
 }
@@ -49,5 +53,26 @@ pub(crate) fn terminal_line(track: &Track) -> Option<String> {
         State::Failed => Some(crate::i18n::format("#{number} gave up after {max} attempts", &[("number", n), ("max", MAX_ATTEMPTS.to_string())])),
         State::NeedsHuman => Some(crate::i18n::format("#{number} needs a person", &[("number", n)])),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::merge_hold::Gate;
+    use super::super::tracker_live::followed_of;
+
+    /// GPT review, Nov 19: the status said "ready — a person merges" for any
+    /// Autonomy hold, also a stale authority or a missing permission.
+    #[test]
+    fn only_a_level_only_hold_is_published_as_ready() {
+        let level = vec![(Missing::Autonomy, ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON.to_owned())];
+        let level_only = followed_of(Gate::Hold(level), true);
+        assert_eq!(level_only, Followed::AwaitsPerson);
+        assert_eq!(hold_of(&level_only).as_deref(), Some(LEVEL_ONLY_HOLD));
+        assert_eq!(pr_line(127, 131, level_only), "#127 PR #131 needs: a person (room setting)", "the room's line is unchanged");
+        let stale = followed_of(Gate::Hold(vec![(Missing::Autonomy, "the room's authority could not be read".to_owned())]), true);
+        assert_eq!(stale, Followed::Held(vec![Missing::Autonomy]));
+        assert_eq!(hold_of(&stale).as_deref(), Some(Missing::Autonomy.label()));
     }
 }

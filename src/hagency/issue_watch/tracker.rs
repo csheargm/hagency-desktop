@@ -32,6 +32,8 @@ pub(crate) enum Followed {
     Merging,
     /// It cannot merge yet: one room notice said what is missing (ADR 0020).
     Held(Vec<Missing>),
+    /// Reviewed and ready; only the room's level holds it, so a person merges.
+    AwaitsPerson,
     /// The merge step failed to reach GitHub this many checks in a row; retried next check.
     Unreachable(u32),
     /// No other Agent can review: a person must review and merge.
@@ -235,7 +237,7 @@ async fn follow_one(io: &impl TrackIo, (repo, now): (&str, i64), track: &Track, 
     if followed == Followed::NeedsPerson && !told {
         io.say(n, &format!("needs-review-{pr}"), crate::i18n::format(NEEDS_YOU, &[("pr", pr.to_string()), ("number", n.to_string()), ("url", pull.url.clone())])).await?;
         io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
-    } else if matches!(followed, Followed::Held(_)) && !told {
+    } else if matches!(followed, Followed::Held(_) | Followed::AwaitsPerson) && !told {
         // The review loop posted the notice (once per head and set of missing things).
         io.record(change_of(repo, n, json!({"state": "reviewed", "notified": true}))).await?;
     } else if matches!(followed, Followed::Requested | Followed::WaitingCi | Followed::Merging) && (track.state != State::Reviewed || track.pr != Some(pr)) {
