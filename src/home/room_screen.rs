@@ -3639,6 +3639,14 @@ impl RoomScreen {
                         ),
                         None => String::from("the replied-to message"),
                     };
+                    // A run card's row is hidden: go to the request its admitted card is
+                    // drawn on, and nowhere for an unadmitted (possibly forged) one.
+                    let run_target = self.tl_state.as_ref().and_then(|tl| replied_run_card_target(tl, details.item_id, related_event_id));
+                    let related_event_id = match &run_target {
+                        Some(None) => continue,
+                        Some(Some(request)) => request,
+                        None => related_event_id,
+                    };
                     self.jump_to_event(
                         cx,
                         related_event_id,
@@ -6679,6 +6687,17 @@ fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineIte
         event_id, sender, plain: *plain, body,
     }).collect();
     super::agent_reply_dedupe::duplicates(&runs, &timeline).into_iter().map(str::to_owned).collect()
+}
+
+/// For a reply to a run card: `Some(where to jump)`, the request of the
+/// admitted card or `None` for an unadmitted one. `None` for other replies.
+// TODO(R4): move with the Agent run timeline helpers when room_screen splits.
+fn replied_run_card_target(tl: &TimelineUiState, item_id: usize, related: &OwnedEventId) -> Option<Option<OwnedEventId>> {
+    let reply = tl.items.get(item_id)?.as_event()?.content().as_msglike()?.in_reply_to.as_ref()?;
+    let TimelineDetails::Ready(replied) = &reply.event else { return None };
+    let TimelineItemContent::MsgLike(msg_like) = &replied.content else { return None };
+    is_agent_run_status(&msg_like.kind).then(|| crate::hagency::run_controls::jump_target(tl.kind.room_id(), related.as_str())
+        .and_then(|id| OwnedEventId::try_from(id).ok()))
 }
 
 /// The Agent run status event (`im.hagency.agent_run`); the run card displays it.

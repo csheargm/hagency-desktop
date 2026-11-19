@@ -290,6 +290,19 @@ fn runs_for(all: &[Entry], room: &RoomId, event: &str, include_thread: bool) -> 
     entries.sort_by_key(|e| !e.card.state.active());
     entries
 }
+/// The admitted card `sender` posted as run `content` (a run card's message
+/// data): what a preview may show. A forged or unadmitted card has none.
+pub fn admitted_card(sender: &str, content: &serde_json::Map<String, Value>) -> Option<Card> {
+    let id = content.get(::hagency::agent_run_controls::MSGTYPE)?.get("id")?.as_str()?;
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .find(|e| e.agent == sender && e.card.id == id).map(|e| e.card.clone())
+}
+/// Where a reply to run card `event` jumps: the request its admitted card is
+/// drawn on. None for an unadmitted card (its own row is hidden).
+pub fn jump_target(room: &RoomId, event: &str) -> Option<String> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()
+        .find(|e| e.card.room_id == room.as_str() && e.key == event).map(|e| e.card.event_id.clone())
+}
 /// Whether `event` is an admitted run card's own event (drawn by its card).
 pub fn is_card_event(room: &RoomId, event: &str) -> bool {
     STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.iter()

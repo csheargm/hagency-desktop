@@ -237,14 +237,7 @@ pub(super) async fn admit_loaded(generation: u64, room: &Room, events: Vec<(Valu
     let client = room.client();
     let mut changed = false;
     for (value, info) in &events {
-        let admitted = consider(generation, &client, room, value, info.as_ref(), true).await;
-        // TODO(observability): drop these lines once loaded run cards are confirmed live (Nov 19).
-        let plaintext = info.is_none() && plaintext_room(room).await;
-        log!("Loaded run cards: {} {} from {} in {}: admitted={admitted} current={} encrypted_info={} plaintext_room={plaintext}",
-            if value["content"]["m.relates_to"]["rel_type"] == "m.replace" { "edit" } else { "card" },
-            value["event_id"].as_str().unwrap_or("?"), value["sender"].as_str().unwrap_or("?"), room.room_id(),
-            current(generation), info.is_some());
-        changed |= admitted;
+        changed |= consider(generation, &client, room, value, info.as_ref(), true).await;
     }
     changed
 }
