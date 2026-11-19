@@ -53,6 +53,45 @@ class LogLines(unittest.TestCase):
         self.assertEqual(provider.recent_login_errors(old, NOW), [])
 
 
+SECRET = "ghp_e2eSampleTokenValue1234567890"
+SECRET_LINE = LOGIN_LINE + f' token="{SECRET}" path="/Users/u/Library/Hagency Claude/anna"'
+
+
+class ReportHygiene(unittest.TestCase):
+    """No raw config path or log tail (which may hold a token) reaches the report."""
+
+    def test_excerpt_keeps_only_timestamp_and_marker(self):
+        self.assertEqual(provider.log_excerpt(SECRET_LINE),
+                         "2026-11-19T11:58:52Z dedicated owner Claude login required")
+
+    def test_config_dir_is_never_printed(self):
+        out = provider.signed_out_agents({"anna": False, "betty": None}, {"betty": [provider.log_excerpt(SECRET_LINE)]},
+                                         {"anna": "/Users/u/Library/Hagency Claude/anna", "betty": None})
+        text = " ".join(out.values())
+        self.assertIn("dedicated config", text)
+        self.assertNotIn("/Users/u", text)
+        self.assertNotIn(SECRET, text)
+        self.assertEqual(provider.describe_dir(provider.UNKNOWN_DIR), "unknown config")
+
+    def test_preflight_and_reclassify_do_not_leak_the_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            anna, betty = Path(tmp) / "a.log", Path(tmp) / "b.log"
+            anna.write_text("")
+            betty.write_text(SECRET_LINE + "\n")
+            with mock.patch.object(provider.config, "DESKTOP_LOGS", {"anna": anna, "betty": betty}), \
+                    mock.patch.object(provider, "desktop_config_dir", return_value="/Users/u/secret dir"), \
+                    mock.patch.object(provider, "claude_cli_logged_in", return_value=None):
+                out, log = provider.preflight(NOW)
+            offsets = {"desktop:betty": (betty, 0)}
+            r = provider.reclassify_silence(Result("5", FAIL, 1, [], "bird-claude said: '(nothing)'", "finding"),
+                                            offsets)
+        text = " ".join(log) + " ".join(out.values()) + r.note
+        self.assertEqual(r.status, BLOCKED)
+        self.assertIn("dedicated owner Claude login required", text)
+        self.assertNotIn(SECRET, text)
+        self.assertNotIn("/Users/u", text)
+
+
 class AuthStatus(unittest.TestCase):
     def test_reads_logged_in_only(self):
         self.assertIs(provider.parse_auth_status('{"loggedIn": false, "authMethod": "none"}'), False)
@@ -170,7 +209,7 @@ class ConfigDir(unittest.TestCase):
         self.assertEqual(probe.call_count, 2)
         out = provider.signed_out_agents(got, {}, {"anna": None, "betty": "/srv/b"})
         self.assertEqual(set(out), {"bird-claude"})
-        self.assertIn("CLAUDE_CONFIG_DIR=/srv/b", out["bird-claude"])
+        self.assertIn("dedicated config", out["bird-claude"])
 
 
 def _ctx(signed_out=None):

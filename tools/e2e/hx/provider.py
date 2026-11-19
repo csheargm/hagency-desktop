@@ -57,8 +57,24 @@ def recent_login_errors(text: str, now: datetime, window: timedelta = RECENT_WIN
     for line in text.splitlines():
         ts = line_time(line)
         if ts is not None and now - window <= ts <= now + timedelta(minutes=1) and is_login_error(line):
-            hits.append(_ANSI.sub("", line)[-300:])
+            hits.append(log_excerpt(line))
     return hits
+
+
+def log_excerpt(line: str) -> str:
+    """Timestamp + the matched marker phrase only: the rest of a log line may
+    carry paths or secrets and never reaches the report."""
+    ts = line_time(line)
+    text = _ANSI.sub("", line)
+    marker = CLAUDE_LOGIN_REQUIRED if CLAUDE_LOGIN_REQUIRED in text else STARTUP_CHECK_FAILED
+    return f"{ts.strftime('%Y-%m-%dT%H:%M:%SZ') if ts else 'undated'} {marker}"
+
+
+def describe_dir(config_dir: str | None) -> str:
+    """How a config dir is named in the report: never its raw path."""
+    if config_dir == UNKNOWN_DIR:
+        return "unknown config"
+    return "dedicated config" if config_dir else "default config"
 
 
 def parse_auth_status(stdout: str) -> bool | None:
@@ -153,10 +169,9 @@ def signed_out_agents(cli_by_owner: dict, owner_log_errors: dict, dirs: dict | N
     for agent in claude_agents():
         owner = config.AGENTS[agent][0]
         if cli_by_owner.get(owner) is False:
-            where = f"CLAUDE_CONFIG_DIR={dirs[owner]}" if dirs.get(owner) else "default config"
-            out[agent] = f"{SIGNED_OUT_NOTE}: `claude auth status` ({where}) loggedIn=false"
+            out[agent] = f"{SIGNED_OUT_NOTE}: `claude auth status` ({describe_dir(dirs.get(owner))}) loggedIn=false"
         elif cli_by_owner.get(owner) is None and owner_log_errors.get(owner):
-            out[agent] = f"{SIGNED_OUT_NOTE}: {owner}'s desktop log: {owner_log_errors[owner][-1][-160:]}"
+            out[agent] = f"{SIGNED_OUT_NOTE}: {owner}'s desktop log: {owner_log_errors[owner][-1]}"
     return out
 
 
@@ -167,7 +182,7 @@ def preflight(now: datetime | None = None) -> tuple:
     cli = owner_cli_status(dirs)
     errors = {o: recent_login_errors(evidence.log_since(p, 0), now) for o, p in config.DESKTOP_LOGS.items()}
     signed_out = signed_out_agents(cli, errors, dirs)
-    log = [f"{o}: claude auth status ({dirs[o] or 'default config'}) loggedIn: "
+    log = [f"{o}: claude auth status ({describe_dir(dirs[o])}) loggedIn: "
            f"{'unknown' if cli[o] is None else cli[o]}" for o in dirs]
     log += [f"{o} desktop log: {len(e)} Claude login error(s) in the last "
             f"{int(RECENT_WINDOW.total_seconds() // 60)} min" for o, e in errors.items()]
@@ -199,15 +214,16 @@ def reclassify_silence(result, offsets: dict):
     if result.status != FAIL or result.kind != "finding" or not items:
         return result
     by_owner = {}
-    for key, line in evidence.grep_logs(offsets, (CLAUDE_LOGIN_REQUIRED, STARTUP_CHECK_FAILED)):
-        if is_login_error(line):
-            by_owner.setdefault(key.removeprefix("desktop:"), []).append(_ANSI.sub("", line))
+    for key, (path, offset) in offsets.items():  # whole lines: the excerpt needs the leading timestamp
+        for line in evidence.log_since(path, offset).splitlines():
+            if is_login_error(line):
+                by_owner.setdefault(key.removeprefix("desktop:"), []).append(log_excerpt(line))
     found = [_silent_agent(item, set(by_owner)) for item in items]
     if not all(found):
         return result
     silent = list(dict.fromkeys(found))
     last = by_owner[config.AGENTS[silent[-1]][0]][-1]
     result.status, result.kind = BLOCKED, "setup"
-    result.note = f"{SIGNED_OUT_NOTE} during the run ({', '.join(silent)}; owner log: {last[-160:]}). " \
+    result.note = f"{SIGNED_OUT_NOTE} during the run ({', '.join(silent)}; owner log: {last}). " \
                   f"Was: {result.note}"
     return result
