@@ -56,7 +56,7 @@ fn fence(io: &impl LoopIo) -> Result<(), String> {
 }
 
 pub(crate) fn target_of(repo: &str, pr: &PullRequest) -> Target {
-    Target { repo: repo.to_owned(), number: pr.number, url: pr.url.clone(), head: pr.head_sha.clone() }
+    Target { repo: repo.to_owned(), number: pr.number, url: pr.url.clone(), head: pr.head_sha.clone(), issues: super::work_slots::closing_issues(&pr.body, repo) }
 }
 
 /// The reviewers that never answered `target`'s review request, as Matrix

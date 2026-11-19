@@ -49,7 +49,7 @@ impl LoopIo for Fake {
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
 fn target() -> Target {
-    Target { repo: "acme/app".into(), number: 7, url: "https://github.com/acme/app/pull/7".into(), head: HEAD.into() }
+    Target { repo: "acme/app".into(), number: 7, url: "https://github.com/acme/app/pull/7".into(), head: HEAD.into(), issues: Vec::new() }
 }
 fn anna() -> OwnedUserId {
     owned_user_id!("@_hagency_agt_anna:alpha")
@@ -165,4 +165,30 @@ async fn the_owners_own_pull_request_skips_self_review_and_still_passes_the_gate
     assert!(red_ci.posted.borrow().is_empty(), "the gate still waits on CI");
     let paused = Fake { paused: true, ..Fake::new(json!({"decision": "merge", "head": HEAD})) };
     assert!(super::review_loop::advance_merge(&paused, &target(), &ctx).await.is_err());
+}
+
+/// Live PR #135, Nov 19 01:08: issue #134 asked for alphabetical order and
+/// no adr/ folder; the reviewer approved in 19 s, never having read it.
+#[test]
+fn the_review_request_reads_the_linked_issue_and_checks_each_criterion() {
+    use ::hagency::issue_watch::PullRequest;
+    let repo = "csheargm/hagency-demo-sandbox";
+    let pr = PullRequest { number: 135, url: format!("https://github.com/{repo}/pull/135"), draft: false, head_sha: HEAD.into(), author: "yue-claude".into(), created_at: 0, body: "Adds docs/INDEX.md.\n\nCloses #134".into(), head_ref: "docs-index".into() };
+    let target = super::review_loop::target_of(repo, &pr);
+    assert_eq!(target.issues, vec![134]);
+    let body = LoopNotice::ReviewRequested { target, reviewer: anna() }.body();
+    let read = format!("gh pr diff 135 --repo {repo} and gh issue view 134 --repo {repo}. Check the change against each acceptance criterion in the linked issue (#134), one by one");
+    assert!(body.contains(&read), "{body}");
+    assert!(body.contains("post the CHANGES verdict below naming every unmet criterion; approve only if every criterion is met and nothing else is wrong. If headRefOid"), "{body}");
+    let verdict = ::hagency::REVIEW_VERDICT.replace("<N>", "135").replace("<owner/repo>", repo);
+    assert!(body.ends_with(&verdict), "the verdict shapes the gate parses are unchanged: {body}");
+}
+
+/// No linked issue: the request is the plain pull request review, as before.
+#[test]
+fn a_review_request_without_a_linked_issue_reads_no_issue() {
+    let body = LoopNotice::ReviewRequested { target: target(), reviewer: anna() }.body();
+    let steps = ::hagency::REVIEW_STEPS.replace("<N>", "7").replace("<owner/repo>", "acme/app");
+    assert!(body.ends_with(&format!("To review: {steps}")), "{body}");
+    assert!(!body.contains("gh issue view") && !body.contains("acceptance criterion"), "{body}");
 }

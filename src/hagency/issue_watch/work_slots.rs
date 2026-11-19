@@ -71,6 +71,21 @@ pub(crate) fn closes_issue(body: &str, repo: &str, number: i64) -> bool {
         })
     })
 }
+/// The issues of `repo` that description `body` closes ([`closes_issue`]),
+/// in order of first mention, at most [`MAX_LINKED_ISSUES`].
+pub(crate) fn closing_issues(body: &str, repo: &str) -> Vec<u64> {
+    let mut found = Vec::new();
+    for (at, _) in body.match_indices(['#', '/']) {
+        let digits: String = body[at + 1..].chars().take_while(char::is_ascii_digit).collect();
+        let Ok(n) = digits.parse::<i64>() else { continue };
+        if found.len() < MAX_LINKED_ISSUES && !found.contains(&(n as u64)) && closes_issue(body, repo, n) {
+            found.push(n as u64);
+        }
+    }
+    found
+}
+/// The linked issues one review request names at most.
+const MAX_LINKED_ISSUES: usize = 3;
 /// Whether an issue listing of `count` items hit the engine's page cap.
 pub(crate) fn listing_truncated(count: usize) -> bool {
     count >= (PAGE_SIZE * MAX_PAGES) as usize

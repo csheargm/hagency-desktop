@@ -55,7 +55,7 @@ impl LoopIo for Room {
 }
 
 fn target(number: u64) -> Target {
-    Target { repo: "csheargm/hagency-demo-sandbox".into(), number, url: format!("https://github.com/csheargm/hagency-demo-sandbox/pull/{number}"), head: HEAD.into() }
+    Target { repo: "csheargm/hagency-demo-sandbox".into(), number, url: format!("https://github.com/csheargm/hagency-demo-sandbox/pull/{number}"), head: HEAD.into(), issues: Vec::new() }
 }
 fn codex() -> OwnedUserId {
     owned_user_id!("@_hagency_agt_bird_codex:beta")

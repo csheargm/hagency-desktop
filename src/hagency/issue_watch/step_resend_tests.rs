@@ -43,7 +43,7 @@ impl LoopIo for Fake {
 }
 
 fn target() -> Target {
-    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 94, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/94".into(), head: HEAD.into() }
+    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 94, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/94".into(), head: HEAD.into(), issues: Vec::new() }
 }
 fn check(fake: &Fake) -> Gate {
     let agent = owned_user_id!("@_hagency_agt_bird_claude:alpha");
