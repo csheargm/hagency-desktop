@@ -51,10 +51,9 @@ impl AgentDevice {
         from: &str,
     ) -> Result<HistoryBatch, RuntimeError> {
         let (chunk, next) = self.timeline_page(room, from).await?;
-        Ok(HistoryBatch {
-            events: chunk.iter().filter_map(history_event).collect(),
-            next,
-        })
+        let mut events: Vec<Value> = chunk.iter().filter_map(history_event).collect();
+        self.name_records(room, &mut events).await;
+        Ok(HistoryBatch { events, next })
     }
 
     /// One backward page of SDK timeline events (newest first) and the token
