@@ -151,11 +151,24 @@ pub(super) async fn start_with(ledger: &mut Ledger, turn: &Turn<'_>, call: Call,
     launch(ledger, turn, Launch { call, step, proposal, key, slot }, running);
 }
 
+/// What the model is told to do after a refusal of a step that needs the
+/// network: Codex's own shell has none, so an approved card there runs
+/// nothing and the retry asks again (e2e scenario 8, Nov 18, 20:06).
+pub(super) const OFFLINE_NEXT: &str = "do not retry it with exec_command: that shell has no network, so your owner would only be asked again for a step that cannot run; tell the requester what this step needs instead";
+
 /// Answer `call` with a refusal the model reads: nothing ran.
 pub(super) fn refuse(call: Call, why: &str) {
-    let text = json!({"error": "not_card_free", "reason": why, "next": "run it as a normal command; it asks your owner"}).to_string();
+    let next = if needs_network(&call.command) { OFFLINE_NEXT } else { "run it as a normal command; it asks your owner" };
+    let text = json!({"error": "not_card_free", "reason": why, "next": next}).to_string();
     // The call may have gone already: nobody to tell.
     let _ = call.reply.send((text, true));
+}
+
+/// Whether `command` is a `gh` step or a git network step (fetch, pull,
+/// push, clone), which Codex's own sandboxed shell cannot run.
+fn needs_network(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    crate::watch_trust::step_env::runs_gh(command) || (words.next() == Some("git") && words.any(|w| matches!(w, "fetch" | "pull" | "push" | "clone")))
 }
 
 /// A step authorized to run, and the slot it runs in.

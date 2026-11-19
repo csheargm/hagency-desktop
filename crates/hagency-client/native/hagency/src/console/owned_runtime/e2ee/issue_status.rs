@@ -61,6 +61,8 @@ impl AgentDevice {
         let asker = OwnedUserId::try_from(requester).map_err(|_| RuntimeError::Request)?;
         let member = joined.get_member_no_sync(&asker).await.map_err(|_| RuntimeError::Transport)?;
         if !member.is_some_and(|m| *m.membership() == MembershipState::Join) {
+            // Expected for a departed requester; said, so an empty set is never unexplained.
+            tracing::info!(stage = "room_read_scope", "Requester not joined in this Agent device's view: no card-free room reads");
             return Ok((Vec::new(), Vec::new()));
         }
         let status = self.issue_status_room(room).await?;

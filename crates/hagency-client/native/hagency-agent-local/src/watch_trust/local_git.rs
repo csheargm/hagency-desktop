@@ -1,6 +1,6 @@
 //! The local fix steps "push freely" answers in the watched repository's own
-//! checkout (ADR 0022): `status`, `diff`, `log`, `show`, `branch` (listing),
-//! `add`, `commit` and `restore`, one command each, options from a closed
+//! checkout (ADR 0022): `status`, `diff`, `log`, `show`, `grep`, `branch`
+//! (listing), `add`, `commit` and `restore`, one command each, options from a closed
 //! list, every path word inside the checkout. They need no network and run
 //! as the Agent, pinned: hooks, fsmonitor, pager, editor, external diff,
 //! textconv, lazy fetch, submodule recursion and every transport off, and
@@ -51,6 +51,17 @@ const LOG_FLAGS: [&str; 18] = [
     "--pretty=medium", "--pretty=full",
 ];
 const SHOW_FLAGS: [&str; 10] = ["--stat", "--name-only", "--name-status", "--no-color", "--oneline", "-s", "--no-patch", "--shortstat", "--summary", "--pretty=oneline"];
+/// `grep` options that take no value. Never `-O/--open-files-in-pager` (it
+/// runs a program), `--no-index` (it reads outside the checkout), `-f`
+/// (patterns from any file), `--textconv` or `--recurse-submodules`.
+const GREP_FLAGS: [&str; 30] = [
+    "-n", "--line-number", "-i", "--ignore-case", "-w", "--word-regexp", "-l", "--files-with-matches", "-L",
+    "--files-without-match", "-c", "--count", "-h", "-H", "-F", "--fixed-strings", "-E", "--extended-regexp", "-v",
+    "--invert-match", "--full-name", "-I", "-q", "--quiet", "--cached", "--untracked", "--no-color", "--color=never",
+    "--heading", "--column",
+];
+/// `grep` options whose value is a count.
+const GREP_COUNTS: [&str; 7] = ["-A", "-B", "-C", "-m", "--max-count", "--max-depth", "--context"];
 const BRANCH_FLAGS: [&str; 8] = ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--list", "--show-current"];
 const ADD_FLAGS: [&str; 6] = ["-A", "--all", "-u", "--update", "-v", "--verbose"];
 const COMMIT_FLAGS: [&str; 7] = ["-q", "--quiet", "-a", "--all", "-s", "--signoff", "--allow-empty"];
@@ -114,6 +125,7 @@ pub(crate) fn step(dir: &Path, rest: &[&str], heredoc: Option<&str>, repo: &str)
         "diff" => words_ok(dir, args, &DIFF_FLAGS),
         "log" => log_ok(dir, args),
         "show" => words_ok(dir, args, &SHOW_FLAGS),
+        "grep" => grep_ok(dir, args),
         "branch" => branch_ok(args),
         "add" => !args.is_empty() && words_ok(dir, args, &ADD_FLAGS),
         "restore" => args.iter().any(|w| !w.starts_with('-')) && words_ok(dir, args, &RESTORE_FLAGS),
@@ -126,6 +138,9 @@ pub(crate) fn step(dir: &Path, rest: &[&str], heredoc: Option<&str>, repo: &str)
     let mut words = vec![*sub];
     if matches!(*sub, "diff" | "log" | "show") {
         words.extend(["--no-ext-diff", "--no-textconv"]);
+    }
+    if *sub == "grep" {
+        words.push("--no-textconv");
     }
     if *sub == "commit" {
         words.push("--no-verify");
@@ -153,6 +168,43 @@ fn words_ok(dir: &Path, args: &[&str], flags: &[&str]) -> bool {
         }
         !word.is_empty() && crate::outside::resolves_inside(word, dir)
     })
+}
+
+/// `grep` (read-only, #112 hand-off, Nov 18 20:13): options from
+/// [`GREP_FLAGS`], counts from [`GREP_COUNTS`] (`-A 3`, `-A3`, `--context=3`),
+/// one pattern (the first plain word, or each `-e <pattern>`, never both),
+/// then revisions and paths that resolve inside `dir`, as [`words_ok`].
+fn grep_ok(dir: &Path, args: &[&str]) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let (mut words, mut kept, mut dashes) = (args.iter(), Vec::new(), false);
+    // The pattern so far: none, one plain word, or `-e` options.
+    let (mut plain, mut flagged) = (false, false);
+    while let Some(word) = words.next() {
+        let option = word.starts_with('-') && !dashes;
+        let (name, inline) = word.split_once('=').filter(|_| word.starts_with("--")).unwrap_or((word, ""));
+        if *word == "--" || !option {
+            dashes |= *word == "--";
+            if plain || flagged || dashes {
+                kept.push(*word);
+            } else {
+                plain = !word.is_empty();
+            }
+        } else if *word == "-e" {
+            // With `-e` git reads a plain word as a revision or path: never both.
+            if plain || !kept.is_empty() || words.next().is_none() {
+                return false;
+            }
+            flagged = true;
+        } else if GREP_COUNTS.contains(&name) {
+            let value = if inline.is_empty() { words.next().copied() } else { Some(inline) };
+            if !value.is_some_and(digits) {
+                return false;
+            }
+        } else if !(GREP_FLAGS.contains(word) || ["-A", "-B", "-C", "-m"].iter().any(|c| word.strip_prefix(c).is_some_and(digits))) {
+            return false;
+        }
+    }
+    (plain || flagged) && words_ok(dir, &kept, &[])
 }
 
 /// `branch` listing: flags from [`BRANCH_FLAGS`], and with `--list` (git

@@ -127,7 +127,15 @@ pub(super) async fn answer(io: &impl StatusIo, requested: Option<&str>) -> Strin
 pub(super) async fn record_read_scope(source: &std::sync::Arc<Source>) {
     let d = &source.gate.expected;
     let owners = super::owners::of_room(source).await;
-    let (named, linked) = source.device.read_scope(&d.room_id, &d.requester_mxid, &owners, source.now()).await.unwrap_or_default();
+    let (named, linked) = match source.device.read_scope(&d.room_id, &d.requester_mxid, &owners, source.now()).await {
+        Ok(scope) => scope,
+        Err(error) => {
+            // Nothing is widened (fail closed), but never silently: an empty set
+            // refused every read and verdict of the turn (e2e 8, Nov 18 20:06).
+            tracing::warn!(stage = "room_read_scope", %error, "Room repositories unreadable: this turn's reads of them ask the owner");
+            Default::default()
+        }
+    };
     // Issues may be filed on the room's own linked repositories (ADR 0030), public or not:
     // the room's level and the owner's "may work" decide, in the engine.
     hagency_agent_local::watch_trust::room_scope::record_linked(&d.room_id, &d.requester_mxid, linked);
@@ -159,7 +167,14 @@ async fn public_repo(client: &crate::issue_watch::Client, repo: &str) -> bool {
         return *public;
     }
     // An unchecked repository is treated as private: it then still asks its owner.
-    let Ok(public) = crate::issue_watch::fetch_is_public(client, crate::issue_watch::GITHUB_API, repo).await else { return false };
+    let public = match crate::issue_watch::fetch_is_public(client, crate::issue_watch::GITHUB_API, repo).await {
+        Ok(public) => public,
+        Err(error) => {
+            // Treated as private, so its reads ask the owner; logged, as above.
+            tracing::warn!(stage = "room_read_scope", error = %short(&error.to_string()), "Repository visibility unchecked: its reads ask the owner this turn");
+            return false;
+        }
+    };
     VISIBILITY.lock().unwrap_or_else(|p| p.into_inner()).insert(key, (std::time::Instant::now(), public));
     public
 }

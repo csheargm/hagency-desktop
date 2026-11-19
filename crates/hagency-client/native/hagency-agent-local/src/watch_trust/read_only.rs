@@ -28,7 +28,9 @@ pub(crate) fn command(line: &str) -> String {
 pub(crate) fn allowed(line: &str, repo: &str) -> bool {
     let Some(parsed) = shell::parse(line) else { return false };
     let [words] = parsed.segments.as_slice() else { return false };
-    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '\n']) {
+    // `gh` as written, never quoted or escaped: the token check before a
+    // host run looks for that word, and must see it (GPT review P1).
+    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '\n']) || !line.starts_with("gh ") {
         return false;
     }
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -39,6 +41,23 @@ pub(crate) fn allowed(line: &str, repo: &str) -> bool {
         ["gh", "api", rest @ ..] => api(rest, repo),
         _ => false,
     }
+}
+
+/// The repository `line` reads, when it is one read-only query ([`allowed`]
+/// for that repository): the `-R/--repo` value, or the `repos/<owner>/<name>`
+/// of a `gh api` path. A read outside the room's set asks the owner on a card
+/// naming exactly this (`codex::repo_cards`).
+pub(crate) fn named_repo(line: &str) -> Option<String> {
+    let parsed = shell::parse(line)?;
+    let [words] = parsed.segments.as_slice() else { return None };
+    let named = words.iter().enumerate().find_map(|(at, word)| match split(word) {
+        ("-R" | "--repo", inline) => inline.or_else(|| words.get(at + 1).map(String::as_str)).map(str::to_owned),
+        _ => {
+            let mut parts = word.strip_prefix('/').unwrap_or(word).strip_prefix("repos/")?.split(['/', '?']);
+            Some(format!("{}/{}", parts.next()?, parts.next()?))
+        }
+    })?;
+    allowed(line, &named).then_some(named)
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -159,6 +178,9 @@ mod tests {
             "gh issue list -R csheargm/hagency-demo-sandbox | sh",
             "gh issue list -R csheargm/hagency-demo-sandbox > out.txt",
             "gh issue list -R $(echo csheargm/hagency-demo-sandbox)",
+            "'gh' pr view 3 -R csheargm/hagency-demo-sandbox",
+            "\\gh pr view 3 -R csheargm/hagency-demo-sandbox",
+            " gh pr view 3 -R csheargm/hagency-demo-sandbox",
             "GH_HOST=evil gh issue list -R csheargm/hagency-demo-sandbox",
             "gh issue view 1 -R csheargm/hagency-demo-sandbox --web",
             "gh issue close 1 -R csheargm/hagency-demo-sandbox",
@@ -189,6 +211,20 @@ mod tests {
             "gh api 'repos/csheargm/hagency-demo-sandbox/issues?q=repo:other/repo'",
         ] {
             assert!(!allowed(line, REPO), "{line}");
+        }
+    }
+
+    /// A card for a read outside the room's set names the repository the
+    /// query reads; anything that is not one read-only query names none.
+    #[test]
+    fn a_read_names_its_repository_and_nothing_else_does() {
+        use super::named_repo;
+        assert_eq!(named_repo("gh pr view 111 --repo other/repo --json title,files").as_deref(), Some("other/repo"));
+        assert_eq!(named_repo("gh issue list -R=other/repo").as_deref(), None, "-R takes no =");
+        assert_eq!(named_repo("gh pr diff 3 --repo=other/repo").as_deref(), Some("other/repo"));
+        assert_eq!(named_repo("gh api /repos/other/repo/pulls/3/files").as_deref(), Some("other/repo"));
+        for line in ["gh pr comment 3 --repo other/repo -b hi", "gh pr view 3 --repo a/b --repo c/d", "gh pr view 3", "gh api repos/a/b/contents/x", "gh pr view 3 --repo a/b; rm -rf x"] {
+            assert_eq!(named_repo(line), None, "{line}");
         }
     }
 }
