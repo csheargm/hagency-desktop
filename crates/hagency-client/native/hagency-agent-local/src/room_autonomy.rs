@@ -92,7 +92,7 @@ pub struct Pause {
 }
 
 /// The room's pause events: keyed by their own sender, with an event ID.
-fn pauses(events: &[Value]) -> impl Iterator<Item = (&str, &str, i64)> {
+pub fn pauses(events: &[Value]) -> impl Iterator<Item = (&str, &str, i64)> {
     events
         .iter()
         .filter(|e| e["type"] == ROOM_PAUSE_STATE_TYPE && e["state_key"].as_str().is_some_and(|k| k.starts_with('@') && e["sender"] == k))
@@ -177,6 +177,9 @@ pub struct AutonomySnapshot {
     /// ledger keeps the newest by this, never by receipt ([`as_of`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of: Option<i64>,
+    /// The desktop pushed this restriction the moment it was saved ([`as_of::STICKY_HOLD_SECS`]).
+    #[serde(default)]
+    pub sticky: bool,
 }
 
 /// The power level of a room maintainer (the Matrix presets' moderator).
@@ -193,13 +196,13 @@ impl Ledger {
             return Err(Error::Invalid("room autonomy needs a room ID"));
         }
         // An older read than the one kept is dropped, not an error: the newer stays (GPT review P1).
-        let Some(kept_as_of) = as_of::replaces(&self.db, snapshot, now)? else { return Ok(()) };
+        let Some(kept) = as_of::replaces(&self.db, snapshot, now)? else { return Ok(()) };
         let level = snapshot.level.unwrap_or_default().wire();
         self.db.execute(
             "INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)",
             (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64),
         )?;
-        as_of::record(&self.db, &snapshot.room_id, kept_as_of)
+        as_of::record(&self.db, &snapshot.room_id, &kept)
     }
     /// What `room`'s recorded state allows at `now`.
     pub fn room_autonomy_at(&self, room: &str, now: i64) -> Result<Autonomy> {

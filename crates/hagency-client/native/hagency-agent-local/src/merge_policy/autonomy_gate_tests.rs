@@ -11,7 +11,7 @@ use crate::Ledger;
 const OWNER: &str = "@owner:example.org";
 
 fn room(ledger: &mut Ledger, level: Level, paused: bool, maintainer: bool) {
-    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(level), paused, unread: false, owner_maintainer: maintainer, as_of: crate::room_autonomy::as_of::next_for_test() };
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(level), paused, unread: false, owner_maintainer: maintainer, as_of: crate::room_autonomy::as_of::next_for_test(), sticky: false };
     ledger.set_room_autonomy(OWNER, &snapshot, super::room_rules::unix_now()).unwrap();
 }
 

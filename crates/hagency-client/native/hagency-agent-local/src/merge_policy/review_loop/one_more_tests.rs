@@ -24,7 +24,7 @@ fn approvals_missing(decision: &Decision) -> bool {
 async fn one_more_approval_at_assist_leaves_only_the_person_and_never_merges() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = anna(temp.path(), vec![rules(A, Role::Maintainer)]);
-    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Assist), paused: false, unread: false, owner_maintainer: true, as_of: None };
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Assist), paused: false, unread: false, owner_maintainer: true, as_of: None, sticky: false };
     ledger.set_room_autonomy("@owner:example.org", &snapshot, super::super::room_rules::unix_now()).unwrap();
     let src = Src::new(vec![file("docs/SUPPORT.md", 3)]);
     let ready = merge_readiness_full(&mut ledger, &pr_7(temp.path()), ("anna", ROOM), &src).await.unwrap();

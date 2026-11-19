@@ -51,7 +51,7 @@ pub struct Rights {
 impl RoomState {
     /// The state as the owner API records it.
     pub fn snapshot(&self, room_id: &str) -> AutonomySnapshot {
-        AutonomySnapshot { room_id: room_id.to_owned(), level: self.level.as_ref().ok().copied(), paused: self.pause.is_some(), unread: self.level.is_err(), owner_maintainer: self.maintainer, as_of: self.as_of }
+        AutonomySnapshot { room_id: room_id.to_owned(), level: self.level.as_ref().ok().copied(), paused: self.pause.is_some(), unread: self.level.is_err(), owner_maintainer: self.maintainer, as_of: self.as_of, sticky: false }
     }
     /// Whether the loop may start work here now (Assist/Autonomous, not paused).
     pub fn runs(&self) -> Result<(), String> {
@@ -93,19 +93,24 @@ pub fn state_of(events: &[Value], room_id: &str, may_send: impl Fn(&str, &str) -
         can_pause: rights.pause,
         can_link: rights.link,
         maintainer: rights.maintainer,
-        as_of: as_of(events),
+        as_of: as_of(events, &read),
     }
 }
 
-/// The state types a snapshot's source time comes from: the level, the
-/// pauses and the power levels that decide who may set them. Never
-/// membership (GPT review round 3: a membership change, or a future-dated
-/// federated one, must not move it).
-const AS_OF_TYPES: [&str; 3] = [ROOM_AUTONOMY_STATE_TYPE, ::hagency::issue_watch::safeguards::room_autonomy::ROOM_PAUSE_STATE_TYPE, crate::hagency::issue_watch::room_rules::POWER_LEVELS_EVENT];
-
-/// The newest server time among `events` of [`AS_OF_TYPES`].
-pub fn as_of(events: &[Value]) -> Option<i64> {
-    events.iter().filter(|e| AS_OF_TYPES.iter().any(|t| e["type"] == *t)).filter_map(|e| e["origin_server_ts"].as_i64()).max()
+/// A snapshot's source time: the newest server time among the events the
+/// gate honours — the accepted level event (`level`), the pauses keyed by
+/// their own sender, and the room's power levels. Never membership, and never
+/// an event the gate ignores (GPT review rounds 3–4: a future-dated one must
+/// not stamp a snapshot).
+pub fn as_of(events: &[Value], level: &RoomRead) -> Option<i64> {
+    let ts_of = |e: &Value| e["origin_server_ts"].as_i64();
+    let level_ts = match level {
+        RoomRead::Rules { event_id, .. } => events.iter().find(|e| e["event_id"] == event_id.as_str()).and_then(ts_of),
+        RoomRead::None | RoomRead::Refused(_) => None,
+    };
+    let power_ts = events.iter().find(|e| e["type"] == crate::hagency::issue_watch::room_rules::POWER_LEVELS_EVENT && e["state_key"] == "").and_then(ts_of);
+    let pause_ts = ::hagency::issue_watch::safeguards::room_autonomy::pauses(events).map(|(_, _, ts)| ts).max();
+    [level_ts, power_ts, pause_ts].into_iter().flatten().max()
 }
 
 /// `user`'s display name in the room's member `events`, when they set one.
