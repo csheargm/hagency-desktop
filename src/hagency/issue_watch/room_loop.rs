@@ -59,11 +59,13 @@ impl Rooms {
 /// existing entry's own settings and start time kept, a new one starting
 /// `now`. A room that could not be read keeps its entries as they are, so
 /// one failed read never drops work. A repository linked in two rooms goes
-/// to the first.
+/// to the first whose loop runs, else the first (batch GPT review: a paused
+/// room must not take it from a running one).
 pub(crate) fn derived_work(saved: &Value, rooms: &Rooms, now: i64) -> Vec<OwnerRules> {
     let current: Vec<OwnerRules> = serde_json::from_value(saved["work"].clone()).unwrap_or_default();
     let mut out: Vec<OwnerRules> = Vec::new();
-    for room in may_work_rooms(saved) {
+    let (running, held): (Vec<String>, Vec<String>) = may_work_rooms(saved).into_iter().partition(|r| rooms.runs(r).is_ok());
+    for room in running.into_iter().chain(held) {
         let repos: Vec<String> = match rooms.0.get(&room) {
             Some(Ok(state)) => state.linked.clone(),
             _ => current.iter().filter(|w| w.room_id == room).map(|w| w.repo.clone()).collect(),
@@ -138,7 +140,7 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
         return Ok(None);
     }
     let mut rooms = read(&saved).await;
-    let moving = !super::migrate::planned(&saved, false, super::migrate::moved(id)).is_empty();
+    let moving = !super::migrate::planned(&saved, &rooms, false, super::migrate::moved(id)).is_empty();
     let held = super::migrate::run(service, agent, &saved, &rooms).await;
     if moving {
         // The move linked repositories: read the rooms again so the work list keeps them.
