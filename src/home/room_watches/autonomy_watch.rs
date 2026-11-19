@@ -12,8 +12,15 @@ use ::hagency::issue_watch::safeguards::room_autonomy::{ROOM_AUTONOMY_STATE_TYPE
 use matrix_sdk::{Client, room::Room, ruma::{events::{AnySyncStateEvent, AnySyncTimelineEvent}, serde::Raw}};
 use std::sync::Mutex;
 
+/// The room's power levels: who is owner or maintainer.
+const POWER_LEVELS: &str = "m.room.power_levels";
 /// The state types whose change makes a room's agent work stale.
-const STALE_BY: [&str; 3] = [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, "m.room.power_levels"];
+const STALE_BY: [&str; 3] = [ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE, POWER_LEVELS];
+
+/// Whether an event of type `kind` changes who holds a role (the Members tab's tags and menus).
+pub fn changes_roles(kind: &str) -> bool {
+    kind == POWER_LEVELS
+}
 
 /// Whether an event of type `kind` makes a room's agent work stale.
 pub fn makes_stale(kind: &str) -> bool {
@@ -24,7 +31,8 @@ pub fn makes_stale(kind: &str) -> bool {
 static WATCHED: Mutex<String> = Mutex::new(String::new());
 
 /// Watches `client`'s sync once per account session; a room whose agent work
-/// was read on this desktop is read again on a change.
+/// was read on this desktop is read again on a change, and a power-level
+/// change tells the Members tab to read the roles again.
 pub fn attach(client: &Client) {
     let account = super::account();
     let mut watched = WATCHED.lock().unwrap_or_else(|p| p.into_inner());
@@ -41,6 +49,10 @@ pub fn attach(client: &Client) {
 fn reread_on(kind: serde_json::Result<Option<String>>, room: &Room) {
     // An event without a readable type is no agent work change: nothing to do.
     let Ok(Some(kind)) = kind else { return };
+    if changes_roles(&kind) {
+        // The Members tab reads the roles again (it ignores other rooms).
+        makepad_widgets::Cx::post_action(crate::home::mobile_chat_info::member_role::RoleChanged { room_id: room.room_id().to_owned() });
+    }
     if makes_stale(&kind) && super::autonomy_store::was_read(room.room_id()) {
         super::autonomy_store::refresh(room.room_id());
     }
@@ -56,5 +68,7 @@ mod tests {
             assert!(makes_stale(kind), "{kind}");
         }
         assert!(!makes_stale("m.room.message"), "a message is no change to the room's agent work");
+        assert!(changes_roles("m.room.power_levels"), "a role change rereads the Members tab");
+        assert!(!changes_roles(ROOM_PAUSE_STATE_TYPE));
     }
 }

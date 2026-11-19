@@ -1090,6 +1090,12 @@ impl MatchQuality {
     }
 }
 
+/// A Matrix user ID's local part as a fallback name, like "anna" for "@anna:x"
+/// (the ID itself when it has none).
+pub fn user_localpart(id: &str) -> String {
+    id.trim_start_matches('@').split(':').next().filter(|l| !l.is_empty()).unwrap_or(id).to_owned()
+}
+
 /// Returns the "localpart" of an alias, like "robrix" for alias "#robrix:matrix.org".
 pub fn alias_localpart(alias: &OwnedRoomAliasId) -> &str {
     alias.as_str()

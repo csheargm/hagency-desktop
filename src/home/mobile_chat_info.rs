@@ -30,7 +30,7 @@ use crate::{
 pub(super) mod add_agent_picker;
 mod member_remove;
 // TODO(R4): mobile_chat_info.rs is over budget; the member row's menu (remove, role) belongs in member_menu.rs.
-mod member_role;
+pub(crate) mod member_role;
 mod member_rows;
 use member_rows::{MemberRow, MemberRows};
 pub(crate) use member_rows::is_departure;
@@ -586,6 +586,8 @@ impl MobileChatInfo {
         if epoch != crate::account_session::epoch() || crate::sliding_sync::account_changing() {
             return;
         }
+        // Another member's role change reaches the Members tab live (member_role::RoleChanged).
+        super::room_watches::watch_room_changes(&client);
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.owner = Some(owner.clone());
@@ -920,10 +922,19 @@ impl Widget for MobileChatInfo {
                     self.drop_departed(cx, &departed);
                     if self.pin_is_current() && let Some(room) = self.room.clone() { self.fetch_info(cx, room); }
                 }
+                // Roles only, from the server: a role change here or by another member (sync).
                 if let Some(changed) = action.downcast_ref::<member_role::RoleChanged>()
-                    && self.pin_is_current() && let Some(room) = self.room.clone().filter(|r| r.room_id() == &changed.room_id)
+                    && self.pin_is_current() && let Some(data) = self.data.as_ref().filter(|d| d.room.room_id() == &changed.room_id)
+                    && let Some(room) = get_client().and_then(|c| c.get_room(&changed.room_id))
                 {
-                    self.fetch_info(cx, room);
+                    member_role::spawn_reread(room, data.members.iter().map(|m| m.user_id.clone()).collect());
+                }
+                if let Some(loaded) = action.downcast_ref::<member_role::RolesLoaded>()
+                    && loaded.is_latest() && self.owner.as_ref() == Some(&loaded.owner)
+                    && let Some(data) = self.data.as_mut().filter(|d| d.room.room_id() == &loaded.room_id)
+                {
+                    data.roles = loaded.roles.clone();
+                    self.view.redraw(cx);
                 }
                 if let Some(left) = action.downcast_ref::<member_remove::MemberLeft>()
                     && left.epoch == self.epoch && self.owner.as_ref() == Some(&left.owner)

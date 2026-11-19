@@ -62,3 +62,15 @@ fn linked_repos_count_only_from_someone_who_may_link_and_rights_carry_through() 
     let bad = state_of(&[joined(MEMBER), link(MEMBER)], ROOM, may_send, Rights::default());
     assert!(bad.linked.is_empty() && !bad.snapshot(ROOM).owner_maintainer);
 }
+
+/// On-screen bug (Nov 18): the Status heading named the pauser by local part;
+/// it takes their display name from the room's member events.
+#[test]
+fn the_pauser_is_named_by_their_display_name() {
+    let named = json!({"type": "m.room.member", "state_key": MEMBER, "sender": MEMBER, "content": {"membership": "join", "displayname": "Anna"}});
+    let state = state_of(&[named, pause_by(MEMBER, "$p")], ROOM, may_send, Rights::default());
+    assert_eq!(state.pause_name.as_deref(), Some("Anna"));
+    let state = state_of(&[joined(MEMBER), pause_by(MEMBER, "$p")], ROOM, may_send, Rights::default());
+    assert!(state.pause.is_some());
+    assert_eq!(state.pause_name, None, "no display name: the caller falls back to the local part");
+}

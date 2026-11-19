@@ -10,6 +10,7 @@ pub mod autonomy;
 pub mod autonomy_setup;
 mod autonomy_store;
 mod autonomy_watch;
+pub use autonomy_watch::attach as watch_room_changes;
 pub mod merge_rules;
 pub mod merge_rules_model;
 pub mod panel;

@@ -110,7 +110,7 @@ pub async fn load(client: &Client, room_id: &RoomId, own: &[OwnWatch]) -> Result
     }
     let accepted = status::accepted(&events, |id| members.get(id).cloned().unwrap_or_default(), |agent| owners.get(agent).cloned(), now.timestamp());
     if accepted.ignored_claims > 0 {
-        out.notes.push(crate::i18n::tr("Some published states were not from the Agent's own owner, or were stale, and are hidden.").to_owned());
+        out.notes.push(crate::i18n::tr("Some agent status updates could not be confirmed or were out of date, so they are hidden.").to_owned());
     }
     out.names = members.iter().filter_map(|(id, m)| m.name.clone().map(|n| (id.clone(), n))).collect();
     let watched = own.iter().map(|(_, repo, _)| repo.as_str()).chain(accepted.seen.iter().map(|s| s.issue.repo.as_str()));
