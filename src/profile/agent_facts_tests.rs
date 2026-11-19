@@ -56,7 +56,7 @@ fn an_own_agents_group_rooms_carry_its_shared_choices() {
     let share = shares["!dev:s"];
     assert!(share.answer && !share.review && !share.fix);
     let facts = AgentFacts { own_agent_id: Some("agt_1".into()), shared: Some(share), ..Default::default() };
-    assert_eq!(fact_lines(&facts, Some("Betty"), false), vec!["Owner: Betty", "Shared in this room: answers questions; reviews, fixes need Betty's OK"]);
+    assert_eq!(fact_lines(&facts, Some("Betty"), false), vec!["Owner: Betty", "Shared in this room: answers questions; reviews need Betty's OK"]);
 }
 
 /// Live finding (Nov 18, Anna's dev room): Betty's federated bird-claude had

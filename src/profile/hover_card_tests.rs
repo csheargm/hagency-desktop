@@ -112,7 +112,7 @@ fn my_agents_card_offers_agent_details_and_its_facts() {
     assert!(card.view.button(&mut cx, ids!(agent_details_button)).visible());
     assert!(!card.view.button(&mut cx, ids!(view_profile_button)).visible());
     assert_eq!(card.view.label(&mut cx, ids!(card_details)).text(),
-        "Owner: @anna:hagency.test\nRuntime: Claude\nStatus: Running\nShared in this room: answers questions, reviews PRs; fixes need @anna:hagency.test's OK",
+        "Owner: @anna:hagency.test\nRuntime: Claude\nStatus: Running\nShared in this room: answers questions, reviews PRs",
         "no settings note on my own Agent; what it does for this group room's members");
     let Some(CardRequest::OpenAgent(agent_id)) = request_for(CardButton::AgentDetails, &agent, String::new(), card.own_agent()) else {
         panic!("Agent details must open the agent panel");
