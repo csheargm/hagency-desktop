@@ -214,3 +214,27 @@ differs from the physical check), `pwd` and `date` take no operands (a
 `date` operand sets the clock), and no `ls -l` (it prints link targets).
 Residual: a hard link inside the workspace to protected content reads as an
 ordinary file, and a link swapped between the check and the run.
+
+## Amendment (2026-11-18): candidates from profiles, independent fallbacks
+Seen in the dev room: anna-claude opened PR #109, the roster lookup timed
+out (`room_discovery_unavailable`, the same code as an unreadable listing),
+and the room said "No Codex reviewer in the room; asked yue-claude" while
+bird-codex, another owner's Agent on another server, was joined. Another
+server's Agent never has a roster row here, so even a working roster missed it.
+- Candidates also come from every other Agent joined to the room, with the
+  runtime its Matrix profile publishes (`io.hagency.runtime`); this
+  server's Agents that way only while the roster cannot be read (a read
+  roster leaves out paused ones on purpose).
+- When some Agent could not be checked (member list, a profile, or the
+  profile reads timed out), the room line says "Could not check every Agent
+  in the room for a Codex reviewer; asked …", never "No Codex reviewer".
+- Among the same-model fallbacks another owner's Agent now comes first.
+  "Own first" kept an own Agent's approval countable by this ledger, but a
+  same-owner same-model review is the weakest one the room can give; the
+  different-model pick already asks other owners' Agents whenever this
+  owner has no other model, so the loop already lives with their verdicts
+  (a person, or the owner's trusted-reviewer rule, settles the merge).
+  Own first stays among the different-model reviewers.
+- The room → project lookup reads project room lists a few at once,
+  remembers a found project for five minutes, and a timeout is
+  `room_discovery_timed_out`.

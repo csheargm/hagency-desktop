@@ -28,6 +28,7 @@ mod merge_hold_tests;
 mod review_loop;
 mod step_resend;
 pub(crate) mod reviewer_pick;
+mod reviewer_candidates;
 pub mod room_review;
 pub mod room_rules;
 mod run_end;

@@ -3712,6 +3712,7 @@
   "Answer questions": "Answer questions",
   "Review PRs": "Review PRs",
   "No {wanted} reviewer in the room; asked {name}": "No {wanted} reviewer in the room; asked {name}",
+  "Could not check every Agent in the room for a {wanted} reviewer; asked {name}": "Could not check every Agent in the room for a {wanted} reviewer; asked {name}",
   "different-model": "different-model",
   "Loading the review setting…": "Loading the review setting…",
   "The review setting is unavailable: {error}": "The review setting is unavailable: {error}",

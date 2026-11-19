@@ -527,28 +527,26 @@ impl Service {
     }
     /// Resolve only an existing, visible Project/Room association. This never
     /// adopts a Matrix Room and never substitutes an SDK invite for a binding.
+    // TODO(R4): backend.rs is over budget; split the room lookups
+    // (agents_for_registered_room, forget_registered_room, room_agent_services) into backend/room_lookup.rs.
     pub async fn agents_for_registered_room(&self, room_id: &str) -> Result<Value, String> {
         self.check()?;
         let client = crate::sliding_sync::get_client().ok_or("matrix_sign_in_required")?;
         let room = client.get_room(matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| "invalid_room_id")?.as_ref()).ok_or("room_join_required")?;
         if room.state() != matrix_sdk::RoomState::Joined { return Err("room_join_required".into()); }
+        let key = super::room_project::Key::new(&self.0.origin, &self.0.owner, room_id);
         let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            let roster = self.execute(Command::RoomAgents).await?;
-            let projects = self.execute(Command::Projects).await?;
-            let projects = projects["projects"].as_array().ok_or("room_discovery_unavailable")?;
-            if projects.len() > 128 { return Err("room_discovery_incomplete".into()); }
-            for project in projects {
-                let Some(id) = project["id"].as_str() else {continue;};
-                let rooms = self.execute(Command::ProjectRooms {project_id:id.into()}).await?;
-                if rooms["rooms"].as_array().is_some_and(|rooms| rooms.iter().any(|room| room["roomId"] == room_id && room["active"] == true)) {
-                    self.check()?;
-                    return Ok(serde_json::json!({"roomId":room_id,"projectId":id,"agents":roster["agents"]}));
-                }
-            }
-            Err("room_project_registration_required".into())
-        }).await.map_err(|_| "room_discovery_unavailable")?;
+            let (roster, project) = futures_util::try_join!(self.execute(Command::RoomAgents), super::room_project::registered_project(self, &key, room_id))?;
+            let Some(project) = project else { return Err("room_project_registration_required".into()) };
+            self.check()?;
+            Ok(serde_json::json!({"roomId":room_id,"projectId":project,"agents":roster["agents"]}))
+        }).await.map_err(|_| super::room_project::TIMED_OUT)?;
         self.check()?;
         result
+    }
+    /// Forgets where `room_id` was found, after a read for that project failed.
+    pub(crate) fn forget_registered_room(&self, room_id: &str) {
+        super::room_project::forget(&super::room_project::Key::new(&self.0.origin, &self.0.owner, room_id));
     }
     /// Read this owner's existing Room services without adopting or starting any.
     pub async fn room_agent_services(&self, room_id: &str) -> Result<Value, String> {
@@ -575,7 +573,7 @@ impl Service {
                 services.push(serde_json::json!({"agentId":id,"bindingId":binding_id,"bindingState":binding["state"],"ownerServicePaused":binding["ownerServicePaused"],"service":runtime.as_ref().ok().and_then(|v|v.get("service")),"displayName":agent["displayName"],"thisDevice":here,"runtime":runtime.as_ref().ok().and_then(|v|v.get("runtime")),"statusAvailable":runtime.is_ok()}));
             }
             Ok(serde_json::json!({"roomId":room_id,"services":services}))
-        }).await.map_err(|_|"room_discovery_unavailable")?;
+        }).await.map_err(|_|super::room_project::TIMED_OUT)?;
         self.check()?;
         result
     }

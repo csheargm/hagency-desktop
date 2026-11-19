@@ -3712,6 +3712,7 @@
   "Answer questions": "回答问题",
   "Review PRs": "审查 PR",
   "No {wanted} reviewer in the room; asked {name}": "房间里没有 {wanted} 审查者；已请 {name} 审查",
+  "Could not check every Agent in the room for a {wanted} reviewer; asked {name}": "未能查看房间里的所有 Agent 来找 {wanted} 审查者；已请 {name} 审查",
   "different-model": "其他模型的",
   "Loading the review setting…": "正在加载审查设置…",
   "The review setting is unavailable: {error}": "审查设置不可用：{error}",

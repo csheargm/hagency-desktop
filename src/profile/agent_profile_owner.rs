@@ -122,8 +122,13 @@ async fn read_field(client: &Client, agent: &UserId, field: &str) -> Result<Opti
 /// The runtime label `agent`'s profile names; `None` when it names none,
 /// an unknown one, or could not be read (display-only).
 pub async fn read_runtime(client: &Client, agent: &UserId) -> Option<&'static str> {
-    let value = read_field(client, agent, RUNTIME_FIELD).await.ok()??;
-    verified_runtime(agent.as_str(), &value).map(crate::hagency::agent_panel::mapping::harness_label)
+    read_runtime_kind(client, agent).await.ok()?.map(crate::hagency::agent_panel::mapping::harness_label)
+}
+
+/// "claude", "codex" or "octos" as `agent`'s profile names it: `Ok(None)`
+/// when it names none or an unknown one, `Err` when it could not be read.
+pub async fn read_runtime_kind(client: &Client, agent: &UserId) -> Result<Option<&'static str>, String> {
+    Ok(read_field(client, agent, RUNTIME_FIELD).await?.and_then(|value| verified_runtime(agent.as_str(), &value)))
 }
 
 /// The verified owner `agent`'s profile names, read from its server now:
