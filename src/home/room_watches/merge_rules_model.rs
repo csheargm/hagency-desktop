@@ -125,7 +125,7 @@ fn rule_lines(policy: &MergePolicy) -> Vec<String> {
     vec![
         format("Low-risk paths: {paths}", &[("paths", scope)]),
         limit,
-        format("{n} approval(s): another Agent's, or under an owner's maintainer rules the maintainer's review of an outside author's PR or a trusted GitHub reviewer's", &[("n", policy.required_agent_approvals.max(MIN_AGENT_APPROVALS).to_string())]),
+        format("Needs {n} approval(s) before an Agent merges: a review by another Agent, or a trusted reviewer's approval on GitHub", &[("n", policy.required_agent_approvals.max(MIN_AGENT_APPROVALS).to_string())]),
         tr(if policy.require_ci { "CI required" } else { "CI not required" }).to_owned(),
         format("Always a person: {paths}", &[("paths", always)]),
     ]
