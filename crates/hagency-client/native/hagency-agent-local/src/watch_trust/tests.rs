@@ -208,7 +208,7 @@ fn only_the_watched_room_with_the_switch_on_skips_the_card() {
     // ADR 0030: a member of a room the Agent may work in gets the same steps;
     // the room's level and Pause decide for everyone.
     assert!(pinned(&ledger.db, &here, "@bob:example.org").unwrap().is_some(), "a room member, as the owner");
-    let room_state = |paused| crate::room_autonomy::AutonomySnapshot { room_id: ROOM.into(), level: Some(crate::room_autonomy::Level::Assist), paused, unread: false, owner_maintainer: false };
+    let room_state = |paused| crate::room_autonomy::AutonomySnapshot { room_id: ROOM.into(), level: Some(crate::room_autonomy::Level::Assist), paused, unread: false, owner_maintainer: false, as_of: None };
     ledger.set_room_autonomy(OWNER, &room_state(true), crate::merge_policy::room_rules::unix_now()).unwrap();
     assert!(pinned(&ledger.db, &here, OWNER).unwrap().is_none(), "paused: asks");
     ledger.set_room_autonomy(OWNER, &room_state(false), crate::merge_policy::room_rules::unix_now()).unwrap();

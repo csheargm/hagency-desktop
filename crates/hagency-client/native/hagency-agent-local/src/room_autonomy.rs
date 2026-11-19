@@ -25,6 +25,7 @@ use crate::{key, Error, Ledger, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod as_of;
 pub mod merge_room;
 pub use merge_room::NOT_READ_MERGE_REASON;
 
@@ -172,6 +173,10 @@ pub struct AutonomySnapshot {
     /// levels: only their Agents deliver here.
     #[serde(default)]
     pub owner_maintainer: bool,
+    /// The newest server time (ms) of the room state it was read from; the
+    /// ledger keeps the newest by this, never by receipt ([`as_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<i64>,
 }
 
 /// The power level of a room maintainer (the Matrix presets' moderator).
@@ -187,10 +192,14 @@ impl Ledger {
         if !crate::issue_watch::valid_room_id(&snapshot.room_id) {
             return Err(Error::Invalid("room autonomy needs a room ID"));
         }
+        // An older read than the one kept is dropped, not an error: the newer stays (GPT review P1).
+        if !as_of::replaces(&self.db, snapshot, now)? {
+            return Ok(());
+        }
         let level = snapshot.level.unwrap_or_default().wire();
         self.db.execute(
-            "INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)",
-            (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64),
+            "INSERT OR REPLACE INTO room_autonomy (room, level, paused, unread, read_at, maintainer, as_of) VALUES (?,?,?,?,?,?,?)",
+            (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64, snapshot.as_of),
         )?;
         Ok(())
     }

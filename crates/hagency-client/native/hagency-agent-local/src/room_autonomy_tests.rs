@@ -10,14 +10,14 @@ fn ledger(dir: &std::path::Path) -> Ledger {
     Ledger::open(dir.join("local.db"), OWNER).unwrap()
 }
 fn record(ledger: &mut Ledger, level: Option<Level>, paused: bool, unread: bool, at: i64) {
-    ledger.set_room_autonomy(OWNER, &AutonomySnapshot { room_id: ROOM.into(), level, paused, unread, owner_maintainer: true }, at).unwrap();
+    ledger.set_room_autonomy(OWNER, &AutonomySnapshot { room_id: ROOM.into(), level, paused, unread, owner_maintainer: true, as_of: None }, at).unwrap();
 }
 
 impl Ledger {
     /// Test helper: `agent` may work in `room`, recorded Autonomous now.
     pub(crate) fn allow_loop_in(&mut self, owner: &str, agent: &str, room: &str) {
         self.set_may_work(owner, agent, room, true).unwrap();
-        let snapshot = AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true };
+        let snapshot = AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None };
         self.set_room_autonomy(owner, &snapshot, unix_now()).unwrap();
     }
     /// Test helper: `agent` may work in every room it is bound to, each
@@ -29,7 +29,7 @@ impl Ledger {
         };
         for room in rooms {
             self.set_may_work(owner, agent, &room, on).unwrap();
-            let snapshot = AutonomySnapshot { room_id: room, level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true };
+            let snapshot = AutonomySnapshot { room_id: room, level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: true, as_of: None };
             self.set_room_autonomy(owner, &snapshot, unix_now()).unwrap();
         }
     }
@@ -125,7 +125,7 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = ledger(temp.path());
     ledger.set_may_work(OWNER, "anna", ROOM, true).unwrap();
-    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer };
+    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: None };
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now()).unwrap();
     assert_eq!(ledger.loop_may_deliver("anna", ROOM), Ok(()));
     ledger.set_room_autonomy(OWNER, &snapshot(false), unix_now()).unwrap();
@@ -133,4 +133,23 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     assert_eq!(ledger.loop_may_work("anna", ROOM), Ok(()), "a member's agent still works");
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now() - ROOM_RULES_TTL_SECS - 1).unwrap();
     assert_eq!(ledger.owner_maintainer_at(ROOM, unix_now()).unwrap(), None, "a stale role counts for nothing");
+}
+
+/// Full-integration GPT review (P1): a Pause pushed as of T2, then a poll's
+/// Autonomous read as of T1 < T2 arriving later: the gate stays paused. A
+/// newer read replaces it; an untimed snapshot never loosens a timed one
+/// within the poll interval.
+#[test]
+fn an_older_read_arriving_later_never_replaces_a_newer_pause() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ledger = ledger(dir.path());
+    let now = unix_now();
+    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of };
+    ledger.set_room_autonomy(OWNER, &snap(true, Some(2_000)), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(1_000)), now + 1).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 1).unwrap(), Autonomy::Paused, "the stale poll is dropped");
+    ledger.set_room_autonomy(OWNER, &snap(false, None), now + 2).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 2).unwrap(), Autonomy::Paused, "an untimed read never loosens a recent timed one");
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(3_000)), now + 3).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 3).unwrap(), Autonomy::Level(Level::Autonomous), "a newer read (a Resume) replaces it");
 }
