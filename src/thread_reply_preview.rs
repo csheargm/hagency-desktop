@@ -5,7 +5,7 @@
 //! latest-message preview uses the same reduction.
 
 use std::borrow::Cow;
-use matrix_sdk::ruma::{events::{room::message::MessageType, AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent}, serde::Raw, UserId};
+use matrix_sdk::ruma::{events::{room::message::MessageType, AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent}, serde::Raw, OwnedUserId, UserId};
 use matrix_sdk_ui::timeline::{MsgLikeKind, TimelineItemContent};
 use crate::{event_preview::{CardScope, text_preview_of_message, text_preview_of_timeline_item}, utils};
 
@@ -14,7 +14,7 @@ const MAX_PREVIEW_CHARS: usize = 120;
 
 /// The HTML preview (`<b>sender</b>: text`) of a latest reply with `msgtype`.
 pub fn preview_of_message(msgtype: &MessageType, sender_id: &UserId, sender_name: &str, scope: CardScope<'_>) -> String {
-    match escaped_plain_line(msgtype) {
+    match escaped_plain_line(msgtype, &[]) {
         Some(line) => format!("<b>{}</b>: {}", htmlize::escape_text(sender_name), line),
         None => {
             let html = text_preview_of_message(msgtype, sender_id, sender_name, scope).format_with(sender_name, true);
@@ -42,8 +42,9 @@ pub(crate) fn proposal_line(msgtype: &MessageType) -> Option<&'static str> {
     })
 }
 
-/// The first readable line of a text or notice message, HTML-escaped.
-fn escaped_plain_line(msgtype: &MessageType) -> Option<String> {
+/// The first readable line of a text or notice message, HTML-escaped, with
+/// the user IDs of `names` written as names (`shared::preview_names`).
+fn escaped_plain_line(msgtype: &MessageType, names: &[(OwnedUserId, Option<String>)]) -> Option<String> {
     // A memory or skill proposal is a card; its fallback body (with a raw Agent id) is never previewed.
     if let Some(line) = proposal_line(msgtype) {
         return Some(htmlize::escape_text(line).into_owned());
@@ -52,7 +53,7 @@ fn escaped_plain_line(msgtype: &MessageType) -> Option<String> {
         MessageType::Text(text) => Some(text.body.as_str()),
         MessageType::Notice(notice) => Some(notice.body.as_str()),
         _ => None,
-    }.map(first_plain_line).filter(|line| !line.is_empty()).map(|line| htmlize::escape_text(&line).into_owned())
+    }.map(|body| first_plain_line(&crate::shared::preview_names::with_names(body, names))).filter(|line| !line.is_empty()).map(|line| htmlize::escape_text(&line).into_owned())
 }
 
 /// The one-line plain text of a quoted (replied-to) text or notice message,
@@ -73,20 +74,25 @@ pub fn reply_quote_line(msgtype: &MessageType, sender_id: &UserId) -> Option<Str
 
 /// The rooms-list preview of a room's latest event: the HTML text shown with
 /// the sender, and the sender-less body used by the direct-chat list.
-pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, sender_name: &str, scope: CardScope<'_>) -> (String, Option<String>) {
-    let line = match content {
-        TimelineItemContent::MsgLike(msg_like) => match &msg_like.kind {
-            MsgLikeKind::Message(msg) => escaped_plain_line(msg.msgtype()),
-            _ => None,
-        },
-        _ => None,
-    };
+pub fn latest_event_preview(content: &TimelineItemContent, sender_id: &UserId, sender_name: &str, names: &[(OwnedUserId, Option<String>)], scope: CardScope<'_>) -> (String, Option<String>) {
+    let line = message_of(content).and_then(|msg| escaped_plain_line(msg, names));
     if let Some(line) = line {
         return (format!("<b>{}</b>: {}", htmlize::escape_text(sender_name), line), Some(line));
     }
     let preview = text_preview_of_timeline_item(content, sender_id, sender_name, scope);
     let direct = preview.direct_message_body().map(str::to_owned);
     (preview.format_with(sender_name, true), direct)
+}
+
+/// The message of a latest event, if it is one.
+pub fn message_of(content: &TimelineItemContent) -> Option<&MessageType> {
+    match content {
+        TimelineItemContent::MsgLike(msg_like) => match &msg_like.kind {
+            MsgLikeKind::Message(msg) => Some(msg.msgtype()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The preview of a raw latest-reply event, if it is a room message.
@@ -193,8 +199,8 @@ mod tests {
     #[test]
     fn rooms_list_and_reply_quote_lines_skip_a_lone_bullet() {
         let msg = MessageType::text_markdown("- <b>Done</b> & checked\n- second\n");
-        assert_eq!(escaped_plain_line(&msg).as_deref(), Some("&lt;b&gt;Done&lt;/b&gt; &amp; checked"));
-        assert_eq!(escaped_plain_line(&MessageType::text_plain("-\n•\n")), None);
+        assert_eq!(escaped_plain_line(&msg, &[]).as_deref(), Some("&lt;b&gt;Done&lt;/b&gt; &amp; checked"));
+        assert_eq!(escaped_plain_line(&MessageType::text_plain("-\n•\n"), &[]), None);
     }
 
     #[test]
@@ -222,6 +228,22 @@ mod tests {
         assert_eq!(first_plain_line("snake\\_case \\*not em\\*"), "snake_case *not em*");
     }
 
+    /// Nov 19: the rooms list showed "🔎 Review requested — @_hagency_agt_01m7k84kgg…"
+    /// (the full ID, cut by the ellipsis) where the timeline's pill says the name.
+    #[test]
+    fn a_review_request_previews_the_reviewer_by_name_never_the_raw_id() {
+        use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+        let reviewer = OwnedUserId::try_from("@_hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5:localhost:8452").unwrap();
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 131, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/131".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into(), issues: Vec::new() };
+        let msgtype = LoopNotice::ReviewRequested { target, reviewer: reviewer.clone() }.content().msgtype;
+        let body = msgtype.body().to_owned();
+        assert_eq!(crate::shared::preview_names::user_ids_in(&body), [reviewer.clone()]);
+        let named = escaped_plain_line(&msgtype, &[(reviewer.clone(), Some("yue-claude".into()))]).unwrap();
+        assert!(named.starts_with("🔎 Review requested — yue-claude please review PR #131"), "{named}");
+        let unnamed = escaped_plain_line(&msgtype, &[(reviewer, None)]).unwrap();
+        assert!(unnamed.contains("— _hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5 please") && !unnamed.contains(":localhost"), "{unnamed}");
+    }
+
     #[test]
     fn inline_code_keeps_its_backslashes() {
         assert_eq!(first_plain_line("Run `C:\\dir\\-x` now"), "Run C:\\dir\\-x now");
@@ -244,7 +266,7 @@ mod proposal_tests {
         let content = serde_json::json!({"msgtype":"m.notice","body":"Memory proposal from agt_01m7: Demo Monday\nReason: asked",
             "io.hagency.memory_proposal":{"id":"mem_1","text":"Demo Monday","reason":"asked","source_event":"$e","author":"agt_01m7"}});
         let msgtype: MessageType = serde_json::from_value(content).unwrap();
-        let line = escaped_plain_line(&msgtype).unwrap();
+        let line = escaped_plain_line(&msgtype, &[]).unwrap();
         assert!(!line.contains("agt_") && !line.contains("Reason"), "{line}");
         assert_eq!(line, crate::i18n::tr("Suggested a note for this room's memory"));
     }
