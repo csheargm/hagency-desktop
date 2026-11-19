@@ -939,6 +939,11 @@ impl MiniAppsSideRegionRef {
     pub fn layout(&self) -> SideLayout {
         self.borrow().map(|inner| inner.layout_mode).unwrap_or_default()
     }
+    // TODO(R4): side.rs is over budget; the region's layout (prepare, docked_width) belongs in side/layout.rs.
+    /// The width the region takes beside the chat this frame: its docked width and handle, else none.
+    pub fn docked_width(&self) -> f64 {
+        self.borrow().filter(|inner| inner.layout_mode == SideLayout::Docked).map_or(0.0, |inner| inner.width.min(inner.max_width) + HANDLE)
+    }
     pub fn key(&self, cx: &mut Cx, id: LiveId) -> Option<SurfaceKey> {
         self.borrow().and_then(|inner| inner.key_of(cx, id))
     }
