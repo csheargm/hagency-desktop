@@ -193,15 +193,13 @@ impl Ledger {
             return Err(Error::Invalid("room autonomy needs a room ID"));
         }
         // An older read than the one kept is dropped, not an error: the newer stays (GPT review P1).
-        if !as_of::replaces(&self.db, snapshot, now)? {
-            return Ok(());
-        }
+        let Some(kept_as_of) = as_of::replaces(&self.db, snapshot, now)? else { return Ok(()) };
         let level = snapshot.level.unwrap_or_default().wire();
         self.db.execute(
             "INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)",
             (&snapshot.room_id, level, snapshot.paused as i64, snapshot.unread as i64, now, snapshot.owner_maintainer as i64),
         )?;
-        as_of::record(&self.db, &snapshot.room_id, snapshot.as_of)
+        as_of::record(&self.db, &snapshot.room_id, kept_as_of)
     }
     /// What `room`'s recorded state allows at `now`.
     pub fn room_autonomy_at(&self, room: &str, now: i64) -> Result<Autonomy> {

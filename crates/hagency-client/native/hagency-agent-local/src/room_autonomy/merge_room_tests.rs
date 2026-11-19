@@ -13,7 +13,7 @@ fn scope(binding: &str, room: &str) -> Scope {
     Scope { agent: "anna".into(), binding: binding.into(), room: room.into(), requester: OWNER.into(), thread: room.into() }
 }
 fn snapshot(room: &str, maintainer: bool) -> AutonomySnapshot {
-    AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: None }
+    AutonomySnapshot { room_id: room.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: crate::room_autonomy::as_of::next_for_test() }
 }
 
 /// A room this device knows nothing about (its state not yet synced, no

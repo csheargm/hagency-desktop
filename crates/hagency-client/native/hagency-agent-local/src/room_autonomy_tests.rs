@@ -125,7 +125,7 @@ fn only_agents_of_the_room_owner_or_maintainers_deliver() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = ledger(temp.path());
     ledger.set_may_work(OWNER, "anna", ROOM, true).unwrap();
-    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: None };
+    let snapshot = |maintainer| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused: false, unread: false, owner_maintainer: maintainer, as_of: as_of::next_for_test() };
     ledger.set_room_autonomy(OWNER, &snapshot(true), unix_now()).unwrap();
     assert_eq!(ledger.loop_may_deliver("anna", ROOM), Ok(()));
     ledger.set_room_autonomy(OWNER, &snapshot(false), unix_now()).unwrap();
@@ -169,4 +169,33 @@ fn an_earlier_builds_six_value_insert_works_after_the_migration() {
     db.execute("INSERT OR REPLACE INTO room_autonomy VALUES (?,?,?,?,?,?)", ("!r:x", "assist", 0, 0, 1, 1)).unwrap();
     let kept: i64 = db.query_row("SELECT as_of FROM room_autonomy_as_of WHERE room='!old:x'", [], |r| r.get(0)).unwrap();
     assert_eq!(kept, 4000, "the round-2 column's time moved to the side table");
+}
+
+/// GPT review round 3 (P1): a delayed snapshot never loosens the gate. An
+/// equal source time that is looser is refused; an untimed stricter one
+/// replaces a timed row but keeps its time; an untimed looser one is refused.
+#[test]
+fn a_tie_or_an_untimed_snapshot_never_loosens_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ledger = ledger(dir.path());
+    let now = unix_now();
+    let snap = |paused, as_of| AutonomySnapshot { room_id: ROOM.into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of };
+    let stored_as_of = |ledger: &Ledger| ledger.db.query_row("SELECT as_of FROM room_autonomy_as_of WHERE room=?", [ROOM], |r| r.get::<_, i64>(0)).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(true, Some(2_000)), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(2_000)), now).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now).unwrap(), Autonomy::Paused, "equal time + looser: refused");
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(1_000)), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(1_500)), now).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now).unwrap(), Autonomy::Paused);
+    ledger.set_room_autonomy(OWNER, &snap(false, Some(3_000)), now).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now).unwrap(), Autonomy::Level(Level::Autonomous));
+    ledger.set_room_autonomy(OWNER, &snap(true, None), now + 1).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 1).unwrap(), Autonomy::Paused, "untimed stricter replaces");
+    assert_eq!(stored_as_of(&ledger), 3_000, "and keeps the stored time");
+    ledger.set_room_autonomy(OWNER, &snap(false, None), now + 2 * as_of::UNTIMED_GUARD_SECS).unwrap();
+    assert_eq!(ledger.room_autonomy_at(ROOM, now + 2 * as_of::UNTIMED_GUARD_SECS).unwrap(), Autonomy::Paused, "untimed looser never replaces a timed row");
+    let other = |paused| AutonomySnapshot { room_id: "!u:x".into(), level: Some(Level::Autonomous), paused, unread: false, owner_maintainer: true, as_of: None };
+    ledger.set_room_autonomy(OWNER, &other(true), now).unwrap();
+    ledger.set_room_autonomy(OWNER, &other(false), now + 1).unwrap();
+    assert_eq!(ledger.room_autonomy_at("!u:x", now + 1).unwrap(), Autonomy::Paused, "untimed over untimed: never looser within the window");
 }
