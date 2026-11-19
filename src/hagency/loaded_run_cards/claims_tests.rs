@@ -42,3 +42,26 @@ fn over_the_cap_out_of_tries_cards_are_not_claimed_again_and_the_table_stays_bou
     assert!(len <= MAX_HANDED, "bounded: {len}");
     HANDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
+
+/// GPT re-review P2: the rooms-list path claimed without pruning, and a large
+/// batch could leave the table past the cap. Both stay bounded once settled.
+#[test]
+fn rooms_list_claims_and_large_batches_keep_the_table_bounded() {
+    let _guard = pq::test_serial();
+    let generation = u64::MAX - 8;
+    HANDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let batch: Vec<_> = (0..MAX_HANDED + 50).map(|n| card(&format!("$batch{n}"))).collect();
+    let claimed = claim(generation, batch);
+    for c in &claimed {
+        settle_key(c.key(generation), true);
+    }
+    claim(generation, vec![]);
+    for n in 0..MAX_HANDED + 50 {
+        if claim_one((generation, format!("$latest{n}"), String::new())) {
+            settle_key((generation, format!("$latest{n}"), String::new()), true);
+        }
+    }
+    let len = HANDED.lock().unwrap_or_else(|e| e.into_inner()).len();
+    assert!(len <= MAX_HANDED + 1, "bounded: {len}");
+    HANDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}

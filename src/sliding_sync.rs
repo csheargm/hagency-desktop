@@ -4945,10 +4945,14 @@ async fn add_new_room(
     Cx::post_action(TimelineEndpointsRecreated { room_id: new_room.room_id.clone() });
 
     crate::hagency::loaded_run_cards::admit_latest(&new_room.room);
+    let card_before = crate::hagency::run_card_previews::latest_card_event(&new_room.room);
+    let latest_value = new_room.room.latest_event().await;
+    let card = crate::hagency::run_card_previews::same_snapshot(
+        card_before, crate::hagency::run_card_previews::latest_card_event(&new_room.room));
     let latest = get_latest_event_details(
-        &new_room.room.latest_event().await,
+        &latest_value,
         room_list_service.client(),
-        crate::hagency::run_card_previews::latest_card_event(&new_room.room).as_deref(),
+        card.as_deref(),
         new_room.room.room_id(),
     ).await;
     let room_name_id = RoomNameId::from((new_room.display_name.clone(), new_room.room_id.clone()));
@@ -5762,12 +5766,18 @@ async fn get_latest_event_details(
 /// to update the latest event in the RoomsListEntry for the given room.
 /// Recomputes `room`'s rooms-list preview from its latest event.
 // TODO(split): rooms-list preview computation (this, `get_latest_event_details`) belongs in its own module.
+// TODO(R4): sliding_sync.rs is far over budget; split the rooms-list latest-event preview
+// (update_latest_event, get_latest_event_details) into its own module.
 pub(crate) async fn update_latest_event(room: &Room) {
     crate::hagency::loaded_run_cards::admit_latest(room);
+    let card_before = crate::hagency::run_card_previews::latest_card_event(room);
+    let latest_value = room.latest_event().await;
+    let card = crate::hagency::run_card_previews::same_snapshot(
+        card_before, crate::hagency::run_card_previews::latest_card_event(room));
     if let Some(latest) = get_latest_event_details(
-        &room.latest_event().await,
+        &latest_value,
         &room.client(),
-        crate::hagency::run_card_previews::latest_card_event(room).as_deref(),
+        card.as_deref(),
         room.room_id(),
     ).await {
         enqueue_rooms_list_update(RoomsListUpdate::UpdateLatestEvent {

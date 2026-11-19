@@ -27,7 +27,20 @@ pub(super) fn claim(generation: u64, cards: Vec<Loaded>) -> Vec<Loaded> {
     // An older login's claims never apply again (its tasks end on sign-out).
     handed.retain(|key, _| key.0 == generation);
     prune(&mut handed);
-    cards.into_iter().filter(|c| claim_key(&mut handed, c.key(generation))).collect()
+    let claimed = cards.into_iter().filter(|c| claim_key(&mut handed, c.key(generation))).collect();
+    // A large batch can push the table past the cap: prune again (GPT re-review P2).
+    prune(&mut handed);
+    claimed
+}
+
+/// Claims one card (the rooms-list path), keeping the table bounded like `claim`.
+pub(super) fn claim_one(key: Key) -> bool {
+    let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    let generation = key.0;
+    handed.retain(|k, _| k.0 == generation);
+    let claimed = claim_key(&mut handed, key);
+    prune(&mut handed);
+    claimed
 }
 
 /// Over `MAX_HANDED`, forgets only what is safe to hand over again: stored

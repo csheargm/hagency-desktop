@@ -161,7 +161,7 @@ async fn loaded_latest(room: &Room, latest: &Latest) -> Option<Loaded> {
 /// Agent run" in the rooms list, as only an open room's timeline handed its
 /// cards to `ingest`. A room whose latest event is a run card (or its edit)
 /// has exactly that card admitted, once per card and edit per login
-/// (`claim_key`), through the same admission boundary; admission then
+/// (`claim_one`), through the same admission boundary; admission then
 /// refreshes the room's preview (`run_card_previews::after_admission`).
 pub fn admit_latest(room: &Room) {
     use matrix_sdk::latest_events::LatestEventValue;
@@ -170,7 +170,7 @@ pub fn admit_latest(room: &Room) {
     let Some(latest) = latest_of(value, event.encryption_info().map(|info| (**info).clone())) else { return };
     let generation = super::pending_questions::generation();
     let key = latest.key(generation);
-    if !claim_key(&mut HANDED.lock().unwrap_or_else(|e| e.into_inner()), key.clone()) {
+    if !claim_one(key.clone()) {
         return;
     }
     let room = room.clone();
