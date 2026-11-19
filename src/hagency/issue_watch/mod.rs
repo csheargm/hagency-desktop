@@ -17,7 +17,7 @@ mod approval_note;
 mod handoff;
 pub(crate) mod live;
 pub mod loop_notice;
-mod merge_hold;
+pub(crate) mod merge_hold;
 mod merged_link;
 mod review_again;
 mod migrate;

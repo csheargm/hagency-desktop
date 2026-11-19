@@ -3661,6 +3661,7 @@
   "owner/name of a GitHub repository": "GitHub 仓库的 owner/name",
   "working on #{number} (PR #{pr} {state})": "正在处理 #{number}（PR #{pr} {state}）",
   "working on #{number}": "正在处理 #{number}",
+  "working on #{number} (PR #{pr} ready — a person merges)": "正在处理 #{number}（PR #{pr} 已就绪，由人合并）",
   "{n} more not shown": "还有 {n} 项未显示",
   "{state} (attempt {n})": "{state}（第 {n} 次尝试）",
   "handed off": "已移交",
