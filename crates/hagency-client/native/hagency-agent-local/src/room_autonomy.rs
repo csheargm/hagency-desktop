@@ -236,13 +236,13 @@ impl Ledger {
             _ => Err(UNREAD_REASON),
         }
     }
-    /// Whether a merge from `room` is refused outright: the room is a loop
-    /// room (it has a snapshot) and its fresh, readable snapshot does not say
+    /// Whether a merge from `room` is refused outright: the room is a project
+    /// room ([`Ledger::project_room`]) and no fresh, readable snapshot says
     /// this owner is its owner or a maintainer (fail closed, GPT review). A
-    /// room with no snapshot at all (a private chat) leaves it to the card.
+    /// room this device knows nothing project-like about (a private chat)
+    /// leaves it to the card.
     pub fn merge_refused(&self, room: &str, now: i64) -> Result<bool> {
-        let known: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM room_autonomy WHERE room=?)", [room], |r| r.get(0))?;
-        Ok(known && self.owner_maintainer_at(room, now)? != Some(true))
+        Ok(self.project_room(room)? && self.owner_maintainer_at(room, now)? != Some(true))
     }
     /// Whether this device's owner is the room's owner or a maintainer, by
     /// the fresh, readable snapshot of `room` (`None`: none to go by).

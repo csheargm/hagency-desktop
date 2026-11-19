@@ -277,12 +277,18 @@ pub(crate) fn repo_name(text: &str) -> Option<&str> {
 /// `call` is the tool call's id; an allowed review is held under it and
 /// counts only after that call succeeds (an empty id never counts).
 pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, call: &str, now: i64, source: &impl PrSource) -> Option<bool> {
+    let command = parse_command(proposal)?;
+    // Only Agents of the room's owner or a maintainer merge (ADR 0030): in a
+    // project room, anything but a fresh read saying this owner is one refuses
+    // the merge outright, card or not, in the background too (fail closed, GPT reviews).
+    if command.kind == Kind::Merge && ledger.merge_refused(&proposal.scope.room, super::room_rules::unix_now()).unwrap_or(true) {
+        return Some(false);
+    }
     // A background call's launch result is not the command's outcome, so it
     // must never settle a review, merge or ready (GPT review): the card asks.
     if proposal.arguments["run_in_background"] == true {
         return None;
     }
-    let command = parse_command(proposal)?;
     let agent = proposal.scope.agent.clone();
     if command.kind == Kind::RequestChanges {
         // Whatever answers it (this gate or the owner's card), a blocking
@@ -290,12 +296,6 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
         // An unreadable pull request leaves the card to the owner.
         let url = source.pull_request(&command).await?.url;
         ledger.hold_withdrawal(call, &url, &agent).ok()?;
-    }
-    // Only Agents of the room's owner or a maintainer merge (ADR 0030): in a
-    // loop room, anything but a fresh read saying this owner is one refuses the
-    // merge outright, card or not (fail closed, GPT review).
-    if command.kind == Kind::Merge && ledger.merge_refused(&proposal.scope.room, super::room_rules::unix_now()).unwrap_or(true) {
-        return Some(false);
     }
     // The Agent works in this room's loop and the room runs (ADR 0030; it
     // replaces the per-Agent merge switch): else the card asks.
@@ -350,7 +350,7 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     if command.repo.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case(repo)) {
         return Some(false);
     }
-    let judged = super::work::judged(ledger, agent, command, repo, view, source).await?;
+    let judged = super::work::judged(ledger, (agent, room), command, repo, view, source).await?;
     let merge = command.kind == Kind::Merge;
     let scoped: Vec<&super::MergePolicy> = if merge { judged.policies().collect() } else { judged.review_policies().collect() };
     // No rules at all (no room rules, no owner rules): the card asks.
@@ -374,6 +374,6 @@ pub(super) async fn qualifies(ledger: &mut Ledger, command: &GhPr, view: &super:
     if command.head.as_deref() != Some(view.head_sha.as_str()) {
         return Some(false);
     }
-    let decision = super::review_loop::judge(ledger, command, repo, view, (agent, Some(room)), source).await?;
+    let decision = super::review_loop::judge(ledger, command, repo, view, (agent, room), source).await?;
     Some(decision == Decision::Merge && ledger.claim_auto_merge(&view.url, &view.head_sha, agent).ok()?)
 }

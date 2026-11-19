@@ -130,10 +130,16 @@ fn room_repos(db: &Connection, proposal: &ToolProposal) -> crate::Result<Vec<Str
 
 /// Whether `proposal` is a shell step posting a PR review verdict on a
 /// repository of its Room while the owner lets the Agent review PRs there
-/// (ADR 0025): the pinned command that runs in its place, else `None`.
+/// (ADR 0025) and the Room runs (Assist or Autonomous, not paused, freshly
+/// read, ADR 0030; batch GPT review: an Off or paused room posted verdicts):
+/// the pinned command that runs in its place, else `None`.
 /// Any requester in the Room, as for the read-only queries.
 pub(crate) fn review_step(db: &Connection, proposal: &ToolProposal) -> crate::Result<Option<TrustedStep>> {
     if proposal.risk == "permission_expansion" || !is_shell_step(proposal) {
+        return Ok(None);
+    }
+    let room_runs = crate::room_autonomy::autonomy_at(db, &proposal.scope.room, crate::merge_policy::room_rules::unix_now())?.may_work().is_ok();
+    if !room_runs {
         return Ok(None);
     }
     let Some(post) = proposal.arguments["command"].as_str().and_then(review_post::ReviewPost::parse) else { return Ok(None) };

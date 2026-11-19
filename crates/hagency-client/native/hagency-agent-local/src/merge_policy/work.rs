@@ -265,8 +265,8 @@ pub(crate) struct Judged {
 /// The policies for `view` and the approval rules. `None` (the owner's card)
 /// when the stored rules cannot be read. The room's rules come only from the
 /// owner's recorded snapshot, never from the repository or the Agent.
-pub(crate) async fn judged(ledger: &mut Ledger, agent: &str, command: &GhPr, repo: &str, view: &PrView, source: &impl PrSource) -> Option<Judged> {
-    let room = ledger.rules_for_merge(agent, repo).ok()?;
+pub(crate) async fn judged(ledger: &mut Ledger, (agent, room): (&str, &str), command: &GhPr, repo: &str, view: &PrView, source: &impl PrSource) -> Option<Judged> {
+    let room = ledger.rules_for_merge(repo, room).ok()?;
     let rules = ledger.owner_rules(agent, repo).ok()?;
     let mut judged = Judged { room, rules: None, trusted_reviewers: Vec::new(), own_login: None, excluded: agent.to_owned(), author_reason: None, review_rules: None, count_local: true };
     // The stored role is ignored (ADR 0017): GitHub's own permission decides

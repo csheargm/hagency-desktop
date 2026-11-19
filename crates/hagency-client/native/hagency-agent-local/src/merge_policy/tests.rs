@@ -214,7 +214,8 @@ async fn reviewer_approval_lets_the_fixer_merge_once_and_off_changes_nothing() {
     let docs = Fake::new(vec![file("README.md", 5)]);
     let merge = bash(&merge_line(), temp.path(), "fixer");
     let review = bash(&format!("gh pr review 7 --comment -b \"{APPROVE_MARKER} {HEAD}\""), temp.path(), "reviewer");
-    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "off by default: the card asks");
+    // A watch links the room, so it is a project room: never read, the merge is refused (batch GPT review).
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(false), "off by default and never read: refused");
     ledger.allow_loop(owner, "fixer", true);
     assert_eq!(gate::auto_answer(&mut ledger, owner, &bash("gh pr ready 7 -R csheargm/hagency-demo-sandbox", temp.path(), "fixer"), "call", 11, &docs).await, Some(true));
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "no other Agent approved yet");

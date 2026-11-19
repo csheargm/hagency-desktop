@@ -74,3 +74,15 @@ async fn a_members_agent_never_merges_and_a_maintainers_does() {
     let merge = gate::auto_answer(&mut ledger, OWNER, &bash(&merge_line(), temp.path(), "fixer"), "mg2", 11, &Fake::new(vec![file("docs/a.md", 3)])).await;
     assert_eq!(merge, Some(true), "promoted: merges");
 }
+
+/// Batch GPT review: a background merge in a project room with no snapshot
+/// is refused like a foreground one, never left to a card.
+#[tokio::test]
+async fn a_background_merge_in_an_unread_project_room_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = loop_ledger(temp.path());
+    ledger.db.execute("DELETE FROM room_autonomy", []).unwrap();
+    let mut merge = bash(&merge_line(), temp.path(), "fixer");
+    merge.arguments["run_in_background"] = serde_json::Value::Bool(true);
+    assert_eq!(gate::auto_answer(&mut ledger, OWNER, &merge, "mg", 11, &Fake::new(vec![file("docs/a.md", 3)])).await, Some(false));
+}

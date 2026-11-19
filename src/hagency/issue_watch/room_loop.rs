@@ -113,11 +113,34 @@ pub(crate) fn running_only(saved: &Value, rooms: &Rooms) -> (Value, Vec<String>)
     (kept, held)
 }
 
-/// Read every loop room of `saved` from the homeserver now.
+/// Every joined room the synced state marks as a project room (linked
+/// repositories or an autonomy level). Each is read and recorded every check,
+/// so the gate never takes a project room the loop does not touch for a
+/// private chat (batch GPT review). Discovery only: the read is the server's.
+/// A store error counts the room in (reading a room is harmless).
+async fn project_rooms() -> BTreeSet<String> {
+    use ::hagency::issue_watch::safeguards::room_autonomy::ROOM_AUTONOMY_STATE_TYPE;
+    use ::hagency::repo_status::linked::ROOM_REPOS_STATE_TYPE;
+    let Some(client) = crate::sliding_sync::get_client() else { return BTreeSet::new() };
+    let mut out = BTreeSet::new();
+    for room in client.joined_rooms() {
+        for kind in [ROOM_REPOS_STATE_TYPE, ROOM_AUTONOMY_STATE_TYPE] {
+            if room.get_state_events(kind.into()).await.map_or(true, |events| !events.is_empty()) {
+                out.insert(room.room_id().to_string());
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Read every loop room of `saved`, and every joined project room, from the homeserver now.
 pub(crate) async fn read(saved: &Value) -> Rooms {
     let client = crate::sliding_sync::get_client();
     let mut rooms = Rooms::default();
-    for room_id in loop_rooms(saved) {
+    let mut all = loop_rooms(saved);
+    all.extend(project_rooms().await);
+    for room_id in all {
         let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.as_ref()?.get_room(&id));
         let state = match joined {
             Some(room) => crate::hagency::room_autonomy::server::read(&room).await,
@@ -137,6 +160,8 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
     let mut saved = super::live::saved(service, id, None).await?;
     let plans = saved["plans"].as_array().is_some_and(|p| !p.is_empty());
     if loop_rooms(&saved).is_empty() && !plans {
+        // No loop here, but the device's project rooms are still recorded (batch GPT review).
+        record(service, id, &read(&saved).await).await?;
         return Ok(None);
     }
     let mut rooms = read(&saved).await;
@@ -158,10 +183,19 @@ pub(super) async fn prepare(service: &crate::hagency::backend::Service, agent: &
     }
     // Not recorded: nothing runs this check (GPT review: the last positive snapshot
     // would otherwise keep counting for up to its TTL while this check dispatched).
-    super::live::saved(service, id, Some(serde_json::json!({"roomAutonomy": rooms.snapshots()}))).await
-        .map_err(|error| crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]))?;
+    record(service, id, &rooms).await?;
     stop_paused(&rooms).await;
     Ok(Some((saved, rooms, held)))
+}
+
+/// Record `rooms`' level and Pause through the owner API (none: nothing to record).
+async fn record(service: &crate::hagency::backend::Service, id: &str, rooms: &Rooms) -> Result<(), String> {
+    if rooms.0.is_empty() {
+        return Ok(());
+    }
+    super::live::saved(service, id, Some(serde_json::json!({"roomAutonomy": rooms.snapshots()}))).await
+        .map(|_| ())
+        .map_err(|error| crate::i18n::format("The rooms' agent work settings could not be recorded: {error}", &[("error", error)]))
 }
 
 /// Pause stops the loop's own runs in progress in each paused room.

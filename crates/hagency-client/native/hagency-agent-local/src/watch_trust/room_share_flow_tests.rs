@@ -8,6 +8,7 @@ use super::fix_flow_tests::{self, git, run_under};
 use super::read_only_flow_tests::{OWNER, REPO, ROOM, ask_owner_ledger, proposal};
 use super::{TrustedStep, pinned};
 use crate::merge_policy::work::OwnerRules;
+use crate::room_autonomy::{AutonomySnapshot, Level};
 use crate::room_share::RoomShare;
 use crate::{Ledger, ToolPolicy};
 use serde_json::json;
@@ -17,7 +18,31 @@ const REVIEW: &str = "gh pr review 7 --repo csheargm/hagency-demo-sandbox --comm
 fn dev_room(dir: &std::path::Path) -> Ledger {
     let mut ledger = ask_owner_ledger(dir);
     ledger.set_work(OWNER, "bird", vec![OwnerRules { repo: REPO.into(), room_id: ROOM.into(), ..Default::default() }]).unwrap();
+    room_at(&mut ledger, Some(Level::Assist), false);
     ledger
+}
+
+fn room_at(ledger: &mut Ledger, level: Option<Level>, paused: bool) {
+    let snapshot = AutonomySnapshot { room_id: ROOM.into(), level, paused, unread: false, owner_maintainer: true };
+    ledger.set_room_autonomy(OWNER, &snapshot, crate::merge_policy::room_rules::unix_now()).unwrap();
+}
+
+/// Batch GPT review: a card-free verdict follows the room's level like every
+/// other loop step: Off, paused or never read, it asks the owner.
+#[test]
+fn an_off_or_paused_room_posts_no_verdict_without_a_card() {
+    let db = tempfile::tempdir().unwrap();
+    let mut ledger = dev_room(db.path());
+    for (level, paused, why) in [(None, false, "no level: Off"), (Some(Level::Off), false, "Off"), (Some(Level::Autonomous), true, "paused")] {
+        room_at(&mut ledger, level, paused);
+        assert_eq!(ledger.trusted_publish(OWNER, &proposal(ROOM, REVIEW), 11).unwrap(), None, "{why}");
+    }
+    room_at(&mut ledger, Some(Level::Autonomous), false);
+    assert!(ledger.trusted_publish(OWNER, &proposal(ROOM, REVIEW), 11).unwrap().is_some(), "running again");
+    let fresh = tempfile::tempdir().unwrap();
+    let mut unread = ask_owner_ledger(fresh.path());
+    unread.set_work(OWNER, "bird", vec![OwnerRules { repo: REPO.into(), room_id: ROOM.into(), ..Default::default() }]).unwrap();
+    assert_eq!(unread.trusted_publish(OWNER, &proposal(ROOM, REVIEW), 11).unwrap(), None, "never read: asks");
 }
 
 #[test]

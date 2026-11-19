@@ -206,6 +206,10 @@ mod room_repo_reads {
         // Its verdict on that PR is the room's review grant (ADR 0025), watch or not.
         let verdict = format!("gh pr review 70 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {H50} - ok\"");
         let p = super::super::proposal(&ledger, &turn, &verdict).unwrap();
+        assert_eq!(ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap(), None, "the room's level never read: asks");
+        // While the room runs (ADR 0030, batch GPT review).
+        let assist = crate::room_autonomy::AutonomySnapshot { room_id: LINKED_ROOM.into(), level: Some(crate::room_autonomy::Level::Assist), ..Default::default() };
+        ledger.set_room_autonomy(OWNER, &assist, crate::merge_policy::room_rules::unix_now()).unwrap();
         let step = ledger.trusted_publish(OWNER, &p, crate::codex::now()).unwrap();
         let Some(TrustedStep::Command(pinned)) = step else { panic!("{verdict}: {step:?}") };
         assert!(pinned.contains("gh pr review 70 --comment -R"), "{pinned}");
