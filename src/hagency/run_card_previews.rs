@@ -44,6 +44,13 @@ pub(crate) fn latest_card_event(room: &Room) -> Option<OwnedEventId> {
     card_event_of(event.raw())
 }
 
+/// The card event read before and after awaiting the preview content: kept
+/// only when unchanged, so content and event id come from one snapshot (GPT
+/// re-review P2). A change means a newer latest event, whose update follows.
+pub(crate) fn same_snapshot(before: Option<OwnedEventId>, after: Option<OwnedEventId>) -> Option<OwnedEventId> {
+    if before == after { before } else { None }
+}
+
 /// Cards were admitted in `room`: recompute only that room's preview.
 pub(super) fn after_admission(room: &Room) {
     if !queue(room.room_id()) {
@@ -104,5 +111,16 @@ mod tests {
 
         let after = list_preview(&latest, &sender);
         assert!(after.contains("Done &lt;b&gt;ok&lt;/b&gt;") && !after.contains(crate::i18n::tr("Agent run")), "{after}");
+    }
+
+    /// GPT re-review P2: the rooms list read the card event and the content in
+    /// separate snapshots. A card event that changed across the await is dropped.
+    #[test]
+    fn a_card_event_that_changed_while_the_content_was_read_is_not_used() {
+        let card = matrix_sdk::ruma::event_id!("$card").to_owned();
+        let other = matrix_sdk::ruma::event_id!("$replay").to_owned();
+        assert_eq!(same_snapshot(Some(card.clone()), Some(card.clone())), Some(card.clone()));
+        assert_eq!(same_snapshot(Some(card.clone()), Some(other)), None);
+        assert_eq!(same_snapshot(None, Some(card)), None);
     }
 }
