@@ -22,6 +22,7 @@ STARTUP_CHECK_FAILED = "Local provider start-up check failed"
 SIGNED_OUT_NOTE = "agent signed out (Claude login)"
 RECENT_WINDOW = timedelta(minutes=5)
 AUTH_STATUS_TIMEOUT_S = 20
+LOGIN_PHRASES = ("login required", "not logged in")
 NO_ANSWER_MARKS = ("(nothing)", "no answer")
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _CONFIG_DIR_ENV = re.compile(r"(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)")
@@ -36,7 +37,10 @@ def claude_agents() -> list:
 def is_login_error(line: str) -> bool:
     """A desktop-log line saying the owner's Claude login is missing."""
     text = _ANSI.sub("", line)
-    return CLAUDE_LOGIN_REQUIRED in text or (STARTUP_CHECK_FAILED in text and "Claude" in text)
+    if CLAUDE_LOGIN_REQUIRED in text:
+        return True
+    lowered = text.lower()  # a start-up failure counts only when it says the Claude login is missing
+    return STARTUP_CHECK_FAILED in text and "claude" in lowered and any(p in lowered for p in LOGIN_PHRASES)
 
 
 def line_time(line: str) -> datetime | None:
@@ -118,14 +122,15 @@ def owner_cli_status(dirs: dict, probe=None) -> dict:
 
 
 def signed_out_agents(cli_by_owner: dict, owner_log_errors: dict, dirs: dict | None = None) -> dict:
-    """Claude Agent -> reason, from each owner's CLI state and recent log errors."""
+    """Claude Agent -> reason. A readable CLI status decides (a fresh loggedIn=true
+    beats older log lines); the log errors decide only when it is unknown."""
     out, dirs = {}, dirs or {}
     for agent in claude_agents():
         owner = config.AGENTS[agent][0]
         if cli_by_owner.get(owner) is False:
             where = f"CLAUDE_CONFIG_DIR={dirs[owner]}" if dirs.get(owner) else "default config"
             out[agent] = f"{SIGNED_OUT_NOTE}: `claude auth status` ({where}) loggedIn=false"
-        elif owner_log_errors.get(owner):
+        elif cli_by_owner.get(owner) is None and owner_log_errors.get(owner):
             out[agent] = f"{SIGNED_OUT_NOTE}: {owner}'s desktop log: {owner_log_errors[owner][-1][-160:]}"
     return out
 

@@ -33,6 +33,14 @@ class LogLines(unittest.TestCase):
     def test_startup_failure_naming_another_provider_is_not_a_claude_login(self):
         self.assertFalse(provider.is_login_error("Local provider start-up check failed detail=\"codex missing\""))
 
+    def test_other_claude_startup_failures_are_not_a_login(self):
+        self.assertFalse(provider.is_login_error(
+            'Local provider start-up check failed kind="binary" detail="Claude executable not found"'))
+        self.assertFalse(provider.is_login_error(
+            'Local provider start-up check failed kind="version" detail="Claude Code 2.1.322 or newer is required"'))
+        self.assertTrue(provider.is_login_error(
+            'Local provider start-up check failed kind="profile" detail="Claude: not logged in"'))
+
     def test_line_time_parses_utc_stamp(self):
         self.assertEqual(provider.line_time(LOGIN_LINE), datetime(2026, 11, 19, 11, 58, 52, tzinfo=timezone.utc))
         self.assertIsNone(provider.line_time("no timestamp here"))
@@ -63,8 +71,12 @@ class SignedOutAgents(unittest.TestCase):
         self.assertTrue(all(provider.SIGNED_OUT_NOTE in v for v in out.values()))
 
     def test_log_error_blocks_only_that_owners_claude_agents(self):
-        out = provider.signed_out_agents({"anna": True, "betty": True}, {"anna": [LOGIN_LINE], "betty": []})
+        out = provider.signed_out_agents({"anna": None, "betty": None}, {"anna": [LOGIN_LINE], "betty": []})
         self.assertEqual(set(out), {"anna-claude", "yue-claude"})
+
+    def test_fresh_cli_logged_in_beats_old_log_errors(self):
+        out = provider.signed_out_agents({"anna": True, "betty": None}, {"anna": [LOGIN_LINE], "betty": [LOGIN_LINE]})
+        self.assertEqual(set(out), {"bird-claude"})
 
     def test_all_usable(self):
         self.assertEqual(provider.signed_out_agents({"anna": None}, {"anna": [], "betty": []}), {})
@@ -76,7 +88,7 @@ class SignedOutAgents(unittest.TestCase):
             betty.write_text(LOGIN_LINE + "\n")
             with mock.patch.object(provider.config, "DESKTOP_LOGS", {"anna": anna, "betty": betty}), \
                     mock.patch.object(provider, "desktop_config_dir", return_value=None), \
-                    mock.patch.object(provider, "claude_cli_logged_in", return_value=True):
+                    mock.patch.object(provider, "claude_cli_logged_in", return_value=None):
                 out, log = provider.preflight(NOW)
         self.assertEqual(set(out), {"bird-claude"})
         self.assertTrue(any("bird-claude" in x for x in log))
