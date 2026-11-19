@@ -64,8 +64,9 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let ours = |t: &&Track| t.repo.eq_ignore_ascii_case(repo);
     let tracked: HashSet<i64> = tracks.iter().filter(ours).map(|t| t.number).collect();
     let busy = tracks.iter().filter(ours).any(|t| !t.state.is_terminal())
-        || watched.open_issues.iter().any(|i| watched.seen.contains(&i.number) && !tracked.contains(&i.number))
-        || tracks.iter().filter(ours).any(|t| super::track_age::unknown(t, watched.open_issues, watched.since()));
+        || watched.open_issues.iter().any(|i| watched.seen.contains(&i.number) && !tracked.contains(&i.number));
+    // Before any other read can fail, so the room's copy is filtered either way (GPT review).
+    super::track_age::look_up(worker, repo, tracks.iter().filter(ours), watched.open_issues, watched.since()).await;
     let now = chrono::Utc::now().timestamp();
     if !busy {
         // Only finished records: their lines need no GitHub read. The room's

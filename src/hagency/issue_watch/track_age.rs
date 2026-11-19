@@ -68,6 +68,17 @@ pub(crate) async fn hidden_after_lookup(io: &impl TrackIo, inputs: &Inputs<'_>, 
     hidden(track, inputs.open_issues, inputs.since)
 }
 
+/// Look up, once each, the finished records of `repo` whose issue's age is
+/// [`unknown`], ahead of the check's other GitHub reads. A failed lookup
+/// leaves the record hidden and is tried again next check, so it is not an error.
+pub(crate) async fn look_up<'a>(worker: &super::work::Worker<'_>, repo: &str, tracks: impl Iterator<Item = &'a Track>, open_issues: &[Issue], since: i64) {
+    for track in tracks.filter(|t| unknown(t, open_issues, since)) {
+        if let Ok((_, _, Some(issue))) = ::hagency::issue_watch::fetch_issue_state(worker.client, ::hagency::issue_watch::GITHUB_API, repo, track.number, worker.token).await {
+            note(repo, [&issue]);
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "track_age_tests.rs"]
 mod tests;

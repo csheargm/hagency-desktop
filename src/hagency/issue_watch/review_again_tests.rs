@@ -141,6 +141,9 @@ fn a_second_unrecorded_verdict_under_a_two_approval_rule_is_asked_again() {
     assert_eq!(room.posted.borrow().len(), 1, "the reviewer is asked again once");
     half["recorded"] = 2.into();
     assert!(!unrecorded_verdict(&half, (&two, "csheargm"), HEAD), "both recorded: nothing to ask");
+    // GPT review of the fix: a person's approval is counted, the Agent's verdict is not recorded.
+    let person = json!({"decision": "human", "head": HEAD, "kind": "approvals", "approvers": 1, "recorded": 0});
+    assert!(unrecorded_verdict(&person, (&two[..1], "csheargm"), HEAD), "a counted person's approval is no Agent's record");
 }
 
 /// GPT batch-3 review: a native GitHub approval carrying the verdict of this

@@ -34,13 +34,16 @@ pub enum Again {
 }
 
 /// Whether GitHub holds more approving verdicts of exactly `head`, posted by
-/// `login` (the GitHub account this owner's Agents post as), than the gate
-/// counted or the ledger recorded (`recorded`; live PR #109: a recorded
-/// review was asked for again), while the rule still needs an approval
-/// (GPT batch-3 review: a 2-approval rule with one recorded never re-asked
-/// the second). Every Agent shares the login, so the count is all there is.
+/// `login` (the GitHub account this owner's Agents post as), than the ledger
+/// recorded Agent reviews of it (`recorded`; live PR #109: a recorded review
+/// was asked for again), while the rule still needs an approval (GPT batch-3
+/// review: a 2-approval rule with one recorded never re-asked the second).
+/// `approvers` may count a person's approval too, so it stands in only when
+/// `recorded` is missing. Every Agent shares the login, so the count is all
+/// there is: an Agent that posted its one verdict twice is asked once more
+/// at most ([`REREVIEW_STEPS`]).
 pub fn unrecorded_verdict(readiness: &Value, (reviews, login): (&[(String, String, String)], &str), head: &str) -> bool {
-    let known = readiness["approvers"].as_u64().unwrap_or(0).max(readiness["recorded"].as_u64().unwrap_or(0));
+    let known = readiness["recorded"].as_u64().or(readiness["approvers"].as_u64()).unwrap_or(0);
     let on_github = reviews.iter().filter(|(who, state, commit)| who.eq_ignore_ascii_case(login) && is_verdict(state) && commit == head).count();
     readiness["kind"] == "approvals" && readiness["head"].as_str() == Some(head) && on_github as u64 > known
 }
