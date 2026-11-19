@@ -56,6 +56,8 @@ pub(super) struct Running {
     pub(super) slots: std::sync::Arc<tokio::sync::Semaphore>,
     /// Steps waiting for the owner's card ([`super::repo_cards`]).
     pub(super) cards: tokio::task::JoinSet<super::repo_cards::Decided>,
+    /// Approved verdict posts whose outcome becomes a room line once the model's call is gone.
+    pub(super) reports: tokio::task::JoinSet<Option<String>>,
     /// Finished steps the merge gate held something under: (key, succeeded).
     outcomes: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
     /// Makes this turn's gate keys unique, across turns and restarts.
@@ -65,7 +67,7 @@ pub(super) struct Running {
 impl Default for Running {
     fn default() -> Self {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos().to_string()).unwrap_or_default();
-        Self { guards: Vec::new(), cards: tokio::task::JoinSet::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)), outcomes: std::sync::Arc::default(), nonce, next: 0 }
+        Self { guards: Vec::new(), cards: tokio::task::JoinSet::new(), reports: tokio::task::JoinSet::new(), slots: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)), outcomes: std::sync::Arc::default(), nonce, next: 0 }
     }
 }
 impl Running {
