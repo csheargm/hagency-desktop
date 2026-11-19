@@ -31,6 +31,14 @@ pub fn clamp_width(width: f64, available: f64) -> f64 {
     width.clamp(INFO_MIN, max).min(available.max(0.0))
 }
 
+/// The room screen width to lay the panel out in: the width it really took
+/// last frame. Beside a docked side region (the Agents panel) the room screen
+/// is a deferred Fill, drawn at a provisional full-row width and shrunk after
+/// the region is placed, so the peeked width is used only before a first frame.
+pub fn layout_width(peeked: f64, drawn: f64) -> f64 {
+    if drawn > 0.0 { drawn } else { peeked }
+}
+
 /// The width after dragging the left edge `dx` points from `from`: moving
 /// the edge left (negative `dx`) widens the panel.
 pub fn dragged_width(from: f64, dx: f64, available: f64) -> f64 {
@@ -38,6 +46,30 @@ pub fn dragged_width(from: f64, dx: f64, available: f64) -> f64 {
 }
 
 impl RoomScreen {
+    /// The width this frame lays the panel out in ([`layout_width`]), read
+    /// once per redraw: a stepped draw resumes inside the room screen's own turtle.
+    pub(super) fn info_layout_width(&mut self, cx: &mut Cx, peeked: f64) -> f64 {
+        match self.info_layout {
+            Some((redraw, width)) if redraw == cx.redraw_id => width,
+            _ => {
+                let width = layout_width(peeked, self.view.area().rect(cx).size.x);
+                self.info_layout = Some((cx.redraw_id, width));
+                self.info_layout_check = cx.new_next_frame();
+                width
+            }
+        }
+    }
+
+    /// The frame after a draw: when the room screen really took another
+    /// width (the Agents panel opened or closed), lay the panel out again.
+    pub(super) fn check_info_layout_width(&mut self, cx: &mut Cx, event: &Event) {
+        if self.info_layout_check.is_event(event).is_none() { return }
+        let drawn = self.view.area().rect(cx).size.x;
+        if drawn > 0.0 && self.info_layout.is_some_and(|(_, used)| (used - drawn).abs() > 0.5) {
+            self.view.redraw(cx);
+        }
+    }
+
     /// The width the panel is drawn at, before clamping to the room screen.
     pub(super) fn info_width(&self) -> f64 {
         self.info_width.unwrap_or(INFO_DEFAULT)
@@ -115,6 +147,57 @@ mod tests {
         assert_eq!(clamp_width(700.0, 900.0), 500.0, "the panel shrinks first");
         assert_eq!(clamp_width(700.0, 1280.0), 700.0, "with room again, the saved width comes back");
         assert_eq!(dragged_width(400.0, -500.0, 900.0), 500.0, "a drag stops where the chat's minimum begins");
+    }
+
+    /// Live, Nov 19 05:52: in a 1400-point window with the Agents panel open
+    /// the room screen took ~650 points but was laid out for the provisional
+    /// full-row width, so room info stayed inline beside a 330-point chat.
+    #[test]
+    fn the_room_screens_real_width_decides_inline_or_overlay() {
+        assert_eq!(layout_width(1090.0, 650.0), 650.0, "the width it really took wins over the provisional peek");
+        assert_eq!(layout_width(1090.0, 0.0), 1090.0, "before a first frame only the peek is known");
+        assert!(layout_width(1090.0, 650.0) < INLINE_MIN, "so room info goes over the chat");
+    }
+
+    /// The same, through the room screen: a 1400-point window, room info
+    /// open, then the Agents panel docks and the room screen really gets 650.
+    #[test]
+    fn opening_and_closing_the_agents_panel_lays_room_info_out_again() {
+        use super::super::desktop_information_columns_tests::{draw_view, screen};
+        let (mut cx, mut screen) = screen();
+        screen.chat_info_requested = true;
+        screen.room_name_id = Some(crate::utils::RoomNameId::empty(matrix_sdk::ruma::room_id!("!a:server").to_owned()));
+        let frame = |cx: &mut Cx, screen: &mut RoomScreen, real: f64| {
+            cx.redraw_id += 1;
+            cx.redraw_all();
+            // The peek is the provisional full row whether or not the Agents panel is open.
+            let width = screen.info_layout_width(cx, 1090.0);
+            screen.layout_desktop_chat_info(cx, width);
+            draw_view(cx, screen, real);
+        };
+        let check = |cx: &mut Cx, screen: &mut RoomScreen| {
+            let next = Event::NextFrame(NextFrameEvent { frame: 1, time: 0.0, set: [screen.info_layout_check].into() });
+            screen.check_info_layout_width(cx, &next);
+        };
+        let inline = |cx: &mut Cx, screen: &RoomScreen| screen.view.view(cx, ids!(desktop_chat_info_panel)).visible();
+        let chat = |cx: &mut Cx, screen: &RoomScreen| screen.view.view(cx, ids!(chat_center)).area().rect(cx).size.x;
+        frame(&mut cx, &mut screen, 1090.0);
+        assert!(inline(&mut cx, &screen), "room info beside the chat");
+        // The Agents panel docks: this frame still lays out for the old width.
+        frame(&mut cx, &mut screen, 650.0);
+        check(&mut cx, &mut screen);
+        frame(&mut cx, &mut screen, 650.0);
+        // Too narrow for both: room info gives way (the existing resize-down rule).
+        assert!(!inline(&mut cx, &screen), "room info no longer sits beside the chat");
+        assert_eq!(chat(&mut cx, &screen), 650.0, "the chat keeps the room screen's whole width");
+        // The Agents panel closes: the chat gets the row back, and room info opens beside it again.
+        frame(&mut cx, &mut screen, 1090.0);
+        check(&mut cx, &mut screen);
+        frame(&mut cx, &mut screen, 1090.0);
+        assert_eq!(chat(&mut cx, &screen), 1090.0);
+        screen.chat_info_requested = true;
+        frame(&mut cx, &mut screen, 1090.0);
+        assert!(inline(&mut cx, &screen) && chat(&mut cx, &screen) >= CHAT_MIN);
     }
 
     #[test]
