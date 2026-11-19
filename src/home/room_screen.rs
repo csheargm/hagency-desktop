@@ -6691,13 +6691,28 @@ fn repeated_answer_ids(kind: &TimelineKind, items: &imbl::Vector<Arc<TimelineIte
 
 /// For a reply to a run card: `Some(where to jump)`, the request of the
 /// admitted card or `None` for an unadmitted one. `None` for other replies.
+/// While the quoted details are loading or failed, the store and the loaded
+/// timeline decide; a quote neither can place does nothing yet (GPT P2, Nov 19).
 // TODO(R4): move with the Agent run timeline helpers when room_screen splits.
 fn replied_run_card_target(tl: &TimelineUiState, item_id: usize, related: &OwnedEventId) -> Option<Option<OwnedEventId>> {
     let reply = tl.items.get(item_id)?.as_event()?.content().as_msglike()?.in_reply_to.as_ref()?;
-    let TimelineDetails::Ready(replied) = &reply.event else { return None };
-    let TimelineItemContent::MsgLike(msg_like) = &replied.content else { return None };
-    is_agent_run_status(&msg_like.kind).then(|| crate::hagency::run_controls::jump_target(tl.kind.room_id(), related.as_str())
-        .and_then(|id| OwnedEventId::try_from(id).ok()))
+    let is_run = |content: &TimelineItemContent| matches!(content, TimelineItemContent::MsgLike(m) if is_agent_run_status(&m.kind));
+    let quoted_is_run = match &reply.event {
+        TimelineDetails::Ready(replied) => Some(is_run(&replied.content)),
+        _ => tl.items.iter().filter_map(|i| i.as_event())
+            .find(|e| e.event_id() == Some(related.as_ref())).map(|e| is_run(e.content())),
+    };
+    let admitted = crate::hagency::run_controls::jump_target(tl.kind.room_id(), related.as_str())
+        .and_then(|id| OwnedEventId::try_from(id).ok());
+    quote_jump(quoted_is_run, admitted)
+}
+
+/// Where a reply quote goes: an admitted run card's request; nowhere for any
+/// other run card, or for a quote not yet known (loading or failed) not to be
+/// one, since its row is hidden; `None` jumps to the quoted event itself.
+fn quote_jump(quoted_is_run: Option<bool>, admitted_request: Option<OwnedEventId>) -> Option<Option<OwnedEventId>> {
+    if admitted_request.is_some() { return Some(admitted_request); }
+    match quoted_is_run { Some(false) => None, Some(true) | None => Some(None) }
 }
 
 /// The Agent run status event (`im.hagency.agent_run`); the run card displays it.
@@ -9223,5 +9238,23 @@ mod retention_ui_tests {
         assert!(parked.content_drawn_since_last_update.contains(&0));
         drop(newer);
         timeline_state_store::clear_all(&mut cx);
+    }
+}
+
+#[cfg(test)]
+mod quote_jump_tests {
+    use super::quote_jump;
+    use matrix_sdk::ruma::OwnedEventId;
+
+    /// GPT P2 (Nov 19): a quote whose target is loading or failed never jumps
+    /// to the hidden run-card row; an admitted card still goes to its request.
+    #[test]
+    fn a_quote_still_loading_never_jumps_to_a_hidden_run_card_row() {
+        let request: OwnedEventId = "$request:test".try_into().unwrap();
+        assert_eq!(quote_jump(None, None), Some(None), "unknown target: not clickable yet");
+        assert_eq!(quote_jump(None, Some(request.clone())), Some(Some(request.clone())), "admitted card: its request");
+        assert_eq!(quote_jump(Some(true), None), Some(None), "unadmitted run card: nowhere");
+        assert_eq!(quote_jump(Some(true), Some(request.clone())), Some(Some(request)));
+        assert_eq!(quote_jump(Some(false), None), None, "an ordinary message: jump to it");
     }
 }
