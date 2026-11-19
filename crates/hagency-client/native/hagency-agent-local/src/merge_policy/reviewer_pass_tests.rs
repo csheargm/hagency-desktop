@@ -54,3 +54,59 @@ fn only_a_reviewer_that_was_asked_and_never_ran_is_passed_over() {
     assert_eq!(l.step_due(AGENT, review, (ME, CODEX, ROOM), at + RESEND_AFTER_SECS).unwrap().say.map(|s| s.why), Some(Why::Budget));
     assert!(l.passed_reviewers(AGENT, PR, HEAD).unwrap().is_empty(), "a budget hold is no pass");
 }
+
+/// Round-2 GPT review P2-4: a reviewer the review returns to gets a stint
+/// of its own, never the rounds or the unseen timer of the one before it.
+#[test]
+fn a_reviewer_the_review_returns_to_counts_only_its_own_rounds() {
+    const CLAUDE: &str = "@claude:test";
+    let (_temp, mut l) = ledger();
+    let review = ("review", PR, HEAD);
+    let ask = |l: &mut Ledger, to: &str, now: i64| l.step_due(AGENT, review, (ME, to, ROOM), now).unwrap();
+    assert!(!ask(&mut l, CODEX, T0).taken, "first asked: Codex");
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert_eq!(ask(&mut l, CLAUDE, T0 + 1), StepDue { taken: false, again: 1, say: None }, "Claude's own round");
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert_eq!(ask(&mut l, CODEX, T0 + 2), StepDue { taken: false, again: 2, say: None }, "back to Codex: re-posted to it, not left on Claude's round");
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert!(ask(&mut l, CODEX, T0 + 3).taken, "its own unseen timer starts now");
+    assert_eq!(ask(&mut l, CODEX, T0 + 3 + UNSEEN_AFTER_SECS), StepDue { taken: false, again: 3, say: say(Why::Unseen, false, 2) }, "not given up on rounds it never had");
+    assert!(l.passed_reviewers(AGENT, PR, HEAD).unwrap().is_empty());
+}
+
+/// Round-2 GPT review P2-5: only an approval that could count stops the
+/// unseen review's re-post; the merger's own approval does not.
+#[test]
+fn an_approval_that_cannot_count_never_stops_the_rotation() {
+    let (_temp, mut l) = ledger();
+    let review = ("review", PR, HEAD);
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    l.record_agent_review(PR, HEAD, AGENT, ROOM).unwrap();
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), T0).unwrap().taken);
+    assert!(!l.step_due(AGENT, review, (ME, CODEX, ROOM), T0 + UNSEEN_AFTER_SECS).unwrap().taken, "the merger's approval is no review");
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    l.record_agent_review(PR, HEAD, "wren", ROOM).unwrap();
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), T0 + UNSEEN_AFTER_SECS + 1).unwrap().taken);
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), T0 + 3 * UNSEEN_AFTER_SECS).unwrap().taken, "another Agent's approval: done here");
+}
+
+/// Round-2 GPT review P2-6: a reviewer's last refused round passes it only
+/// once the back-off elapsed, never on the refusal itself.
+#[test]
+fn a_reviewer_is_passed_only_after_the_back_off() {
+    let review = ("review", PR, HEAD);
+    let (_temp, mut l) = ledger();
+    for round in 0..MAX_RESENDS as i64 {
+        let at = T0 + round * 10 * RESEND_AFTER_SECS;
+        receive(&mut l, &format!("review-{round}"), &review_body(), ME, at, NO_RUN);
+        l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+        assert!(!l.step_due(AGENT, review, (ME, CODEX, ROOM), at + RESEND_AFTER_SECS).unwrap().taken);
+    }
+    let at = T0 + 100 * RESEND_AFTER_SECS;
+    receive(&mut l, "review-last", &review_body(), ME, at, NO_RUN);
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), at + 1).unwrap().taken);
+    assert!(l.passed_reviewers(AGENT, PR, HEAD).unwrap().is_empty(), "not passed inside the back-off");
+    assert!(l.step_due(AGENT, review, (ME, CODEX, ROOM), at + RESEND_AFTER_SECS).unwrap().taken);
+    assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
+}
