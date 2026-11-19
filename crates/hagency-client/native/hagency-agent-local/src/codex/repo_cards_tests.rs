@@ -181,3 +181,51 @@ fn the_card_fits_the_proposal_and_the_call_waits() {
     // GPT review: the connection outlives the call, never the other way round.
     assert!(crate::codex::room_mcp::CONNECTION_LIFETIME.as_secs() > crate::codex::room_mcp::TOOL_TIMEOUT_SECS);
 }
+
+/// e2e scenario 8 (Nov 18, 20:06): the room's repository set was empty for
+/// Anna's turn, so bird-codex's `gh pr view` was refused, retried in its own
+/// network-less shell, and one approved card ran nothing: five cards for one
+/// read. A read outside the room's set now asks the owner once here, and the
+/// approved card runs the pinned read on the host (here it stops at the
+/// token check: no token in tests) instead of sending the model elsewhere.
+#[tokio::test]
+async fn a_read_outside_the_rooms_set_asks_once_and_runs_pinned_once_approved() {
+    let db = tempfile::tempdir().unwrap();
+    let (mut ledger, scope) = ledger_under(db.path(), ToolPolicy::AskOwner);
+    let (queue, mut cards) = crate::codex::approval_queue(4).unwrap();
+    let workspace = db.path().to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: Some(&queue) };
+    let mut running = Running::default();
+    // A repository no test records for this room (the set is process-wide): as at 20:06, outside the set.
+    let read = "gh pr view 111 --repo csheargm/not-in-this-room --json title,body,files,headRefOid,statusCheckRollup,author";
+    let mut answer = send(&mut ledger, &turn, read, &mut running).await;
+    if let Ok(early) = answer.try_recv() {
+        panic!("not refused: it waits for the owner, got {early:?}");
+    }
+    let card = cards.recv().await.expect("the owner gets one card");
+    assert_eq!(card.proposal.arguments["command"], read, "the card shows the exact read");
+    card.decide(true);
+    answer_card(&mut ledger, &turn, &mut running).await;
+    let (out, failed) = answer.await.unwrap();
+    assert!(failed && out.contains(crate::watch_trust::step_env::NO_TOKEN) && !out.contains("not_card_free"), "the approved read ran: {out}");
+    assert!(cards.try_recv().is_err(), "no second card for the approved read");
+    let consumed: i64 = ledger.db.query_row("SELECT count(*) FROM approvals WHERE consumed=1", [], |r| r.get(0)).unwrap();
+    assert_eq!(consumed, 1, "the owner's approval is recorded and spent once");
+}
+
+/// No write becomes a card here, and a refused network step tells the model
+/// not to retry it in its own shell (it would only ask the owner again).
+#[tokio::test]
+async fn a_write_is_still_refused_and_says_not_to_retry_offline() {
+    let db = tempfile::tempdir().unwrap();
+    let (mut ledger, scope) = ledger_under(db.path(), ToolPolicy::AskOwner);
+    let (queue, mut cards) = crate::codex::approval_queue(4).unwrap();
+    let workspace = db.path().to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: Some(&queue) };
+    let mut running = Running::default();
+    for write in [format!("gh pr comment 111 --repo {REPO} -b hi"), format!("gh api -X POST repos/{REPO}/issues"), format!("gh pr view 111 --repo {REPO} --web")] {
+        let (out, failed) = send(&mut ledger, &turn, &write, &mut running).await.await.unwrap();
+        assert!(failed && out.contains("not_card_free") && out.contains("no network"), "{write}: {out}");
+    }
+    assert!(cards.try_recv().is_err(), "no card for a write");
+}

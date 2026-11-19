@@ -1,18 +1,22 @@
-//! A `watched_repo_step` review verdict that nothing lets post card-free
-//! (no room work loop, no room review grant, a requester who is not the
-//! owner) asks the Agent's owner on a card, exactly as a Claude `Bash` call
-//! does (e2e scenario 8, Nov 18: bird-codex refused Anna's review outright,
-//! while bird-claude's owner got a card for the same request). Only a review
-//! verdict asks here: it runs as the pinned post ([`ReviewPost::command`]),
-//! never the model's own text, so the owner approves exactly what runs. Any
-//! other step stays refused (its own shell asks for local commands).
+//! A `watched_repo_step` call that nothing lets run card-free asks the
+//! Agent's owner on a card, exactly as a Claude `Bash` call does, when it is
+//! a review verdict on a repository of this room (e2e scenario 8, Nov 18,
+//! 18:07: bird-codex refused Anna's review outright, while bird-claude's
+//! owner got a card for the same request) or one read-only GitHub query
+//! ([`read_only::named_repo`]) of a repository outside the room's card-free
+//! set (e2e scenario 8, Nov 18, 20:06: refused here, the model retried the
+//! read in its own shell, which has no network, so one approved card ran
+//! nothing and five cards followed for one read). Either runs as the pinned
+//! command ([`ReviewPost::command`], [`read_only::command`]), never the
+//! model's own text, so the owner approves exactly what runs. Any other step
+//! stays refused.
 //!
 //! The card waits off the turn's loop ([`Running::cards`]); the loop takes
 //! each answer ([`decided`]), records the approval in the ledger and runs
 //! the step. A turn that ends drops the waits, and with them the cards.
 use super::repo_steps::{Call, Launch, Running, Turn, launch, refuse};
 use crate::merge_policy::{gate, github::PrSource};
-use crate::watch_trust::{TrustedStep, review_post::ReviewPost};
+use crate::watch_trust::{TrustedStep, read_only, review_post::ReviewPost};
 use crate::{Ledger, ToolPolicy, ToolProposal};
 use std::time::Duration;
 
@@ -30,29 +34,24 @@ pub(super) struct Decided {
     allowed: bool,
     /// The pull request whose earlier approval a posted request for changes withdraws.
     withdraws: Option<String>,
-    /// The verdict as checked: an approval posts only on the head it names.
-    post: ReviewPost,
+    /// The verdict as checked (`None`: a read): an approval posts only on the head it names.
+    post: Option<ReviewPost>,
 }
 
 /// Ask the owner about `call` (a step nothing lets run card-free), or
-/// refuse it at once: only a review verdict asks, only where a card can be
-/// shown and the owner's rules ask rather than refuse.
+/// refuse it at once: only a review verdict on a repository of this room or
+/// a read-only query asks, only where a card can be shown and the owner's
+/// rules do not refuse it.
 pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: ToolProposal, cards: &mut tokio::task::JoinSet<Decided>) {
-    let Some(post) = ReviewPost::parse(&call.command) else {
-        return refuse(call, "neither a read of this room's repositories nor this room's work loop covers this step here");
+    let (step, post, withdraws) = match card_step(ledger, &proposal, &call.command) {
+        Ok(found) => found,
+        Err(why) => return refuse(call, why),
     };
-    // Only a repository of this room, as the room's own grants (GPT review):
-    // a saved rule must never post to any repository the token reaches.
-    let Some(repo) = crate::watch_trust::room_repos(&ledger.db, &proposal).ok().and_then(|repos| repos.into_iter().find(|r| r.eq_ignore_ascii_case(&post.repo))) else {
-        return refuse(call, "this repository is not one of this room's");
-    };
-    // A request for changes withdraws this Agent's earlier approval once it
-    // posted, as the merge gate's does (GPT review); keyed by the room's spelling.
-    let withdraws = (post.mode == "--request-changes").then(|| format!("https://github.com/{repo}/pull/{}", post.number));
-    let step = TrustedStep::Command(post.command());
     let card = match ledger.tool_disposition(&proposal, super::now()) {
         Ok(ToolPolicy::AskOwner) => true,
-        Ok(ToolPolicy::AllowWithRules { .. }) => false,
+        // A read outside the room's set always asks: no saved rule reads
+        // every repository the token reaches for a room member.
+        Ok(ToolPolicy::AllowWithRules { .. }) => post.is_none(),
         // The ledger says Deny by refusing the check itself.
         Ok(_) | Err(crate::Error::Denied) => return refuse(call, "your owner's rules refuse this step here"),
         Err(_) => return refuse(call, "this step cannot be checked now"),
@@ -77,6 +76,27 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
         };
         Decided { call, proposal, step, card, allowed, withdraws, post }
     });
+}
+
+/// What a card for `command` would run: the pinned step, the verdict (for a
+/// review) and the pull request whose earlier approval a request for changes
+/// withdraws; `Err` is why it is refused without a card.
+fn card_step(ledger: &Ledger, proposal: &ToolProposal, command: &str) -> Result<(TrustedStep, Option<ReviewPost>, Option<String>), &'static str> {
+    let Some(post) = ReviewPost::parse(command) else {
+        // Never a write: only the closed read-only shapes, run pinned.
+        return match read_only::named_repo(command) {
+            Some(_) => Ok((TrustedStep::Command(read_only::command(command)), None, None)),
+            None => Err("neither a read of this room's repositories nor this room's work loop covers this step here"),
+        };
+    };
+    // Only a repository of this room, as the room's own grants (GPT review):
+    // a saved rule must never post to any repository the token reaches.
+    let repo = crate::watch_trust::room_repos(&ledger.db, proposal).ok().and_then(|repos| repos.into_iter().find(|r| r.eq_ignore_ascii_case(&post.repo)));
+    let Some(repo) = repo else { return Err("this repository is not one of this room's") };
+    // A request for changes withdraws this Agent's earlier approval once it
+    // posted, as the merge gate's does (GPT review); keyed by the room's spelling.
+    let withdraws = (post.mode == "--request-changes").then(|| format!("https://github.com/{repo}/pull/{}", post.number));
+    Ok((TrustedStep::Command(post.command()), Some(post), withdraws))
 }
 
 /// Take one answered card off the turn's waits (`None`: none waits, or the
@@ -107,7 +127,9 @@ pub(super) async fn decided_with(ledger: &mut Ledger, turn: &Turn<'_>, answer: D
     // card's wait must not land it on code nobody reviewed. A push between
     // this read and the post cannot move it: the post is pinned to the
     // commit its body names ([`ReviewPost::command`], round-2 GPT review P2-3).
-    if let Err(why) = head_still_reviewed(&post, turn, source).await {
+    if let Some(post) = &post
+        && let Err(why) = head_still_reviewed(post, turn, source).await
+    {
         return refuse(call, why);
     }
     if call.reply.is_closed() {
