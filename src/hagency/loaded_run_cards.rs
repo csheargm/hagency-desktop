@@ -60,8 +60,32 @@ const MAX_HANDED: usize = 2048;
 /// Tries per card and edit before it waits for the next login.
 const MAX_TRIES: u8 = 3;
 
+/// An Agent run card (not its edits) is a timeline item. The SDK's default
+/// filter drops unknown msgtypes, so a card never became one: after a restart
+/// there was nothing to admit or hide (live, Nov 19 02:57: "0 run cards").
+pub fn is_timeline_event(event: &AnySyncTimelineEvent) -> bool {
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, room::message::Relation};
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(message)) = event else {
+        return false;
+    };
+    message.as_original().is_some_and(|m| {
+        m.content.msgtype.msgtype() == ::hagency::agent_run_controls::MSGTYPE
+            && !matches!(m.content.relates_to, Some(Relation::Replacement(_)))
+    })
+}
+
 fn json(raw: &Raw<AnySyncTimelineEvent>) -> Option<Value> {
     raw.deserialize_as::<Value>().ok()
+}
+
+/// Agent items not taken as cards, named in the ingest log line.
+const MAX_LOGGED_SKIPS: usize = 8;
+
+/// Why an Agent's item is no run card: its id, raw JSON present, msgtype.
+fn skip_reason(event: &EventTimelineItem) -> String {
+    let original = event.original_json().and_then(json);
+    let msgtype = original.as_ref().and_then(|v| v["content"]["msgtype"].as_str().map(str::to_owned));
+    format!("{} json={} msgtype={msgtype:?}", event.event_id().map_or("local", |id| id.as_str()), original.is_some())
 }
 
 /// The card and its latest edit, if `event` is an Agent run status event.
@@ -132,10 +156,13 @@ async fn fetch_edit(room: &Room, card: &Loaded) -> Option<Admit> {
 /// Admits the run cards among `items` (a room timeline's loaded items).
 pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
     let cards: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
+    let skipped: Vec<_> = items.iter().filter_map(|i| i.as_event())
+        .filter(|e| ::hagency::agent_questions::is_agent(e.sender().as_str()) && loaded(e).is_none())
+        .take(MAX_LOGGED_SKIPS).map(skip_reason).collect();
     let generation = super::pending_questions::generation();
     let found = cards.len();
     let cards = claim(generation, cards);
-    makepad_widgets::log!("Loaded run cards: ingest {} with {} items: {found} run cards, {} to admit (generation {generation})",
+    makepad_widgets::log!("Loaded run cards: ingest {} with {} items: {found} run cards, {} to admit (generation {generation}); agent items skipped: {skipped:?}",
         room.room_id(), items.len(), cards.len());
     if cards.is_empty() {
         return;

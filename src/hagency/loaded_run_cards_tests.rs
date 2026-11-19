@@ -187,3 +187,60 @@ fn only_agent_run_status_events_are_cards() {
     assert_eq!(edit_to_admit(&loaded, None).unwrap().0["content"]["m.relates_to"]["rel_type"], "m.replace");
     assert_eq!(loaded.revision(), 5, "the latest edit's revision");
 }
+
+/// Live, Nov 19 02:57: "ingest … with 20 items: 0 run cards". The SDK's
+/// default filter drops unknown msgtypes, so a card was never a timeline
+/// item. Built the way the desktop builds a room timeline (real SDK, event
+/// cache, the desktop's filter), from the dev room's real events: the card is
+/// an item carrying its final edit, and is admitted from it.
+#[test]
+fn a_real_sdk_timeline_makes_the_loaded_card_an_item_with_its_final_edit() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path_regex}};
+    use matrix_sdk_ui::timeline::RoomExt;
+    let _guard = pq::test_serial();
+    let generation = pq::test_login("@csheargm:localhost:8450");
+    let (card, edit, request) = runs().remove(1);
+    let strip = |mut v: Value| { v.as_object_mut().unwrap().remove("room_id"); v };
+    let rules = matrix_sdk::ruma::room_version_rules::RoomVersionRules::V10;
+    let raw = |v: &Value| Raw::<AnySyncTimelineEvent>::from_json_string(v.to_string()).unwrap().deserialize().unwrap();
+    assert!(!matrix_sdk_ui::timeline::default_event_filter(&raw(&card), &rules), "the bug: the default filter drops the card");
+    assert!(crate::sliding_sync::robrix_timeline_event_filter(&raw(&card), &rules));
+    assert!(!crate::sliding_sync::robrix_timeline_event_filter(&raw(&edit), &rules), "an edit is not an item of its own");
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let items = runtime.block_on(async {
+        let server = MockServer::start().await;
+        let me = "@csheargm:localhost:8450";
+        Mock::given(method("GET")).and(path_regex(".*/sync"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"next_batch":"initial","rooms":{"join":{ROOM:{
+                "state":{"events":[
+                    {"type":"m.room.create","state_key":"","event_id":"$create","sender":me,"origin_server_ts":1,"content":{"creator":me,"room_version":"10"}},
+                    {"type":"m.room.member","state_key":me,"event_id":"$join","sender":me,"origin_server_ts":2,"content":{"membership":"join"}}
+                ]},
+                "timeline":{"events":[strip(card.clone()), strip(edit.clone())],"limited":false,"prev_batch":"older"}
+            }}}})))
+            .mount(&server).await;
+        let client = matrix_sdk::Client::builder().homeserver_url(server.uri()).with_event_cache(true)
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_11]).build().await.unwrap();
+        client.matrix_auth().restore_session(serde_json::from_value(serde_json::json!({
+            "access_token":"fixture", "user_id":me, "device_id":"LOADED"
+        })).unwrap(), Default::default()).await.unwrap();
+        client.sync_once(matrix_sdk::config::SyncSettings::default().timeout(std::time::Duration::ZERO)).await.unwrap();
+        let room = client.get_room(room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450")).unwrap();
+        let timeline = room.timeline_builder().event_filter(crate::sliding_sync::robrix_timeline_event_filter).build().await.unwrap();
+        let (items, _stream) = timeline.subscribe().await;
+        let (default_items, _) = room.timeline_builder().build().await.unwrap().subscribe().await;
+        drop(server);
+        assert!(default_items.iter().filter_map(|i| i.as_event()).filter_map(loaded).next().is_none(),
+            "control: with the SDK's default filter the card is no item (the live '0 run cards')");
+        items
+    });
+    let found: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
+    assert_eq!(found.len(), 1, "the card is a timeline item");
+    assert_eq!(found[0].card, card["event_id"].as_str().unwrap());
+    assert_eq!(found[0].edit_id(), edit["event_id"].as_str().unwrap(), "carrying its final edit");
+    let loaded = found.into_iter().next().unwrap();
+    admit(generation, &loaded, None, true);
+    let shown = run_controls::for_event(room_id!("!a3cQXHR8GZ4RP5n71s:localhost:8450"), &request, true);
+    assert_eq!(shown.len(), 1);
+    assert!(!shown[0].card.state.active(), "drawn finished on the request");
+}
