@@ -50,6 +50,16 @@ fn review_steps(t: &Target) -> String {
     steps.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo)
 }
 
+/// The one Assist line (R3), whoever reviewed: the head stays pinned in the
+/// marker and the transaction id, never in the words a person reads.
+const ASSIST_READY: &str = "✅ PR #<N> in <repo> <state>. Agent work in this room is Assist, so a person merges it: <url>";
+
+/// [`ASSIST_READY`] for `t`, naming the reviewer when it is known.
+fn assist_ready(t: &Target, reviewer: Option<&str>) -> String {
+    let state = reviewer.map_or_else(|| "is reviewed and ready".to_owned(), |who| format!("was reviewed by {who} and is ready"));
+    ASSIST_READY.replace("<N>", &t.number.to_string()).replace("<repo>", &t.repo).replace("<url>", &t.url).replace("<state>", &state)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopNotice {
     /// Ask `reviewer` (an Agent in the room) to review `Target`.
@@ -137,20 +147,31 @@ impl LoopNotice {
                 let lines: String = missing.iter().map(|line| format!("\n• {line}")).collect();
                 format!("⚠️ PR #{} in {} at {short} cannot be merged yet. Missing:{lines}\n{}", t.number, t.repo, t.url)
             }
-            Self::AwaitsPerson { reviewer: Some(who), .. } => format!("✅ PR #{} in {} was reviewed by {who} and is ready. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
-            Self::AwaitsPerson { reviewer: None, .. } => format!("✅ PR #{} in {} is reviewed and ready at {short}. Agent work in this room is Assist, so a person merges it: {}", t.number, t.repo, t.url),
+            Self::AwaitsPerson { reviewer, .. } => assist_ready(t, reviewer.as_deref()),
             Self::Unreachable { .. } => format!("⚠️ Can't reach GitHub to merge PR #{} in {} — retrying on every check. {}", t.number, t.repo, t.url),
             Self::NotStarted { what, why, gave_up, .. } => super::step_resend::not_started_line(what, why, *gave_up, t),
             Self::Unanswered { reviewer, .. } => format!("⏳ {reviewer} has not answered the review request for PR #{} yet: {}", t.number, t.url),
         }
     }
 
+    /// The message: the plain body the Agents and the gate read (with the
+    /// Agent's Matrix ID), the Agent in `m.mentions` so it still wakes, and
+    /// HTML whose mention pill shows the Agent's name, not its ID.
     pub fn content(&self) -> RoomMessageEventContent {
-        let content = RoomMessageEventContent::text_plain(self.body());
-        match self.mention() {
-            Some(user) => content.add_mentions(Mentions::with_user_ids([user.clone()])),
-            None => content,
-        }
+        let Some(user) = self.mention() else { return RoomMessageEventContent::text_plain(self.body()) };
+        RoomMessageEventContent::text_html(self.body(), self.html(user)).add_mentions(Mentions::with_user_ids([user.clone()]))
+    }
+
+    /// The body as HTML with its one mention of `user` (as the body names it)
+    /// drawn as a pill. A pill whose text is the ID shows the member's name.
+    fn html(&self, user: &OwnedUserId) -> String {
+        let esc = |s: &str| htmlize::escape_text(s).into_owned();
+        let (shown, label) = match self {
+            Self::Approved { name, .. } | Self::MarkReady { name, .. } if !name.is_empty() => (named(name, user), name.clone()),
+            _ => (user.to_string(), user.to_string()),
+        };
+        let pill = format!("<a href=\"{}\">{}</a>", htmlize::escape_attribute(&user.matrix_to_uri().to_string()), esc(&label));
+        esc(&self.body()).replacen(&esc(&shown), &pill, 1).replace('\n', "<br>")
     }
 
     pub fn marker(&self) -> Map<String, Value> {
@@ -173,3 +194,7 @@ impl LoopNotice {
         OwnedTransactionId::from(format!("hagency-loop-{}", key.to_hex()))
     }
 }
+
+#[cfg(test)]
+#[path = "loop_notice_tests.rs"]
+mod tests;

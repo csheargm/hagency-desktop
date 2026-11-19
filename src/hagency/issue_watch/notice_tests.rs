@@ -114,3 +114,15 @@ fn a_retry_after_a_pushed_branch_asks_for_its_pull_request() {
     assert!(body.find("Branch fix/").unwrap() < body.find(::hagency::ISSUE_TITLE_LABEL).unwrap_or(usize::MAX), "the fixed request comes before the quoted title");
     assert!(!Notice::new("a/b", &issue(), "fixer").body().contains("names this issue"));
 }
+
+/// The cannot-fix command is literal text in the plain body the Agent runs
+/// and the person reads; only the HTML escapes its placeholder, once.
+#[test]
+fn the_give_up_placeholder_is_literal_in_plain_text_and_escaped_once_in_html() {
+    let content = sent_content(&Notice::new("csheargm/hagency-demo-sandbox", &issue(), "demoup-claude"));
+    let body = content["body"].as_str().unwrap();
+    assert!(body.contains("cannot fix - <the reason on one line, without quotes, $, backticks or backslashes>'"), "{body}");
+    assert!(!body.contains("&lt;") && !body.contains("&gt;"), "no entity in the plain body: {body}");
+    let html = content["formatted_body"].as_str().unwrap();
+    assert!(html.contains("cannot fix - &lt;the reason") && !html.contains("&amp;lt;"), "escaped once: {html}");
+}

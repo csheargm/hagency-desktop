@@ -135,7 +135,8 @@ impl LiveTrack<'_> {
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         if readiness["kind"] != "approvals" || !readiness["head"].is_string() {
-            return merge_hold::follow_gate(io, target, &readiness, ctx, false).await;
+            let own = super::approval_note::reviewer_of(&self.peers, super::approval_note::asked_again(peer), &self.room).await;
+            return merge_hold::follow_gate(io, target, &super::approval_note::own_reviewer(readiness, own.as_ref()), ctx, false).await;
         }
         let reviews = fetch_reviews(self.worker.client, GITHUB_API, self.repo, pr.number, self.worker.token).await.map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
