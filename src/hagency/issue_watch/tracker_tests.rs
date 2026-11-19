@@ -136,7 +136,7 @@ pub(super) fn check(fake: &Fake, now: i64, open: &[Issue], pulls: &[PullRequest]
     fake.now.set(now);
     let tracks = fake.tracks();
     let seen: HashSet<i64> = tracks.iter().map(|t| t.number).collect();
-    let inputs = Inputs { repo: REPO, now, tracks: &tracks, seen: &seen, open_issues: open, own_pulls: pulls };
+    let inputs = Inputs { repo: REPO, now, tracks: &tracks, seen: &seen, since: i64::MIN, open_issues: open, own_pulls: pulls };
     let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(fake, &inputs));
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     out.lines
@@ -226,13 +226,34 @@ fn older_hand_offs_are_adopted_and_closed_issues_end_quietly() {
     fake.now.set(T0);
     let seen = HashSet::from([33, 34]);
     let open = [issue(33)];
-    let inputs = Inputs { repo: REPO, now: T0, tracks: &[], seen: &seen, open_issues: &open, own_pulls: &[] };
+    let inputs = Inputs { repo: REPO, now: T0, tracks: &[], seen: &seen, since: i64::MIN, open_issues: &open, own_pulls: &[] };
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
     assert_eq!(fake.tracks().iter().map(|t| (t.number, t.attempts, t.handed_at)).collect::<Vec<_>>(), [(33, 1, T0)], "only open seen issues");
     fake.closed.borrow_mut().insert(33, IssueFact::ClosedOther);
     assert!(check(&fake, T0 + 60, &[], &[]).is_empty());
     assert_eq!(fake.tracks()[0].state, State::Closed);
     assert!(fake.said.borrow().is_empty());
+}
+
+/// Live #31 (Nov 18): the room's work list started at 18:11, and an issue the
+/// old watch had handed off on Nov 16 was adopted with its pull request #32.
+/// Only issues opened since the entry's start are adopted.
+#[test]
+fn joining_a_room_never_adopts_an_issue_opened_before_the_work_list_entry() {
+    let fake = Fake::default();
+    let seen = HashSet::from([31, 108]);
+    let old = Issue { created_at: T0 - 2 * 86_400, ..issue(31) };
+    let open = [old, issue(108)];
+    let inputs = Inputs { repo: REPO, now: T0 + 5, tracks: &[], seen: &seen, since: T0, open_issues: &open, own_pulls: &[] };
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+    assert_eq!(fake.tracks().iter().map(|t| t.number).collect::<Vec<_>>(), [108], "#31 predates the entry");
+    // GPT review: a track the old watch already saved for #31 is not advanced either.
+    let fake = Fake::default();
+    first_hand_off(&fake, 31);
+    let tracks = fake.tracks();
+    let inputs = Inputs { tracks: &tracks, now: T0 + 100 * HANDOFF_TIMEOUT_SECS, ..inputs };
+    let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+    assert!(out.lines.iter().all(|l| !l.contains("#31")) && fake.handed.borrow().is_empty(), "{:?}", out.lines);
 }
 
 #[test]

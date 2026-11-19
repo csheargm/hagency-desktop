@@ -39,6 +39,9 @@ pub(crate) fn pending_request(cx: &mut Cx, event: &EventTimelineItem, room: &Own
         return None;
     }
     let message = event.content().as_message()?;
+    if own_automation(event.sender().as_str(), message.body()) {
+        return None;
+    }
     let agent = first_agent(message.mentions()?.user_ids.iter())?;
     let age = age(now_ms(), u64::from(event.timestamp().0))?;
     let pill = match message.msgtype() {
@@ -104,6 +107,13 @@ fn html_text(fragment: &str) -> String {
     text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&").trim().to_owned()
 }
 
+/// Whether the viewer's own message is one of its loop's notices ("🔎 Review
+/// requested", a hand-off): that run posts no card by design (the tracker's
+/// lines report it), so nothing waits for one (live PR #109, Nov 18).
+fn own_automation(sender: &str, body: &str) -> bool {
+    ::hagency::issue_watch::automated_requests::is_automated(sender, sender, body)
+}
+
 /// The first Agent a message mentions.
 fn first_agent<'a>(mut mentioned: impl Iterator<Item = &'a OwnedUserId>) -> Option<&'a OwnedUserId> {
     mentioned.find(|user| ::hagency::agent_questions::is_agent(user.as_str()))
@@ -148,6 +158,18 @@ mod tests {
         assert_eq!(age(10_000, 8_000), Some(Duration::from_secs(2)));
         assert_eq!(age(10_000, 12_000), Some(Duration::ZERO), "a clock ahead of ours is no age");
         assert_eq!(age(PENDING_WINDOW.as_millis() as u64 + 1, 0), None, "an old request no longer waits");
+    }
+
+    /// Live PR #109: the loop's "🔎 Review requested" to yue-claude showed
+    /// "⏳ Waiting for yue-claude to start…" for minutes; its run posts no card.
+    #[test]
+    fn the_viewers_own_loop_notice_waits_for_no_card() {
+        use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+        let reviewer = OwnedUserId::try_from("@_hagency_agt_01m7kd31m0vbgw7ed27chayat9:localhost:8450").unwrap();
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into() };
+        let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
+        assert!(own_automation("@csheargm:localhost:8450", &notice), "{notice}");
+        assert!(!own_automation("@csheargm:localhost:8450", "@yue-claude please review PR #109"), "a typed request still waits");
     }
 
     /// Nov 18: a new reply's header showed `_hagency_agt_…` for a second

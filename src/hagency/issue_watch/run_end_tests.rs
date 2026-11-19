@@ -115,7 +115,7 @@ fn a_record_is_changed_under_its_own_repository_spelling() {
     let seen: HashSet<i64> = HashSet::from([45]);
     let open = [issue(45)];
     let spelled = REPO.to_ascii_uppercase();
-    let inputs = Inputs { repo: &spelled, now: T0 + 60, tracks: &tracks, seen: &seen, open_issues: &open, own_pulls: &[] };
+    let inputs = Inputs { repo: &spelled, now: T0 + 60, tracks: &tracks, seen: &seen, since: i64::MIN, open_issues: &open, own_pulls: &[] };
     let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     assert_eq!(fake.tracks()[0].attempts, 2);

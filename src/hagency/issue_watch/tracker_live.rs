@@ -78,7 +78,8 @@ async fn follow_inner(worker: &Worker<'_>, watched: &Watched<'_>, saved: &Value)
     let room = OwnedRoomId::try_from(watched.watch.setting.room_id.as_str()).map_err(|_| format!("Invalid room {}", watched.watch.setting.room_id))?;
     let peer = super::reviewer_candidates::pick_peer(worker, &room).await;
     let io = LiveTrack { worker, watched, repo, room: room.clone(), login, peer, permission };
-    let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, open_issues: watched.open_issues, own_pulls: &own }).await;
+    let since = watched.entry.map_or(i64::MIN, |e| e.since);
+    let mut followed = tracker::follow(&io, &Inputs { repo, now, tracks: &tracks, seen: watched.seen, since, open_issues: watched.open_issues, own_pulls: &own }).await;
     if let Err(error) = share(worker, watched, &room, &followed.holds).await {
         followed.errors.push(error);
     }

@@ -80,6 +80,8 @@ pub(crate) struct Inputs<'a> {
     pub tracks: &'a [Track],
     /// Issue numbers already handed off (`issueSeen`), to adopt older hand-offs.
     pub seen: &'a HashSet<i64>,
+    /// The work list entry's start: an issue opened before it is never adopted.
+    pub since: i64,
     pub open_issues: &'a [Issue],
     /// The Agent's own open pull requests (its GitHub login's).
     pub own_pulls: &'a [PullRequest],
@@ -98,14 +100,17 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
     let mut out = Followups::default();
     // A hand-off from before tracking (or whose record was lost) is adopted
     // as attempt 1 from now, so it is followed and retried like a new one.
-    for number in inputs.seen.iter().filter(|n| inputs.open_issues.iter().any(|i| i.number == **n && !i.is_pr)) {
+    // An open issue opened before the entry is neither adopted nor advanced (live #31, Nov 18).
+    let current = |n: i64| inputs.open_issues.iter().any(|i| i.number == n && !i.is_pr && i.created_at >= inputs.since);
+    let predates = |n: i64| !current(n) && inputs.open_issues.iter().any(|i| i.number == n);
+    for number in inputs.seen.iter().filter(|n| current(**n)) {
         if !inputs.tracks.iter().any(|t| t.repo.eq_ignore_ascii_case(inputs.repo) && t.number == *number) {
             if let Err(error) = io.record(json!({"repo": inputs.repo, "number": number, "handed": 1})).await {
                 out.errors.push(error);
             }
         }
     }
-    for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo)) {
+    for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo) && !predates(t.number)) {
         match step(io, inputs, track, &mut out.holds).await {
             Ok(Some(line)) => out.lines.push(line),
             Ok(None) => {}
