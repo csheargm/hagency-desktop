@@ -3777,7 +3777,7 @@
   "Max changed lines": "最多更改行数",
   "Require CI": "需要 CI",
   "Save merge rules": "保存合并规则",
-  "Needs {n} approval(s) before an Agent merges: a review by another Agent, or a trusted reviewer's approval on GitHub": "Agent 合并前需要 {n} 个批准：另一个 Agent 的审查，或受信任审查者在 GitHub 上的批准",
+  "Needs {n} approval(s) before an Agent merges: a review by another Agent, a trusted reviewer's approval on GitHub, or a maintainer's review of an outside contributor's pull request": "Agent 合并前需要 {n} 个批准：另一个 Agent 的审查、受信任审查者在 GitHub 上的批准，或维护者对外部贡献者 PR 的审查",
   "set by someone who is no longer in the room": "设置者已不在房间中",
   "Room state is unavailable right now: {reason}": "房间状态暂时不可用：{reason}",
   "The merge rules are too long to store (at most {n} KiB): remove some paths": "合并规则过长，无法保存（最多 {n} KiB）：请删除一些路径",

@@ -15,7 +15,7 @@ fn members_see_the_rules_read_only_and_admins_get_the_editor() {
     let admin = Shown::Ready { read: rules(SANDBOX), editable: true };
     assert_eq!(lines(&member), lines(&admin), "the same plain lines for everyone");
     assert_eq!(lines(&member), [
-        "Low-risk paths: **/*.md, docs/**", "Up to 50 changed lines", "Needs 1 approval(s) before an Agent merges: a review by another Agent, or a trusted reviewer's approval on GitHub", "CI not required",
+        "Low-risk paths: **/*.md, docs/**", "Up to 50 changed lines", "Needs 1 approval(s) before an Agent merges: a review by another Agent, a trusted reviewer's approval on GitHub, or a maintainer's review of an outside contributor's pull request", "CI not required",
         "Always a person: .hagency/, .github/, CODEOWNERS", "Set by @admin:x",
     ]);
     assert!(!editor_shown(&member) && editor_shown(&admin));
