@@ -93,15 +93,30 @@ pub(crate) fn name_stem(display_name: Option<&str>, localpart: &str) -> String {
         .collect::<Vec<_>>().join("-");
     if slug.is_empty() { return localpart.to_owned(); }
     // Room for the longest harness suffix, so a long name still fits the limit.
-    let kept: String = slug.chars().take(NAME_MAX_CHARS - LONGEST_SUFFIX_CHARS).collect();
+    let kept: String = slug.chars().take(NAME_MAX_CHARS - LONGEST_SUFFIX_CHARS - NUMBER_SUFFIX_CHARS).collect();
     kept.trim_end_matches('-').to_owned()
 }
 /// "-ollama" / "-claude", the longest `default_name` suffix.
 const LONGEST_SUFFIX_CHARS: usize = 7;
+/// Room for the "-99" `free_name` adds when the plain name is taken.
+const NUMBER_SUFFIX_CHARS: usize = 3;
 /// "ann-claude": the owner's name and the harness, like the demo Agents.
 pub(crate) fn default_name(localpart: &str, runtime: &Runtime) -> String {
     let harness = if *runtime == Runtime::Ollama { "ollama" } else { harness_label(runtime) };
     format!("{localpart}-{}", harness.to_ascii_lowercase())
+}
+
+/// `base` when no existing Agent uses it, else the first free "base-2",
+/// "base-3" … Names compare as people read them: trimmed, any case.
+pub(crate) fn free_name(base: &str, taken: &[String]) -> String {
+    let used = |name: &str| taken.iter().any(|t| t.trim().eq_ignore_ascii_case(name));
+    if !used(base) { return base.to_owned(); }
+    (2..).map(|n| format!("{base}-{n}")).find(|name| !used(name)).unwrap_or_else(|| base.to_owned())
+}
+/// Every Agent name in a `Command::Agents` listing, whatever its state.
+pub(crate) fn agent_names(listing: &Value) -> Vec<String> {
+    listing["agents"].as_array().into_iter().flatten()
+        .filter_map(|row| row["displayName"].as_str().map(str::to_owned)).collect()
 }
 
 /// What the dialog holds between draws. Harness probes arrive one by one.

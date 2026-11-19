@@ -145,3 +145,20 @@ fn ollama_local_is_offered_with_its_local_models() {
     let spec = state.spec(default_spec).unwrap();
     assert_eq!((spec.name.as_str(), spec.runtime, spec.model.as_deref()), ("ann-ollama", Runtime::Ollama, Some("qwen3:4b")));
 }
+
+/// Regression: Create agent suggested "anna-claude" while Anna already had one.
+#[test]
+fn suggested_name_skips_the_owners_existing_agent_names() {
+    let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    assert_eq!(free_name("anna-claude", &[]), "anna-claude");
+    assert_eq!(free_name("anna-claude", &names(&["anna-claude"])), "anna-claude-2");
+    assert_eq!(free_name("anna-claude", &names(&["anna-claude", "anna-claude-2"])), "anna-claude-3");
+    assert_eq!(free_name("anna-claude", &names(&[" Anna-Claude ", "anna-codex"])), "anna-claude-2", "as people read it");
+    // From the server's listing, any state: a stopped Agent still holds its name.
+    let listing = json!({"agents": [{"displayName": "anna-claude", "state": "active"}, {"displayName": "anna-claude-2", "state": "stopped"}, {"id": "x"}]});
+    assert_eq!(free_name(&default_name("anna", &Runtime::Claude), &agent_names(&listing)), "anna-claude-3");
+    // A long display name still fits the limit with a number on it.
+    let long = free_name(&default_name(&name_stem(Some(&"a ".repeat(60)), "x"), &Runtime::Ollama), &names(&[]));
+    let numbered = free_name(&long, &names(&[long.as_str()]));
+    assert!(numbered.chars().count() <= 64 && numbered.ends_with("-ollama-2"), "{numbered}");
+}

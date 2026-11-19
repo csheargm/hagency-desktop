@@ -1,7 +1,7 @@
 //! The Create agent dialog widget. Opening it checks which local harnesses
 //! answer with models; Create runs `quick_setup::create_spec` (one-click
 //! defaults plus Model and Thinking) and opens the Agent's private chat.
-use super::{DialogState, default_name, harness_label, name_stem, parse_models};
+use super::{DialogState, default_name, free_name, harness_label, name_stem, parse_models};
 use crate::hagency::{backend::Service, quick_setup};
 use crate::sliding_sync::{current_user_id, spawn_async_task};
 use ::hagency::native_owner::ProviderAction;
@@ -87,6 +87,8 @@ mod backup;
 mod work_flow;
 #[path = "submit.rs"]
 mod submit;
+#[path = "existing_names.rs"]
+mod existing_names;
 
 #[derive(Script, ScriptHook, Widget)]
 pub struct CreateAgentDialog {
@@ -102,6 +104,8 @@ pub struct CreateAgentDialog {
     #[rust] work_rooms_shown: usize,
     /// The owner part of the suggested name, fixed for one opening.
     #[rust] stem: String,
+    /// The owner's existing Agent names; the suggestion skips them.
+    #[rust] taken: Vec<String>,
 }
 impl Widget for CreateAgentDialog {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -136,6 +140,7 @@ impl CreateAgentDialog {
         self.handle_room_actions(cx, actions);
         self.handle_backup_actions(cx, actions);
         self.handle_work_actions(cx, actions);
+        self.handle_name_actions(cx, actions);
         if self.view.button(cx, ids!(cancel)).clicked(actions) { cx.action(CreateAgentAction::Close); }
         if self.view.button(cx, ids!(sign_in)).clicked(actions) {
             cx.action(CreateAgentAction::Close);
@@ -170,6 +175,7 @@ impl CreateAgentDialog {
         }
         self.load_rooms(cx);
         self.load_backups(cx);
+        self.load_names();
         self.render(cx);
     }
     /// Read-only: lists each harness's models without connecting a login.
@@ -191,9 +197,9 @@ impl CreateAgentDialog {
     fn refresh_stem(&mut self, cx: &mut Cx) {
         let stem = owner_stem(cx, false);
         let Some(runtime) = self.state.runtime() else { return };
-        if stem == self.stem || self.state.name != default_name(&self.stem, &runtime) { return; }
+        if stem == self.stem || self.state.name != self.suggested(&runtime) { return; }
         self.stem = stem;
-        self.state.name = default_name(&self.stem, &runtime);
+        self.state.name = self.suggested(&runtime);
         self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
     }
 
@@ -202,12 +208,17 @@ impl CreateAgentDialog {
         self.state.harness = index;
         self.state.model = 0;
         if let (Some(before), Some(after)) = (before, self.state.runtime())
-            && self.state.name == default_name(&self.stem, &before)
+            && self.state.name == self.suggested(&before)
         {
-            self.state.name = default_name(&self.stem, &after);
+            self.state.name = self.suggested(&after);
             self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
         }
         self.render(cx);
+    }
+
+    /// "anna-claude", or "anna-claude-2" when the owner already has that name.
+    fn suggested(&self, runtime: &simple_agent::Runtime) -> String {
+        free_name(&default_name(&self.stem, runtime), &self.taken)
     }
 
     fn render(&mut self, cx: &mut Cx) {
