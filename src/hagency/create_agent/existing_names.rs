@@ -30,7 +30,12 @@ impl CreateAgentDialog {
     }
 
     /// The owner's own edit of the Name field: from now on it is never replaced.
+    /// While Create is busy the edit is undone: the clicked name is kept.
     pub(super) fn name_typed(&mut self, cx: &mut Cx, name: String) {
+        if self.busy {
+            self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
+            return;
+        }
         self.name_edited = true;
         self.state.name = name;
         self.render_create(cx);
@@ -44,6 +49,7 @@ impl CreateAgentDialog {
             let Some(loaded) = action.downcast_ref::<NamesLoaded>() else { continue };
             if loaded.request != self.request || self.busy { continue; }
             self.taken = loaded.names.clone();
+            self.names_loaded = true;
             self.follow_suggestion(cx);
             self.render_create(cx);
         }
@@ -51,9 +57,10 @@ impl CreateAgentDialog {
 
     /// An untyped name becomes the first free name for the harness shown
     /// (lookup, harness change, display name); a typed one is left alone,
-    /// and so is any name once Create is pressed.
+    /// and so is any name once Create is pressed. Nothing is suggested
+    /// before the listing answers: the suggestion could be taken.
     pub(super) fn follow_suggestion(&mut self, cx: &mut Cx) {
-        if self.name_edited || self.busy { return; }
+        if self.name_edited || self.busy || !self.names_loaded { return; }
         let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
         self.state.name = self.suggested(&runtime);
         self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
@@ -78,6 +85,7 @@ mod tests {
         });
         dialog.stem = "anna".into();
         dialog.request = 7;
+        dialog.names_loaded = true;
         dialog.state.name = "anna-claude".into();
         dialog.state.probes = std::array::from_fn(|_| Some(Err("provider_models_unavailable".into())));
         dialog.state.probes[1] = Some(Ok(parse_models(&serde_json::json!({"models": [{"model": "gpt-5", "displayName": "GPT-5"}]}))));
@@ -146,5 +154,44 @@ mod tests {
         deliver(&mut dialog, &mut cx, &["anna-codex"]);
         let spec = dialog.state.spec(crate::hagency::quick_setup::default_spec).expect("ready");
         assert_eq!(spec.name, "anna-codex");
+    }
+
+    /// GPT review, Nov 19: the Name field stayed editable during the
+    /// repository check and `create_now` rebuilt the spec with the edit.
+    #[test]
+    fn an_edit_while_create_is_busy_is_undone_and_the_clicked_name_submitted() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.name_typed(&mut cx, "anna-codex".into());
+        dialog.busy = true;
+        dialog.render_create(&mut cx);
+        assert!(dialog.view.text_input(&mut cx, ids!(name)).is_read_only(), "the field is read-only while busy");
+        dialog.name_typed(&mut cx, "edited".into());
+        assert_eq!(dialog.view.text_input(&mut cx, ids!(name)).text(), "anna-codex");
+        let spec = dialog.state.spec(crate::hagency::quick_setup::default_spec).expect("ready");
+        assert_eq!(spec.name, "anna-codex");
+        dialog.busy = false;
+        dialog.render_create(&mut cx);
+        assert!(!dialog.view.text_input(&mut cx, ids!(name)).is_read_only());
+    }
+
+    /// GPT review, Nov 19: "anna-claude" showed until the listing said it was taken.
+    #[test]
+    fn no_name_is_suggested_until_the_listing_answers() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.names_loaded = false;
+        dialog.state.name.clear();
+        dialog.refresh_stem(&mut cx);
+        dialog.choose_harness(&mut cx, 0);
+        assert_eq!(dialog.state.name, "", "nothing suggested before the listing");
+        assert_eq!(dialog.view.text_input(&mut cx, ids!(name)).text(), "");
+        assert!(dialog.state.spec(crate::hagency::quick_setup::default_spec).is_err(), "Create waits for a name");
+        deliver(&mut dialog, &mut cx, &[]); // A failed read delivers no names: still fills.
+        assert!(dialog.state.name.ends_with("-codex"), "{}", dialog.state.name);
+        let mut taken = codex_only_dialog(&mut cx);
+        taken.names_loaded = false;
+        deliver(&mut taken, &mut cx, &["anna-codex"]);
+        assert_eq!(taken.state.name, "anna-codex-2");
     }
 }

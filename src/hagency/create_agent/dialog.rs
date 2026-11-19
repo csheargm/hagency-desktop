@@ -108,6 +108,9 @@ pub struct CreateAgentDialog {
     #[rust] taken: Vec<String>,
     /// The owner typed in the Name field this opening; set only by `name_typed`.
     #[rust] name_edited: bool,
+    /// The Agents listing answered (or failed) this opening: only then is a
+    /// name suggested, so a taken one never shows first.
+    #[rust] names_loaded: bool,
 }
 impl Widget for CreateAgentDialog {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -162,7 +165,10 @@ impl CreateAgentDialog {
         self.stem = owner_stem(cx, true);
         let stem = self.stem.clone();
         self.state = DialogState::new(|runtime| default_name(&stem, runtime));
-        self.view.text_input(cx, ids!(name)).set_text(cx, &self.state.name);
+        // Empty (the field's placeholder shows) until `NamesLoaded` fills it.
+        self.names_loaded = false;
+        self.state.name.clear();
+        self.view.text_input(cx, ids!(name)).set_text(cx, "");
         self.view.drop_down(cx, ids!(thinking)).set_selected_item(cx, self.state.thinking);
         self.view.label(cx, ids!(status)).set_text(cx, "");
         self.work = None;
@@ -249,6 +255,8 @@ impl CreateAgentDialog {
     fn render_create(&mut self, cx: &mut Cx) {
         let ready = !self.busy && self.state.spec(quick_setup::default_spec).is_ok();
         self.view.button(cx, ids!(create)).set_enabled(cx, ready);
+        // Create rebuilds the spec after the repository check: the name is frozen while busy.
+        self.view.text_input(cx, ids!(name)).set_is_read_only(cx, self.busy);
         self.view.redraw(cx);
     }
 }
