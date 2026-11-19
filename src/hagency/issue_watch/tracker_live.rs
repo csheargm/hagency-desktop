@@ -226,8 +226,8 @@ impl TrackIo for LiveTrack<'_> {
         // The peer only reviews. The merge step is judged and addressed for
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         let settled = review_loop::peer_review::advance(&io, &target, peer.as_ref(), &review_loop::peer_review::LiveFacts { worker: self.worker, peers: &self.peers, room: &self.room }).await?;
-        // Told ready for a person at this head and level: nothing more is said (GPT review).
-        if settled { return Ok(Followed::AwaitsPerson) }
+        // Told ready at this head and level, and still allowed to merge: nothing more is said; a revoked permission goes the full gate (GPT review).
+        if settled && super::tracker_lines::still_ready(&self.permission) { return Ok(Followed::AwaitsPerson) }
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
         // Everyone passed over: nobody is asked, but a late verdict still merges (GPT review).
         let gate = match self.merge_step(&io, &target, (pr, peer.as_ref(), settled), &fixer).await {

@@ -16,6 +16,13 @@ pub(crate) fn hold_of(followed: &Followed) -> Option<String> {
     }
 }
 
+/// Whether a head already told "ready, a person merges" still is: only while
+/// this owner may still merge (the gate's own check). A revoked or unreadable
+/// permission goes the full gate, which publishes the ordinary hold.
+pub(super) fn still_ready(permission: &Result<String, String>) -> bool {
+    super::review_loop::can_merge(permission.as_deref().ok())
+}
+
 pub(super) fn waiting_line(track: &Track) -> String {
     let n = track.number.to_string();
     match (track.state, track.pr) {
@@ -74,5 +81,20 @@ mod tests {
         let stale = followed_of(Gate::Hold(vec![(Missing::Autonomy, "the room's authority could not be read".to_owned())]), true);
         assert_eq!(stale, Followed::Held(vec![Missing::Autonomy]));
         assert_eq!(hold_of(&stale).as_deref(), Some(Missing::Autonomy.label()));
+    }
+
+    /// Nov 19: write access revoked after the Assist "ready" notice, and the
+    /// settled head still published "ready — a person merges".
+    #[test]
+    fn a_settled_head_whose_merge_permission_was_revoked_is_no_longer_ready() {
+        use super::super::merge_hold_tests::{Fake, HEAD, check};
+        use ::hagency::issue_watch::safeguards::room_autonomy::ASSIST_REASON;
+        assert!(still_ready(&Ok("write".into())), "still allowed: the shortcut stands");
+        assert!(!still_ready(&Ok("read".into())), "revoked: the full gate judges again");
+        assert!(!still_ready(&Err("timeout".into())), "unreadable: the full gate fails loudly");
+        let fake = Fake::new(serde_json::json!({"decision": "human", "head": HEAD, "reason": ASSIST_REASON, "kind": "autonomy", "approvers": 1}));
+        let followed = followed_of(check(&fake, Some("read"), true), true);
+        assert_eq!(followed, Followed::Held(vec![Missing::Autonomy, Missing::Permission]), "the ordinary hold");
+        assert_ne!(hold_of(&followed).as_deref(), Some(LEVEL_ONLY_HOLD));
     }
 }
