@@ -224,9 +224,9 @@ async fn check_agent(epoch: u64, service: &Service, client: &Client, agent: &Val
     let Some(prepared) = room_loop::prepare(service, agent).await? else { return Ok(None) };
     let (saved, rooms, mut held) = prepared;
     let watch: IssueWatch = serde_json::from_value(saved["issueWatch"].clone()).map_err(|e| format!("Unreadable issue watch: {e}"))?;
-    held.extend(room_rules::sync(service, id, &saved).await);
+    let unrecorded = room_rules::sync(service, id, &saved, &mut held).await;
     let token = github_token(id).await?;
-    let worker = work::Worker { service, client, agent, token: &token, epoch, peers };
+    let worker = work::Worker { service, client, agent, token: &token, epoch, peers, merge_held: &unrecorded };
     let (running, room_held) = room_loop::running_only(&saved, &rooms);
     let mut worked = work::run(&worker, &running).await;
     worked.errors.extend(held.into_iter().chain(room_held));

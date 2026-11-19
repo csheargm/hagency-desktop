@@ -5,12 +5,15 @@
 //! a snapshot per watched repository in this device's ledger through the
 //! owner API, every poll, so the merge gate judges by fresh rules.
 use crate::hagency::backend::Service;
-use ::hagency::issue_watch::safeguards::{MAX_POLICY_BYTES, MERGE_RULES_STATE_TYPE, MergePolicy, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy};
+use ::hagency::issue_watch::safeguards::{
+    MAX_POLICY_BYTES, MERGE_RULES_STATE_TYPE, MergePolicy, OWNER_API_MAX_BODY_BYTES, RoomRulesSnapshot, RoomRulesState, content_of, policy_text, render_policy,
+};
 use ::hagency::issue_watch::{IssueWatch, OwnerRules, watch_entries};
 use matrix_sdk::Room;
 use matrix_sdk::ruma::events::{StateEventType, room::power_levels::RoomPowerLevels};
 use matrix_sdk::ruma::{OwnedUserId, UserId, room_version_rules::AuthorizationRules};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 /// What a room's state says about its merge rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,15 +176,19 @@ pub(crate) fn recorded(repo: &str, room_id: &str, read: Result<RoomRead, String>
     }
 }
 
-/// Records the current rules of every room this Agent's watches report to;
-/// the failures, for the check's status line. A room not read is recorded
-/// as unread, so its last rules stop counting. Only a failed recording
-/// leaves the old snapshot, which then ages out within the TTL.
-pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Vec<String> {
+/// Room-rule saves fit the owner API's body limit with this much to spare.
+const BODY_MARGIN: usize = 1024;
+
+/// Records the current rules of every room this Agent's watches report to,
+/// adding the failures to `errors` (the status line). A room not read is
+/// recorded as unread, so its last rules stop counting. Returns the rooms
+/// whose save failed: their old snapshot may still count, so the check runs
+/// no merge there this poll (GPT integration review).
+pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value, errors: &mut Vec<String>) -> HashSet<String> {
     // No client: every room is recorded unread where the owner API still answers; when it
     // cannot (signed out), the old snapshot ages out within the TTL (GPT review).
     let client = crate::sliding_sync::get_client();
-    let (mut snapshots, mut errors) = (Vec::new(), Vec::new());
+    let (mut snapshots, mut unrecorded) = (Vec::new(), HashSet::new());
     for (repo, room_id) in watched_rooms(saved) {
         let joined = matrix_sdk::ruma::RoomId::parse(&room_id).ok().and_then(|id| client.as_ref()?.get_room(&id));
         let read = match (&client, joined) {
@@ -193,12 +200,38 @@ pub(super) async fn sync(service: &Service, agent_id: &str, saved: &Value) -> Ve
         snapshots.push(snapshot);
         errors.extend(error);
     }
-    if !snapshots.is_empty()
-        && let Err(error) = super::live::saved(service, agent_id, Some(json!({"roomMergeRules": snapshots_json(&snapshots)}))).await
-    {
-        errors.push(crate::i18n::format("Merge rules could not be recorded: {error}", &[("error", error)]));
+    for batch in batches(snapshots) {
+        if let Err(error) = super::live::saved(service, agent_id, Some(save_body(&batch))).await {
+            unrecorded.extend(batch.into_iter().map(|s| s.room_id));
+            errors.push(crate::i18n::format("Merge rules could not be recorded: {error}", &[("error", error)]));
+        }
     }
-    errors
+    unrecorded
+}
+
+/// The owner-API body that records `snapshots`.
+pub(crate) fn save_body(snapshots: &[RoomRulesSnapshot]) -> Value {
+    json!({"roomMergeRules": snapshots_json(snapshots)})
+}
+
+/// `snapshots` in saves whose body stays under the owner API's limit (a body
+/// over it was refused whole, so every room kept superseded rules). One too
+/// big alone goes as withdrawn: its old rules stop counting (fail closed).
+pub(crate) fn batches(snapshots: Vec<RoomRulesSnapshot>) -> Vec<Vec<RoomRulesSnapshot>> {
+    let fits = |batch: &[RoomRulesSnapshot]| serde_json::to_vec(&save_body(batch)).map_or(false, |b| b.len() + BODY_MARGIN <= OWNER_API_MAX_BODY_BYTES);
+    let mut out: Vec<Vec<RoomRulesSnapshot>> = Vec::new();
+    for snapshot in snapshots {
+        let snapshot = if fits(std::slice::from_ref(&snapshot)) {
+            snapshot
+        } else {
+            RoomRulesSnapshot { repo: snapshot.repo, room_id: snapshot.room_id, unread: true, ..Default::default() }
+        };
+        match out.last_mut() {
+            Some(batch) if fits(&[batch.as_slice(), std::slice::from_ref(&snapshot)].concat()) => batch.push(snapshot),
+            _ => out.push(vec![snapshot]),
+        }
+    }
+    out
 }
 
 /// The owner API's `roomMergeRules` list.

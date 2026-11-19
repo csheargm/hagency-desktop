@@ -72,7 +72,7 @@ fn matrix(value: &str, prefix: char) -> Result<(), OwnerError> {
 }
 async fn parse<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T, OwnerError> {
     serde_json::from_slice(
-        &body(req, 16384)
+        &body(req, crate::issue_watch::safeguards::OWNER_API_MAX_BODY_BYTES)
             .await
             .map_err(|_| error(400, "invalid_arguments"))?,
     )

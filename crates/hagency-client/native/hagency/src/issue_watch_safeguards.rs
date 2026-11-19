@@ -21,6 +21,10 @@ pub use hagency_agent_local::room_autonomy;
 /// Branches push-freely never pushes, whatever the remote says (ADR 0022).
 pub use hagency_agent_local::watch_trust::git::PROTECTED as PROTECTED_BRANCHES;
 
+/// Largest owner-API request body the console reads (`issue-watch` saves
+/// included); a bigger one is refused whole, so a sender batches under it.
+pub const OWNER_API_MAX_BODY_BYTES: usize = 16 * 1024;
+
 /// A room's merge rules, as the gate would judge them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoomRulesState {
