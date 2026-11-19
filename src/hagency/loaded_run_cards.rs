@@ -32,6 +32,10 @@ impl Loaded {
     fn key(&self, generation: u64) -> Key {
         (generation, self.card.clone(), self.edit_id().to_owned())
     }
+    /// The request the run answers (the card is drawn on it).
+    fn request(&self) -> &str {
+        self.original.0["content"]["im.hagency.agent_run"]["eventId"].as_str().unwrap_or_default()
+    }
     /// The revision the card has once its latest edit is applied.
     fn revision(&self) -> u64 {
         let card = |v: &Value| v["im.hagency.agent_run"]["revision"].as_u64();
@@ -115,15 +119,24 @@ async fn fetch_edit(room: &Room, card: &Loaded) -> Option<Admit> {
     let id = OwnedEventId::try_from(card.edit_id()).ok()?;
     // A failed lookup falls back to the timeline's JSON; a card left unstored
     // is retried on the next timeline update (`settle`).
-    let event = room.load_or_fetch_event(&id, None).await.ok()?;
+    let event = match room.load_or_fetch_event(&id, None).await {
+        Ok(event) => event,
+        Err(e) => {
+            makepad_widgets::log!("Loaded run cards: edit {id} not in the event cache ({e}); using the timeline's copy");
+            return None;
+        }
+    };
     Some((json(event.raw())?, event.encryption_info().map(|info| (**info).clone())))
 }
 
 /// Admits the run cards among `items` (a room timeline's loaded items).
 pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
-    let cards = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
+    let cards: Vec<_> = items.iter().filter_map(|i| i.as_event()).filter_map(loaded).collect();
     let generation = super::pending_questions::generation();
+    let found = cards.len();
     let cards = claim(generation, cards);
+    makepad_widgets::log!("Loaded run cards: ingest {} with {} items: {found} run cards, {} to admit (generation {generation})",
+        room.room_id(), items.len(), cards.len());
     if cards.is_empty() {
         return;
     }
@@ -137,7 +150,11 @@ pub fn ingest(room: &Room, items: &imbl::Vector<Arc<TimelineItem>>) {
             }
             changed |= super::pending_questions::admit_loaded(generation, &room, events).await;
             settle(generation, room.room_id().as_str(), card);
+            makepad_widgets::log!("Loaded run cards: {} (edit {}) stored_revision={:?}, wanted {}, shown on request {}: {} card(s)",
+                card.card, card.edit_id(), super::run_controls::stored_revision(room.room_id().as_str(), &card.card), card.revision(),
+                card.request(), super::run_controls::for_event(room.room_id(), card.request(), true).len());
         }
+        makepad_widgets::log!("Loaded run cards: {} done, changed={changed}{}", room.room_id(), if changed { ", PendingQuestionsChanged posted" } else { "" });
         if changed {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
