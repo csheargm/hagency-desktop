@@ -34,6 +34,8 @@ const CALL_WAIT: Duration = Duration::from_secs(65);
 pub(super) const REPO_STEP_WAIT: Duration = Duration::from_secs(super::repo_cards::CARD_WAIT.as_secs() + crate::watch_trust::codex_step::STEP_TIMEOUT.as_secs() + 5);
 /// Codex's own wait for one Room MCP call: past the longest host-side wait.
 pub(super) const TOOL_TIMEOUT_SECS: u64 = REPO_STEP_WAIT.as_secs() + 10;
+/// How long one connection (one request) may stay open: past Codex's own wait.
+pub(super) const CONNECTION_LIFETIME: Duration = Duration::from_secs(TOOL_TIMEOUT_SECS + 10);
 type Key = (String, String);
 type Shared = Arc<Mutex<Option<Active>>>;
 struct Active {
@@ -126,9 +128,11 @@ impl Bridge {
                                 serve(req, state.clone(), token.clone(), authority.clone(), tools)
                             });
                             // No idle client can retain a connection indefinitely. The
-                            // MCP client may reconnect; this endpoint is stateless.
-                            let _ = tokio::time::timeout(Duration::from_secs(90),
-                                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(socket), service)).await;
+                            // MCP client may reconnect; this endpoint is stateless. One
+                            // request per connection, so its bound is that call's own
+                            // longest wait (a repo step's owner card, GPT review).
+                            let _ = tokio::time::timeout(CONNECTION_LIFETIME,
+                                hyper::server::conn::http1::Builder::new().keep_alive(false).serve_connection(TokioIo::new(socket), service)).await;
                         });
                     }
                 }

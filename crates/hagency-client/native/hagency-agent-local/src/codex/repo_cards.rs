@@ -27,6 +27,8 @@ pub(super) struct Decided {
     /// The owner's card answered (false: a saved rule allowed it).
     card: bool,
     allowed: bool,
+    /// The pull request whose earlier approval a posted request for changes withdraws.
+    withdraws: Option<String>,
 }
 
 /// Ask the owner about `call` (a step nothing lets run card-free), or
@@ -36,6 +38,14 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
     let Some(post) = ReviewPost::parse(&call.command) else {
         return refuse(call, "neither a read of this room's repositories nor this room's work loop covers this step here");
     };
+    // Only a repository of this room, as the room's own grants (GPT review):
+    // a saved rule must never post to any repository the token reaches.
+    let Some(repo) = crate::watch_trust::room_repos(&ledger.db, &proposal).ok().and_then(|repos| repos.into_iter().find(|r| r.eq_ignore_ascii_case(&post.repo))) else {
+        return refuse(call, "this repository is not one of this room's");
+    };
+    // A request for changes withdraws this Agent's earlier approval once it
+    // posted, as the merge gate's does (GPT review); keyed by the room's spelling.
+    let withdraws = (post.mode == "--request-changes").then(|| format!("https://github.com/{repo}/pull/{}", post.number));
     let step = TrustedStep::Command(post.command());
     let card = match ledger.tool_disposition(&proposal, super::now()) {
         Ok(ToolPolicy::AskOwner) => true,
@@ -45,7 +55,7 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
         Err(_) => return refuse(call, "this step cannot be checked now"),
     };
     if !card {
-        cards.spawn(std::future::ready(Decided { call, proposal, step, card, allowed: true }));
+        cards.spawn(std::future::ready(Decided { call, proposal, step, card, allowed: true, withdraws }));
         return;
     }
     let Some(queue) = turn.queue else { return refuse(call, "no card can be shown to your owner here") };
@@ -62,7 +72,7 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
             // Given up (the MCP wait expired): the card goes away unanswered.
             () = call.reply.closed() => false,
         };
-        Decided { call, proposal, step, card, allowed }
+        Decided { call, proposal, step, card, allowed, withdraws }
     });
 }
 
@@ -76,7 +86,7 @@ pub(super) async fn next(running: &mut Running) -> Option<Decided> {
 /// (it must still validate: the dispatch's rules may have changed meanwhile)
 /// and the pinned step run.
 pub(super) fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, running: &mut Running) {
-    let Decided { call, proposal, step, card, allowed } = answer;
+    let Decided { call, proposal, step, card, allowed, withdraws } = answer;
     if call.reply.is_closed() {
         return;
     }
@@ -91,6 +101,12 @@ pub(super) fn decided(ledger: &mut Ledger, turn: &Turn<'_>, answer: Decided, run
         return refuse(call, "your owner's approval no longer holds for this step");
     }
     let key = running.key(turn.dispatch);
+    // Held under the step's key: settled with its outcome ([`Running::settle`]).
+    if let Some(pr) = withdraws
+        && let Err(error) = ledger.hold_withdrawal(&key, &pr, &proposal.scope.agent)
+    {
+        return refuse(call, &format!("the request for changes cannot be recorded: {error}"));
+    }
     launch(ledger, turn, Launch { call, step, proposal, key, slot }, running);
 }
 

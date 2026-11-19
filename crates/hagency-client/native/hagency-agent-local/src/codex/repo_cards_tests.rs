@@ -33,7 +33,10 @@ fn ledger_under(dir: &std::path::Path, high_risk: ToolPolicy) -> (Ledger, Scope)
 }
 
 fn verdict() -> String {
-    format!("gh pr review 107 --repo {REPO} --comment -b \"Hagency verdict: APPROVE {HEAD} - Single-line e2e fixture is in scope; no issues found. On request from {ANNA}\"")
+    verdict_as("--comment", REPO)
+}
+fn verdict_as(mode: &str, repo: &str) -> String {
+    format!("gh pr review 107 --repo {repo} {mode} -b \"Hagency verdict: APPROVE {HEAD} - Single-line e2e fixture is in scope; no issues found. On request from {ANNA}\"")
 }
 
 /// Send `command` as a `watched_repo_step` call; the answer comes later.
@@ -107,6 +110,34 @@ async fn deny_or_a_non_verdict_write_is_refused_without_a_card() {
     assert!(cards.try_recv().is_err(), "no card for either");
 }
 
+/// GPT review: a card's request for changes holds the withdrawal of this
+/// Agent's earlier approval under its step, settled with what ran (here the
+/// step fails: no token, so the approval stays); a repository outside the
+/// room never asks.
+#[tokio::test]
+async fn a_carded_request_for_changes_holds_its_withdrawal_and_other_repos_are_refused() {
+    let db = tempfile::tempdir().unwrap();
+    let (mut ledger, scope) = ledger_under(db.path(), ToolPolicy::AskOwner);
+    let url = format!("https://github.com/{REPO}/pull/107");
+    ledger.record_agent_review(&url, HEAD, "bird-codex", ROOM).unwrap();
+    let (queue, mut cards) = crate::codex::approval_queue(4).unwrap();
+    let workspace = db.path().to_string_lossy().into_owned();
+    let turn = Turn { owner: OWNER, scope: &scope, dispatch: "d", workspace: &workspace, token: None, enabled: true, queue: Some(&queue) };
+    let mut running = Running::default();
+    let (out, failed) = send(&mut ledger, &turn, &verdict_as("--comment", "other/unlinked"), &mut running).await.await.unwrap();
+    assert!(failed && out.contains("not one of this room's"), "{out}");
+    assert!(cards.try_recv().is_err(), "no card for another repository");
+    let answer = send(&mut ledger, &turn, &verdict_as("--request-changes", REPO), &mut running).await;
+    cards.recv().await.unwrap().decide(true);
+    answer_card(&mut ledger, &turn, &mut running).await;
+    let held: i64 = ledger.db.query_row("SELECT count(*) FROM auto_merge_pending_withdrawals WHERE pr=?", [&url], |r| r.get(0)).unwrap();
+    assert_eq!(held, 1, "the withdrawal waits for the step");
+    let (out, failed) = answer.await.unwrap();
+    assert!(failed && out.contains(crate::watch_trust::step_env::NO_TOKEN), "{out}");
+    running.settle(&mut ledger).unwrap();
+    assert_eq!(ledger.agent_reviewers(&url, HEAD).unwrap(), ["bird-codex"], "a failed post withdraws nothing");
+}
+
 /// The waits nest: the card inside the proposal's lifetime, the step after
 /// it inside the Room MCP wait, and Codex's own call timeout past both.
 #[test]
@@ -115,4 +146,6 @@ fn the_card_fits_the_proposal_and_the_call_waits() {
     let step = crate::watch_trust::codex_step::STEP_TIMEOUT;
     assert!(crate::codex::room_mcp::REPO_STEP_WAIT > CARD_WAIT + step);
     assert!(crate::codex::room_mcp::TOOL_TIMEOUT_SECS > crate::codex::room_mcp::REPO_STEP_WAIT.as_secs());
+    // GPT review: the connection outlives the call, never the other way round.
+    assert!(crate::codex::room_mcp::CONNECTION_LIFETIME.as_secs() > crate::codex::room_mcp::TOOL_TIMEOUT_SECS);
 }

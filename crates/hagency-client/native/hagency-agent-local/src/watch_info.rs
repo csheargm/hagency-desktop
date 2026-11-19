@@ -123,8 +123,8 @@ pub fn render_own(entries: &[WatchEntry], room: &str, owner: &str) -> String {
     for e in entries.iter().take(MAX_LISTED) {
         let here = if e.room_id == room { " (this room)" } else { "" };
         lines.push(format!(
-            "- {}: {}; issues taken: {}; reports to room {}{here}; room work loop: {}; merge rule: {}",
-            e.repo, if e.active { "active" } else { "paused" }, e.mode, one_line(&e.room_id), if e.push_freely { "on" } else { "off" }, e.merge_rule,
+            "- {}: {}; issues taken: {}; reports to room {}{here}; your owner lets you work here: {}; merge rule: {}",
+            e.repo, if e.active { "active" } else { "paused" }, e.mode, one_line(&e.room_id), if e.push_freely { "yes" } else { "no" }, e.merge_rule,
         ));
     }
     if entries.iter().take(MAX_LISTED).any(|e| e.active && e.push_freely) {
