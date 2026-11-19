@@ -116,6 +116,7 @@ pub(crate) fn predates(open_issues: &[Issue], since: i64, number: i64) -> bool {
 
 pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups {
     let mut out = Followups::default();
+    super::track_age::note(inputs.repo, inputs.open_issues);
     // A hand-off from before tracking (or whose record was lost) is adopted
     // as attempt 1 from now, so it is followed and retried like a new one.
     // An open issue opened before the entry is neither adopted nor advanced (live #31, Nov 18).
@@ -127,7 +128,8 @@ pub(crate) async fn follow(io: &impl TrackIo, inputs: &Inputs<'_>) -> Followups 
         }
     }
     for track in inputs.tracks.iter().filter(|t| t.repo.eq_ignore_ascii_case(inputs.repo)) {
-        if predates(inputs.open_issues, inputs.since, track.number) {
+        // A finished record off the list keeps the same rule (GPT batch-3 review).
+        if predates(inputs.open_issues, inputs.since, track.number) || super::track_age::hidden_after_lookup(io, inputs, track).await {
             out.predating.push(track.number);
             continue;
         }
@@ -199,7 +201,9 @@ async fn issue_of(io: &impl TrackIo, inputs: &Inputs<'_>, number: i64) -> Result
     if let Some(open) = inputs.open_issues.iter().find(|i| i.number == number && !i.is_pr) {
         return Ok(Some((IssueFact::Open, Some(open.clone()))));
     }
-    Ok(match io.closed_state(number).await? {
+    let found = io.closed_state(number).await?;
+    super::track_age::note(inputs.repo, found.1.iter());
+    Ok(match found {
         (IssueFact::Open, issue) if issue.as_ref().map_or(i64::MIN, |i| i.created_at) < inputs.since => None,
         found => Some(found),
     })

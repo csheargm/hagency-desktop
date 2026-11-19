@@ -37,6 +37,7 @@ mod run_end_tests;
 #[cfg(test)]
 mod no_run_tests;
 mod tracker;
+mod track_age;
 mod tracker_lines;
 mod tracker_live;
 pub(crate) use tracker_live::MARKER as TRACK_MARKER;
