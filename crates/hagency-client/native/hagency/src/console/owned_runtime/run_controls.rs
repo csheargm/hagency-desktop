@@ -1,3 +1,4 @@
+// TODO(R4): over budget; split the record store and recovery flush (Record, save/read/forget, device_ready, keeps_answer, settled_answer) into run_controls/recovery.rs.
 //! Authenticated Matrix controls for the currently admitted personal turn.
 //! Native acknowledgements are not completion evidence. The journal claims
 //! each Matrix event before a native write, and recovery only closes cards.
@@ -776,6 +777,19 @@ fn may_forget_closed_record(record: &Record, drained: bool, at: i64) -> bool {
         && !record.card.state.active()
         && at.saturating_sub(record.closed_at_ms.unwrap_or(i64::MAX)) >= CLOSED_RECEIPT_GRACE_MS
 }
+/// A record kept only so `deliver_answer` finds its message: closed past the
+/// receipt grace, fully published, no late action waiting. A flush pass leaves
+/// it alone. Every Agent-device lookup starts a pass, and re-saving (fsync)
+/// and re-querying such records each time kept a window at ~40% CPU.
+fn settled_answer(path: &Path, record: &Record, actions_pending: bool, at: i64) -> bool {
+    !actions_pending
+        && record.published == Some(record.card.revision)
+        && may_forget_closed_record(record, true, at)
+        // A delivered record takes the normal pass, which forgets it; checked
+        // first because `keeps_answer` removes the marker it reads.
+        && !delivered_marker(path).exists()
+        && keeps_answer(path, record, at)
+}
 
 /// The run's own message, when its final edit carries exactly this answer:
 /// publishes that edit (the same idempotent transactions as the card flush)
@@ -864,6 +878,13 @@ pub(in crate::console) fn device_ready(device: Arc<e2ee::AgentDevice>) {
                 let Ok(mut record) = read(&path) else {
                     continue;
                 };
+                let actions_pending = record
+                    .event
+                    .as_deref()
+                    .is_some_and(|event| device.run_actions_pending(&record.card.room_id, event));
+                if settled_answer(&path, &record, actions_pending, wall_ms()) {
+                    continue;
+                }
                 if record.card.state.active() {
                     record.card.state = CardState::Unknown;
                     record.card.revision += 1;
@@ -1073,6 +1094,48 @@ mod tests {
         hagency_store::private::write_new(&delivered_marker(&path), b"1").unwrap();
         assert!(!keeps_answer(&path, &record, later));
         assert!(!delivered_marker(&path).exists());
+    }
+    /// Regression: every Agent-device lookup ran a flush pass that re-saved
+    /// (fsync) and re-queried each answered card kept for its reply, about
+    /// twice a second, holding a desktop window near 40% CPU.
+    #[test]
+    fn a_settled_answered_card_is_left_alone_by_flush_passes() {
+        let directory =
+            hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let path = directory.path().join("cards/answered.json");
+        let original = crate::agent_run_controls::tests::card();
+        let mut record = Record {
+            card: original.clone(),
+            original,
+            event: Some("$card".into()),
+            published: Some(1),
+            closed_at_ms: Some(1),
+        };
+        record.card.state = CardState::Completed;
+        record.card.revision = 1;
+        record.card.answer = "42".into();
+        save(&path, &record).unwrap();
+        let later = CLOSED_RECEIPT_GRACE_MS + 100_000;
+        assert!(settled_answer(&path, &record, false, later));
+        // Each of these still needs a real pass.
+        assert!(!settled_answer(&path, &record, true, later), "late action waiting");
+        assert!(!settled_answer(&path, &record, false, CLOSED_RECEIPT_GRACE_MS / 2), "within grace");
+        assert!(!settled_answer(&path, &record, false, ANSWERED_RECORD_GRACE_MS + 10), "week over");
+        let mut unpublished = record.clone();
+        unpublished.card.revision = 2;
+        assert!(!settled_answer(&path, &unpublished, false, later), "edit unpublished");
+        let mut running = record.clone();
+        running.card.state = CardState::Running;
+        assert!(!settled_answer(&path, &running, false, later), "still active");
+        let mut unanswered = record.clone();
+        unanswered.card.answer.clear();
+        assert!(!settled_answer(&path, &unanswered, false, later), "nothing to deliver");
+        // A delivered record goes to the normal pass with its marker intact,
+        // so that pass still forgets it.
+        hagency_store::private::write_new(&delivered_marker(&path), b"1").unwrap();
+        assert!(!settled_answer(&path, &record, false, later));
+        assert!(delivered_marker(&path).exists());
+        assert!(!keeps_answer(&path, &record, later));
     }
     /// Runtime steps reach the card the room sees: the current step and the
     /// count ride in the card content, bounded, and the card still validates.
