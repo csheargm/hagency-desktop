@@ -86,11 +86,18 @@ pub fn refresh() {
     });
 }
 
+/// The flags are process-wide; every test that sets or reads them takes turns
+/// (the rail's dot reads `needs_first_agent`, the Agents panel sets it).
+#[cfg(test)]
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The flags are process-wide; tests touching them take turns.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     #[test]
     fn guidance_only_after_an_empty_listing() {
         let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
