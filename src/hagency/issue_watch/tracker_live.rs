@@ -133,6 +133,7 @@ impl LiveTrack<'_> {
         let permission = self.permission.as_deref().map_err(|e| format!("GitHub permission: {e}"))?;
         let ctx = &LoopCtx { agent: fixer, name: &self.agent_label(), maintainer: true, permission: Some(permission) };
         let readiness = io.review(review_loop::readiness_ask(io, self.repo, pr.number)).await?["readiness"].clone();
+        review_loop::peer_review::note_review(target, peer, &readiness);
         // Only a missing approval waits on the reviewer; GitHub says whether it answered.
         if readiness["kind"] != "approvals" || !readiness["head"].is_string() {
             let own = super::approval_note::reviewer_of(&self.peers, super::approval_note::asked_again(peer), &self.room).await;
@@ -226,8 +227,8 @@ impl TrackIo for LiveTrack<'_> {
         // The peer only reviews. The merge step is judged and addressed for
         // this Agent, whose ledger, token and permission the gate reads (GPT review).
         let settled = review_loop::peer_review::advance(&io, &target, peer.as_ref(), &review_loop::peer_review::LiveFacts { worker: self.worker, peers: &self.peers, room: &self.room }).await?;
-        // Told ready for a person at this head and level: nothing more is said (GPT review).
-        if settled { return Ok(Followed::AwaitsPerson) }
+        // Told ready at this head and level, and still allowed to merge: nothing more is said; a revoked permission goes the full gate (GPT review).
+        if settled && super::tracker_lines::still_ready(&self.permission) { return Ok(Followed::AwaitsPerson) }
         let fixer = OwnedUserId::try_from(self.worker.agent["puppetMxid"].as_str().unwrap_or_default()).map_err(|_| "Unreadable Agent Matrix ID".to_owned())?;
         // Everyone passed over: nobody is asked, but a late verdict still merges (GPT review).
         let gate = match self.merge_step(&io, &target, (pr, peer.as_ref(), settled), &fixer).await {
@@ -265,9 +266,8 @@ impl TrackIo for LiveTrack<'_> {
     }
 }
 
-/// What the merge step's `gate` means for the pull request; `asking`: a
-/// reviewer was asked, else everyone was passed over and a person reviews,
-/// though a late verdict still carries it on (GPT review).
+/// What the merge step's `gate` means for the pull request; `asking`: a reviewer was asked,
+/// else everyone was passed over and a person reviews, though a late verdict still carries it on (GPT review).
 pub(super) fn followed_of(gate: Gate, asking: bool) -> Followed {
     match gate {
         Gate::Merge => Followed::Merging,
