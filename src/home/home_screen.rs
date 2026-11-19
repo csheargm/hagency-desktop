@@ -817,6 +817,7 @@ impl Widget for HomeScreen {
     }
 }
 
+// TODO(R4): home_screen.rs is over budget; the mini-apps side layout (prepare_mini_apps_side) belongs in home_screen/side_layout.rs.
 impl HomeScreen {
     /// Docks the mini-apps region beside the chat when the rooms list, the
     /// chat's minimum and the region's minimum all fit; otherwise it shows
@@ -830,18 +831,24 @@ impl HomeScreen {
         let size = cx.peek_walk_turtle(walk).size;
         // The variant this frame will draw, decided before the AdaptiveView draws it.
         let desktop = (self.applied_view_mode.variant_selector())(cx, &size) == live_id!(Desktop);
-        let [rail, inset] = cx.with_vm(|vm| {
+        let [rail, inset_left, inset_right] = cx.with_vm(|vm| {
             let widgets = vm.module(id!(widgets));
-            ["NAVIGATION_TAB_BAR_SIZE", "SAFE_INSET_PAD_LEFT"].map(|name| {
+            ["NAVIGATION_TAB_BAR_SIZE", "SAFE_INSET_PAD_LEFT", "SAFE_INSET_PAD_RIGHT"].map(|name| {
                 vm.bx.heap.value(widgets, LiveId::from_str(name).into(), NoTrap).as_number().unwrap_or(0.0)
             })
         });
-        let rooms = self.view.dock(cx, ids!(dock)).splitter_position(id!(root))
-            .unwrap_or(ROOMS_DEFAULT);
-        let covers = side.prepare(cx, size.x - rail - inset, rooms, desktop, saved_width);
+        let page_width = size.x - rail - inset_left - inset_right;
+        // A just-restored layout has no splitter until it draws: its saved width, not the default.
+        let dock = self.view.dock(cx, ids!(dock));
+        let position = dock.splitter_position(id!(root));
+        let saved = position.is_none().then(|| dock.clone_state()).flatten();
+        let rooms = super::rooms_pane_width::rooms_pane_width(position, saved.as_ref(), id!(root), page_width - side.docked_width(), ROOMS_DEFAULT)
+            // The rooms divider stays even when the list is collapsed.
+            + crate::shared::pane_splitter::WIDTH;
+        let covers = side.prepare(cx, page_width, rooms, desktop, saved_width);
         // The room screen's width beside the rooms list and a docked region, from
         // the numbers this layout decides: room info lays out for it (info_panel_width).
-        let room = desktop.then(|| size.x - rail - inset - rooms - side.docked_width());
+        let room = desktop.then(|| page_width - rooms - side.docked_width());
         crate::home::room_screen::info_panel_width::set_room_width(room, (size.x, side.docked_width()));
         // Only the desktop page beside the left bar gives way to an overlay;
         // an unswitched Mobile variant this frame is never touched.
@@ -2017,5 +2024,51 @@ mod mini_apps_side_tests {
         side(&mut cx, &home).close_all(&mut cx);
         frame(&mut cx, &mut home, &mut state, width);
         assert!(room_width(width) > room, "closing the Agents panel gives the room screen its width back");
+    }
+
+    /// GPT review, Nov 19: the width rule left out the 4-point rooms divider,
+    /// so at the docking threshold the chat got CHAT_MIN - 4.
+    #[test]
+    fn at_the_docking_threshold_the_chat_keeps_its_minimum() {
+        use crate::shared::pane_splitter::WIDTH as DIVIDER;
+        let probe = 1600.0;
+        let (mut cx, mut first, mut state) = home(probe);
+        frame(&mut cx, &mut first, &mut state, probe);
+        frame(&mut cx, &mut first, &mut state, probe);
+        let page = rect(&mut cx, &first, ids!(dock)).size.x;
+        let rooms = first.view.dock(&mut cx, ids!(dock)).splitter_position(id!(root)).expect("laid out");
+        let threshold = (probe - page) + rooms + DIVIDER + HANDLE + CHAT_MIN + SIDE_MIN;
+        for (width, docked) in [(threshold, true), (threshold - 1.0, false)] {
+            let (mut cx, mut home, mut state) = home(width);
+            frame(&mut cx, &mut home, &mut state, width);
+            side(&mut cx, &home).open(&mut cx, &MiniAppsAction::Open);
+            frame(&mut cx, &mut home, &mut state, width);
+            frame(&mut cx, &mut home, &mut state, width);
+            assert_eq!(side(&mut cx, &home).layout() == SideLayout::Docked, docked, "{width}");
+            if docked {
+                let chat = rect(&mut cx, &home, ids!(dock)).size.x - rooms - DIVIDER;
+                assert!(chat >= CHAT_MIN - 0.5, "the chat keeps CHAT_MIN at the threshold: {chat}");
+            }
+        }
+    }
+
+    /// GPT review, Nov 19: a restored layout clears the splitter, and the
+    /// first frame laid the room out for the 300-point fallback.
+    #[test]
+    fn a_restored_wider_rooms_pane_is_used_on_the_first_frame() {
+        use crate::home::room_screen::info_panel_width::room_width;
+        use crate::shared::pane_splitter::WIDTH as DIVIDER;
+        let width = 1400.0;
+        let (mut cx, mut home, mut state) = home(width);
+        frame(&mut cx, &mut home, &mut state, width);
+        let page = rect(&mut cx, &home, ids!(dock)).size.x;
+        let dock = home.view.dock(&mut cx, ids!(dock));
+        let mut items = dock.clone_state().expect("dock state");
+        let Some(DockItem::Splitter { align, .. }) = items.get_mut(&id!(root)) else { panic!("root splitter") };
+        *align = SplitterAlign::FromA(420.0);
+        dock.load_state(&mut cx, items);
+        assert_eq!(dock.splitter_position(id!(root)), None, "restoring clears the splitter until it draws");
+        frame(&mut cx, &mut home, &mut state, width);
+        assert!((room_width(f64::MAX) - (page - 420.0 - DIVIDER)).abs() < 0.5, "the saved 420 points, not 300: {}", room_width(f64::MAX));
     }
 }

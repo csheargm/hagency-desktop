@@ -172,11 +172,7 @@ impl MainDesktopUI {
     /// The root pane contains the room browser. Below a usable width it snaps
     /// shut instead of inheriting Dock's generic 50-point minimum sliver.
     fn normalize_rooms_width(&mut self, cx: &mut Cx, align: SplitterAlign, total: f64, save: bool) {
-        let width = match align {
-            SplitterAlign::FromA(width) => width,
-            SplitterAlign::FromB(width) => total - width,
-            SplitterAlign::Weighted(weight) => total * weight,
-        };
+        let width = super::rooms_pane_width::align_width(align, total);
         if !width.is_finite() || total <= 0.0 {return;}
         let snapped = if width < 160.0 {0.0} else {width.max(220.0)};
         if (snapped - width).abs() > 0.5 {
