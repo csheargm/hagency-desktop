@@ -107,7 +107,7 @@ fn card_step(ledger: &Ledger, proposal: &ToolProposal, command: &str) -> Result<
     let Some(repo) = repo else { return Err("this repository is not one of this room's") };
     // A request for changes withdraws this Agent's earlier approval once it
     // posted, as the merge gate's does (GPT review); keyed by the room's spelling.
-    let withdraws = (post.mode == "--request-changes").then(|| format!("https://github.com/{repo}/pull/{}", post.number));
+    let withdraws = (post.mode == "--request-changes").then(|| crate::merge_policy::pending::pull_url(&repo, post.number));
     Ok((TrustedStep::Command(post.command()), Some(post), withdraws))
 }
 

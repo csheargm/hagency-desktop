@@ -30,7 +30,7 @@ impl Src {
 impl PrSource for Src {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         let facts = PrFacts { open: true, files: self.files.clone(), checks: self.checks.clone() };
-        Some(PrView { url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, head_ref: self.head_ref.clone(), facts })
+        Some(PrView { base_ref: "main".into(), url: format!("https://github.com/{}/pull/7", self.repo), base_sha: BASE.into(), head_sha: HEAD.into(), author: self.author.into(), opened_by: None, head_ref: self.head_ref.clone(), facts })
     }
     async fn viewer_login(&self, _: &GhPr) -> Option<String> {
         self.viewer.map(str::to_owned)
@@ -270,7 +270,7 @@ async fn the_room_rules_count_the_owner_rules_approvals_and_one_review_counts_on
 
 #[test]
 fn missing_ci_evidence_is_pending_and_the_daily_claim_limit_is_enforced_on_reserve() {
-    let view = serde_json::json!({"url": "https://github.com/a/b/pull/7", "state": "OPEN", "baseRefOid": BASE, "headRefOid": HEAD});
+    let view = serde_json::json!({"url": "https://github.com/a/b/pull/7", "state": "OPEN", "baseRefName": "main", "baseRefOid": BASE, "headRefOid": HEAD});
     assert_eq!(crate::merge_policy::github::view_from_json(&view, &serde_json::json!([])).unwrap().facts.checks, [Check::Pending]);
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = ledger_with(temp.path(), &["anna"]);

@@ -142,3 +142,49 @@ fn a_withdrawal_in_another_case_still_withdraws() {
     ledger.settle_agent_review("held", true).unwrap();
     assert!(ledger.agent_reviewers(github, HEAD).unwrap().is_empty(), "the approval is withdrawn whatever the case");
 }
+
+/// Full-integration GPT review P1-a: the trusted review post reads
+/// `--repo=owner/repo` and quoted `<`/`$`, so the gate must read every such
+/// request for changes too, or GitHub records CHANGES_REQUESTED while the
+/// earlier approval still counts here and a merge goes through.
+#[tokio::test]
+async fn a_request_for_changes_in_any_form_the_post_reads_withdraws_the_approval() {
+    let sandbox = crate::merge_policy::tests::SANDBOX;
+    let forms = [
+        format!("gh pr review 7 --repo={sandbox} --request-changes -b 'Hagency verdict: CHANGES - no'"),
+        format!("gh pr review 7 --repo={sandbox} -r --body='Hagency verdict: CHANGES - no'"),
+        format!("gh pr review 7 -R {sandbox} -r -b 'Hagency verdict: CHANGES - a < b costs $5'"),
+    ];
+    for (n, line) in forms.iter().enumerate() {
+        assert!(crate::watch_trust::review_post::ReviewPost::parse(line).is_some(), "the trusted post reads {line}");
+        let temp = tempfile::tempdir().unwrap();
+        let mut ledger = setup(temp.path());
+        let docs = Fake::new(vec![file("README.md", 2)]);
+        approve(&mut ledger, temp.path(), &docs, "rv").await;
+        let call = format!("rc{n}");
+        gate::auto_answer(&mut ledger, OWNER, &bash(line, temp.path(), "reviewer"), &call, 11, &docs).await;
+        ledger.settle_tool_call(&call, true).unwrap();
+        assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "{line}: the approval no longer counts");
+        assert_eq!(gate::auto_answer(&mut ledger, OWNER, &bash(&merge_line(), temp.path(), "fixer"), "mg", 11, &docs).await, None, "{line}: no merge");
+    }
+}
+
+/// The gate reads an option's `--name=value` form as the post does, and
+/// refuses what the post refuses (a switch given a value, an option twice).
+#[test]
+fn the_gate_reads_options_as_the_trusted_post_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let parse = |line: &str| gate::parse_command(&bash(line, dir.path(), "a"));
+    let sandbox = crate::merge_policy::tests::SANDBOX;
+    let changes = parse(&format!("gh pr review 7 --repo={sandbox} -r -b 'Hagency verdict: CHANGES - no'")).unwrap();
+    assert_eq!((changes.kind, changes.repo.as_deref()), (gate::Kind::RequestChanges, Some(sandbox)));
+    assert_eq!(parse(&format!("gh pr merge 7 --squash --match-head-commit={HEAD} --repo={sandbox}")).unwrap().head.as_deref(), Some(HEAD));
+    for line in [
+        format!("gh pr review 7 --repo={sandbox} --approve=yes -b 'Hagency verdict: APPROVE {HEAD}'"),
+        format!("gh pr review 7 --repo={sandbox} -R {sandbox} -r -b 'Hagency verdict: CHANGES'"),
+        format!("gh pr review 7 --repo={sandbox} -r -b 'Hagency verdict: CHANGES' -b 'Hagency verdict: x'"),
+        format!("gh pr merge 7 --squash=true --match-head-commit {HEAD} --repo {sandbox}"),
+    ] {
+        assert!(parse(&line).is_none(), "{line}");
+    }
+}

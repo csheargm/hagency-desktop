@@ -84,7 +84,7 @@ fn create_args(words: &[String], start: usize) -> Option<(String, String)> {
     let (mut repo, mut head) = (None, None);
     let mut rest = words[start + 3..].iter();
     while let Some(word) = rest.next() {
-        let (name, inline) = word.split_once('=').filter(|(n, _)| n.starts_with("--")).map_or((word.as_str(), None), |(n, v)| (n, Some(v)));
+        let (name, inline) = super::gate::option_word(word);
         // A title's or body's value is skipped, never read as an option.
         let valued = matches!(name, "-R" | "--repo") || crate::watch_trust::gh::CREATE_VALUED.contains(&name);
         let value = if valued { inline.map(str::to_owned).or_else(|| rest.next().cloned()) } else { None };

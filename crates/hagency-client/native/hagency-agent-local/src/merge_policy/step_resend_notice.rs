@@ -55,7 +55,7 @@ pub fn loop_step_of(body: &str) -> Option<LoopStep> {
         // A message quoting a notice is no notice (GPT review): a line must start as one,
         // as a hand-off's lead may (`activity::handoff_issue`).
         let notice = body.lines().any(|line| line.trim_start().starts_with(lead));
-        (notice && body.contains(&exact)).then(|| (step, format!("https://github.com/{repo}/pull/{n}"), head, to))
+        (notice && body.contains(&exact)).then(|| (step, crate::merge_policy::pending::pull_url(&repo, n), head, to))
     };
     const ASK: [&str; 6] = ["in", "", "at", "head", "commit", ""];
     if let Some(found) = parse("gh pr merge ", &["--squash", "--match-head-commit", "", "--repo", ""]) {

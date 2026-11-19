@@ -60,6 +60,19 @@ impl Ledger {
         self.db.execute("INSERT OR REPLACE INTO auto_merge_pending_withdrawals VALUES (?,?,?)", (call, pr, reviewer))?;
         Ok(())
     }
+    /// A request for changes in a form only the trusted review post reads
+    /// (a quoted `<` or `$` the gate's stricter reader refuses) is posted
+    /// without the gate: it still withdraws once it ran (full-integration GPT P1-a).
+    pub(crate) fn hold_posted_withdrawal(&mut self, proposal: &crate::ToolProposal, call: &str) -> Result<()> {
+        use crate::watch_trust::{codex_step, review_post::ReviewPost};
+        if !matches!(proposal.tool.as_str(), "claude.Bash" | codex_step::TOOL) {
+            return Ok(());
+        }
+        match proposal.arguments["command"].as_str().and_then(ReviewPost::parse) {
+            Some(post) if post.mode == "--request-changes" => self.hold_withdrawal(call, &pull_url(&post.repo, post.number), &proposal.scope.agent),
+            _ => Ok(()),
+        }
+    }
     /// Tool call `call` finished: a request for changes held under it
     /// withdraws the reviewer's approvals only if it succeeded.
     pub fn settle_withdrawal(&mut self, call: &str, succeeded: bool) -> Result<()> {
@@ -86,6 +99,12 @@ impl Ledger {
         self.settle_withdrawal(call, succeeded)?;
         self.settle_agent_review(call, succeeded)
     }
+}
+
+/// The URL GitHub gives pull request `number` of `repo` (approvals of any
+/// owner/repo case are withdrawn by it, [`Ledger::withdraw_agent_review`]).
+pub(crate) fn pull_url(repo: &str, number: u64) -> String {
+    format!("https://github.com/{repo}/pull/{number}")
 }
 
 #[cfg(test)]

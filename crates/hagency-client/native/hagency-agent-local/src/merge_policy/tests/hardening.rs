@@ -32,7 +32,7 @@ fn renames_and_opaque_files_need_a_person() {
 
 #[test]
 fn compare_files_mark_renames_binaries_and_odd_statuses() {
-    let view = json!({"url": URL, "state": "OPEN", "baseRefOid": BASE, "headRefOid": HEAD, "statusCheckRollup": []});
+    let view = json!({"url": URL, "state": "OPEN", "baseRefName": "main", "baseRefOid": BASE, "headRefOid": HEAD, "statusCheckRollup": []});
     let entry = |status: &str, changes: u64, patch: bool| json!({"filename": "docs/a.md", "status": status, "additions": changes, "deletions": 0, "changes": changes, "has_patch": patch});
     let opaque = |e: Value| github::view_from_json(&view, &json!([e])).unwrap().facts.files[0].opaque;
     assert!(!opaque(entry("modified", 2, true)));
@@ -101,4 +101,32 @@ async fn a_review_command_that_failed_does_not_qualify_a_merge() {
     ledger.settle_agent_review("toolu_review", false).unwrap();
     let merge = bash(&merge_line(), temp.path(), "fixer");
     assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "toolu_merge", 11, &docs).await, None, "the review never landed");
+}
+
+/// Full-integration GPT review P1-b: the head is pinned, the base is not; a
+/// retarget between the gate's read and the merge keeps the head, so the
+/// base judged is read again last and a moved one merges nothing.
+#[tokio::test]
+async fn a_merge_whose_base_moved_after_the_gate_read_it_goes_to_the_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = "@owner:example.org";
+    let mut ledger = ledger_with(temp.path(), &["fixer", "reviewer"]);
+    let docs = Fake::new(vec![file("README.md", 5)]);
+    approved(&mut ledger, temp.path(), &docs).await;
+    let merge = bash(&merge_line(), temp.path(), "fixer");
+    // Retargeted right after the gate's first read of this merge.
+    docs.retarget_from.set(Some(docs.reads.get() + 1));
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, None, "the base moved: the card asks");
+    assert!(docs.reads.get() >= 2, "the pull request was read again before the merge was allowed");
+    // The automatic merge was not spent on the refused one.
+    docs.retarget_from.set(None);
+    assert_eq!(gate::auto_answer(&mut ledger, owner, &merge, "call", 11, &docs).await, Some(true), "an unmoved base merges");
+}
+
+#[test]
+fn a_view_names_its_base_branch() {
+    let view = json!({"url": URL, "state": "OPEN", "baseRefName": "develop", "baseRefOid": BASE, "headRefOid": HEAD});
+    assert_eq!(github::view_from_json(&view, &json!([])).unwrap().base_ref, "develop");
+    let unnamed = json!({"url": URL, "state": "OPEN", "baseRefOid": BASE, "headRefOid": HEAD});
+    assert!(github::view_from_json(&unnamed, &json!([])).is_none(), "no base branch, no merge");
 }

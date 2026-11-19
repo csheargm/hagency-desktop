@@ -10,7 +10,7 @@ const OPENED: i64 = 1_800_000_000;
 
 fn view(branch: Option<&str>) -> PrView {
     let head_ref = branch.map(|b| HeadRef { branch: b.into(), created_at: OPENED });
-    PrView { url: format!("https://github.com/{REPO}/pull/7"), base_sha: "1".repeat(40), head_sha: "2".repeat(40), author: "anna".into(), opened_by: None, head_ref, facts: PrFacts { open: true, files: vec![], checks: vec![] } }
+    PrView { base_ref: "main".into(), url: format!("https://github.com/{REPO}/pull/7"), base_sha: "1".repeat(40), head_sha: "2".repeat(40), author: "anna".into(), opened_by: None, head_ref, facts: PrFacts { open: true, files: vec![], checks: vec![] } }
 }
 
 #[test]

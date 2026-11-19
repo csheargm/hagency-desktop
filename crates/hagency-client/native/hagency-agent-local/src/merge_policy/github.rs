@@ -13,13 +13,16 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// GitHub's compare API lists at most this many files; a full page may be truncated.
 const COMPARE_FILE_LIMIT: usize = 300;
-const VIEW_FIELDS: &str = "url,state,baseRefOid,headRefOid,statusCheckRollup,author,body,headRefName,isCrossRepository,createdAt";
+const VIEW_FIELDS: &str = "url,state,baseRefName,baseRefOid,headRefOid,statusCheckRollup,author,body,headRefName,isCrossRepository,createdAt";
 const FILE_FIELDS: &str = "[.files[] | {filename, status, previous_filename, additions, deletions, changes, has_patch: (.patch != null)}]";
 
 /// One pull request as the gate judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrView {
     pub url: String,
+    /// The branch it would merge into: a retarget keeps the head, so a
+    /// merge is bound to this too ([`PrView::same_target`]).
+    pub base_ref: String,
     pub base_sha: String,
     pub head_sha: String,
     /// The GitHub login that opened the pull request ("" when not reported).
@@ -30,6 +33,14 @@ pub struct PrView {
     /// for a fork's branch or when GitHub does not say ([`super::authorship`]).
     pub head_ref: Option<HeadRef>,
     pub facts: PrFacts,
+}
+
+impl PrView {
+    /// Whether `now` is still the pull request this view judged: the same
+    /// head commit, base branch and base commit (full-integration GPT P1-b).
+    pub fn same_target(&self, now: &Self) -> bool {
+        (&self.url, &self.head_sha, &self.base_ref, &self.base_sha) == (&now.url, &now.head_sha, &now.base_ref, &now.base_sha)
+    }
 }
 
 /// A same-repository pull request's head branch and opening time (Unix seconds).
@@ -63,6 +74,7 @@ const OPENED_BY: &str = "Opened by agent ";
 /// The view of `gh pr view --json VIEW_FIELDS` plus the compare API's files.
 pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
     let url = view["url"].as_str()?.to_owned();
+    let base_ref = view["baseRefName"].as_str().filter(|b| !b.is_empty())?.to_owned();
     let base_sha = commit_sha(view["baseRefOid"].as_str()?)?.to_owned();
     let head_sha = commit_sha(view["headRefOid"].as_str()?)?.to_owned();
     let files = files.as_array()?;
@@ -74,7 +86,7 @@ pub fn view_from_json(view: &Value, files: &Value) -> Option<PrView> {
     let checks = view["statusCheckRollup"].as_array().map_or_else(|| vec![Check::Pending], |all| all.iter().map(check_state).collect());
     let author = view["author"]["login"].as_str().unwrap_or_default().to_owned();
     let opened_by = view["body"].as_str().and_then(opened_by);
-    Some(PrView { url, base_sha, head_sha, author, opened_by, head_ref: head_ref(view), facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
+    Some(PrView { url, base_ref, base_sha, head_sha, author, opened_by, head_ref: head_ref(view), facts: PrFacts { open: view["state"] == "OPEN", files, checks } })
 }
 
 fn changed_file(file: &Value) -> Option<ChangedFile> {
