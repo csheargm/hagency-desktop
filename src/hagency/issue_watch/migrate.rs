@@ -83,15 +83,16 @@ pub(crate) fn planned(saved: &Value, rooms: &Rooms, auto_merge: bool, moved: boo
 }
 
 /// The work list with the old watch carried in (its filter and start time
-/// kept, so its eligible backlog stays eligible); unchanged when the watch
-/// cannot move or its repository is listed already.
-pub(crate) fn work_with_watch(saved: &Value) -> Result<Vec<Value>, String> {
+/// kept, so its eligible backlog stays eligible); `None` when the watch
+/// cannot move or its repository is listed already (whose entry already
+/// governed it: the watch never ran beside it), so nothing is rewritten.
+pub(crate) fn work_with_watch(saved: &Value) -> Result<Option<Vec<Value>>, String> {
     let watch = &saved["issueWatch"];
     let mut work = saved["work"].as_array().cloned().unwrap_or_default();
     let repo = watch["repo"].as_str().unwrap_or_default();
-    let Some(issues) = carried_filter(watch) else { return Ok(work) };
+    let Some(issues) = carried_filter(watch) else { return Ok(None) };
     if repo.is_empty() || work.iter().any(|w| w["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo))) {
-        return Ok(work);
+        return Ok(None);
     }
     let entry = OwnerRules {
         repo: repo.to_owned(),
@@ -102,7 +103,7 @@ pub(crate) fn work_with_watch(saved: &Value) -> Result<Vec<Value>, String> {
         ..Default::default()
     };
     work.push(serde_json::to_value(entry).map_err(|e| e.to_string())?);
-    Ok(work)
+    Ok(Some(work))
 }
 
 /// The room line for a moved room.
@@ -149,20 +150,23 @@ async fn link_room(room_id: &str, plan: &Move, rooms: &Rooms) -> Result<(), Stri
     Ok(())
 }
 
-/// Phase two for one room: may-work on, and the level when unset and allowed.
-/// The level it ended at (`None`: left for a maintainer).
+/// Phase two for one room: the level when unset and allowed, then may-work
+/// on — in that order, so a failed level write is retried (a room that may
+/// work counts as moved; GPT review). The level it ended at (`None`: left
+/// for a maintainer).
 async fn enable_room(service: &Service, agent_id: &str, room_id: &str, plan: &Move, rooms: &Rooms) -> Result<Option<Level>, String> {
-    super::live::saved(service, agent_id, Some(json!({"mayWork": {"roomId": room_id, "on": true}}))).await?;
     let state = rooms.0.get(room_id).cloned().unwrap_or_else(|| Err(String::new()))?;
     let room = crate::sliding_sync::get_client().zip(matrix_sdk::ruma::RoomId::parse(room_id).ok()).and_then(|(c, id)| c.get_room(&id));
     let unset = state.level_by.is_empty() && state.level == Ok(Level::Off);
-    match room {
+    let level = match room {
         Some(room) if unset && state.can_change => {
             crate::hagency::room_autonomy::server::set_level(&room, plan.level).await?;
-            Ok(Some(plan.level))
+            Some(plan.level)
         }
-        _ => Ok(state.level.ok().filter(|l| *l != Level::Off)),
-    }
+        _ => state.level.ok().filter(|l| *l != Level::Off),
+    };
+    super::live::saved(service, agent_id, Some(json!({"mayWork": {"roomId": room_id, "on": true}}))).await?;
+    Ok(level)
 }
 
 /// The line for one moved room (room content: English, like the loop's notices).
@@ -202,17 +206,26 @@ pub(crate) async fn run(service: &Service, agent: &Value, saved: &Value, rooms: 
             Err(error) => return vec![failed(room_id, error)],
         }
     }
-    finish(service, id, saved).await.err().into_iter().collect()
+    finish(service, id).await.err().into_iter().collect()
 }
 
 /// The old watch carried into the work list and switched off in one save,
-/// then the Agent recorded as moved on this device.
-async fn finish(service: &Service, id: &str, saved: &Value) -> Result<(), String> {
-    let mut change = json!({"work": work_with_watch(saved)?});
+/// then the Agent recorded as moved on this device. Built from the saved
+/// state read now, not the check's earlier snapshot, so an owner's edit made
+/// during the room calls is kept (GPT review); the work list is written only
+/// when the watch adds an entry.
+async fn finish(service: &Service, id: &str) -> Result<(), String> {
+    let saved = super::live::saved(service, id, None).await?;
+    let mut change = json!({});
+    if let Some(work) = work_with_watch(&saved)? {
+        change["work"] = Value::Array(work);
+    }
     if carried_filter(&saved["issueWatch"]).is_some() {
         change["issueWatch"] = json!({"mode": "off"});
     }
-    super::live::saved(service, id, Some(change)).await?;
+    if change != json!({}) {
+        super::live::saved(service, id, Some(change)).await?;
+    }
     record_moved(id)
 }
 

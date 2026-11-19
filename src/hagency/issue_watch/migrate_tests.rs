@@ -62,15 +62,16 @@ fn a_partial_move_plans_every_entry_not_yet_moved_whatever_may_work_holds() {
 #[test]
 fn the_old_watch_keeps_its_filter_and_start_time_in_the_work_list() {
     let watch = |mode: &str| json!({"issueWatch": {"mode": mode, "label": "agent-ok", "repo": "acme/app", "roomId": "!r:x", "enabledAt": 42}, "work": [{"repo": "acme/docs", "roomId": "!d:x"}]});
-    let work = work_with_watch(&watch("all")).unwrap();
+    let work = work_with_watch(&watch("all")).unwrap().expect("carried");
     assert_eq!(work.len(), 2);
     let carried: OwnerRules = serde_json::from_value(work[1].clone()).unwrap();
     assert_eq!((carried.repo.as_str(), carried.room_id.as_str(), carried.issues, carried.since), ("acme/app", "!r:x", IssueFilter::All, 42), "public issues and the backlog since switch-on stay eligible");
-    let trusted: OwnerRules = serde_json::from_value(work_with_watch(&watch("trusted")).unwrap()[1].clone()).unwrap();
+    let trusted: OwnerRules = serde_json::from_value(work_with_watch(&watch("trusted")).unwrap().expect("carried")[1].clone()).unwrap();
     assert_eq!(trusted.issues, IssueFilter::Trusted);
-    assert_eq!(work_with_watch(&watch("labelled")).unwrap().len(), 1, "a label watch is not carried");
+    assert_eq!(work_with_watch(&watch("labelled")).unwrap(), None, "a label watch is not carried");
+    assert_eq!(work_with_watch(&json!({"issueWatch": {"mode": "off"}, "work": [{"repo": "acme/docs", "roomId": "!d:x"}]})).unwrap(), None, "GPT review: a work-list-only move rewrites no work list");
     assert!(planned(&watch("labelled"), &none(), true, true).is_empty(), "a label watch stays as it is: the work list has no label filter");
     let mut listed = watch("all");
     listed["work"] = json!([{"repo": "Acme/App", "roomId": "!r:x", "since": 7}]);
-    assert_eq!(work_with_watch(&listed).unwrap(), listed["work"].as_array().unwrap().clone(), "a listed repository keeps its own entry");
+    assert_eq!(work_with_watch(&listed).unwrap(), None, "a listed repository keeps its own entry (it already governed the watch)");
 }
