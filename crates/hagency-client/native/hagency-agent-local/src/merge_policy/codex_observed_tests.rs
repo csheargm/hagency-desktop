@@ -204,3 +204,19 @@ async fn an_observed_request_for_changes_withdraws_and_other_commands_are_silent
     assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty());
     assert_eq!(run(&mut ledger, &mut reviews, dir, &item("exec-s", "/bin/bash -c 'git status'", "completed", 0, dir), &docs).await, None);
 }
+
+/// GPT re-review of fix/fr-gate: an observed request for changes names its
+/// repository and number, so a failed PR read must not keep the approval.
+#[tokio::test]
+async fn an_observed_request_for_changes_withdraws_even_when_the_pull_request_is_unreadable() {
+    let temp = tempfile::tempdir().unwrap();
+    let (dir, mut ledger, mut reviews) = (temp.path(), allowing(temp.path()), TurnReviews::default());
+    let docs = Fake::new(vec![file("README.md", 3)]);
+    posted(&docs, HEAD, STARTED + 2);
+    run(&mut ledger, &mut reviews, dir, &item("exec-c", &rendered("--comment", HEAD, ""), "completed", 0, dir), &docs).await;
+    assert_eq!(ledger.agent_reviewers(URL, HEAD).unwrap(), ["bird-codex"]);
+    docs.unreadable.set(true);
+    let changes = "/bin/bash -c 'gh pr review 7 --repo csheargm/hagency-demo-sandbox --request-changes -b \"Hagency verdict: CHANGES - no\"'";
+    assert_eq!(run(&mut ledger, &mut reviews, dir, &item("exec-r", changes, "completed", 0, dir), &docs).await, Some(Ok(Recorded::Withdrawn)));
+    assert!(ledger.agent_reviewers(URL, HEAD).unwrap().is_empty(), "the approval no longer counts");
+}

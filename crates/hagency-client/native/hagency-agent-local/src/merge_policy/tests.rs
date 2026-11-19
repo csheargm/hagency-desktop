@@ -152,12 +152,14 @@ pub(super) struct Fake {
     /// retargeted to `main` at another base commit (`None`: never).
     pub(super) reads: std::cell::Cell<usize>,
     pub(super) retarget_from: std::cell::Cell<Option<usize>>,
+    /// Every read fails, as an unreachable GitHub.
+    pub(super) unreadable: std::cell::Cell<bool>,
 }
 pub(super) const RETARGETED_BASE: &str = "4444444444444444444444444444444444444444";
 impl Fake {
     pub(super) fn new(files: Vec<ChangedFile>) -> Self {
         let (reads, retarget_from) = (std::cell::Cell::new(0), std::cell::Cell::new(None));
-        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed], posted: std::cell::RefCell::new(None), opened_by: None, reads, retarget_from }
+        Self { files, head: std::cell::RefCell::new(HEAD.into()), checks: vec![Check::Passed], posted: std::cell::RefCell::new(None), opened_by: None, reads, retarget_from, unreadable: std::cell::Cell::new(false) }
     }
     fn retargeted(&self) -> bool {
         self.retarget_from.get().is_some_and(|from| self.reads.get() > from)
@@ -172,6 +174,9 @@ impl Fake {
 impl PrSource for Fake {
     async fn pull_request(&self, _: &GhPr) -> Option<PrView> {
         self.reads.set(self.reads.get() + 1);
+        if self.unreadable.get() {
+            return None;
+        }
         let facts = facts(self.files.clone(), self.checks.clone());
         Some(PrView { url: URL.into(), base_ref: self.base_ref(), base_sha: self.base_sha(), head_sha: self.head.borrow().clone(), author: String::new(), opened_by: self.opened_by.clone(), head_ref: None, facts })
     }

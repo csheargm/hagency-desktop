@@ -107,10 +107,13 @@ pub async fn record_observed(ledger: &mut Ledger, scope: &Scope, dispatch: &str,
     if let Err(reason) = reviewer_may_review(ledger, scope, &repo) {
         return skip(reason);
     }
-    let Some(view) = source.pull_request(&command).await else { return skip("pull_request_unreadable") };
+    // The command ran and names its repository and number: withdraw by the
+    // plain URL, never gated on a PR read that may fail (GPT re-review of fix/fr-gate).
     if command.kind == gate::Kind::RequestChanges {
-        return Some(ledger.withdraw_agent_review(&view.url, &scope.agent).map(|_| Recorded::Withdrawn).map_err(|_| "ledger"));
+        let url = super::pending::pull_url(&repo, command.number);
+        return Some(ledger.withdraw_agent_review(&url, &scope.agent).map(|_| Recorded::Withdrawn).map_err(|_| "ledger"));
     }
+    let Some(view) = source.pull_request(&command).await else { return skip("pull_request_unreadable") };
     if let Err(reason) = names_current_head(ledger, raw, &repo, command.number, &view, &scope.agent) {
         return skip(reason);
     }
