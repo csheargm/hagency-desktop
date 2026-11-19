@@ -149,6 +149,20 @@ mod tests {
     use super::allowed;
     const REPO: &str = "csheargm/hagency-demo-sandbox";
 
+    /// Live PR #135, Nov 19: a review request's linked-issue read must run
+    /// card-free like its pull request reads, for Claude and Codex reviewers.
+    #[test]
+    fn a_review_requests_reads_and_issue_read_pass() {
+        let fill = |text: &str| text.replace("<N>", "135").replace("<I>", "134").replace("<owner/repo>", REPO);
+        let reads = fill(hagency_runtime::REVIEW_READS);
+        let issue = fill(hagency_runtime::ISSUE_READ);
+        let lines: Vec<&str> = reads.split(": ").nth(1).unwrap().split(" and ").chain(issue.split(" and ").skip(1)).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for line in lines {
+            assert!(allowed(line, REPO), "{line}");
+        }
+    }
+
     #[test]
     fn read_only_queries_on_the_watched_repo_pass() {
         for line in [

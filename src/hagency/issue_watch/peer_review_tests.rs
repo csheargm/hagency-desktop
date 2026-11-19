@@ -68,7 +68,7 @@ impl LoopIo for Fake {
 }
 
 pub(super) fn target(head: &str) -> Target {
-    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 121, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/121".into(), head: head.into() }
+    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 121, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/121".into(), head: head.into(), issues: Vec::new() }
 }
 /// GitHub and the room as the remote path reads them: `answered` is bird-codex's verdict of the head.
 #[derive(Default)]

@@ -59,6 +59,17 @@ fn only_a_closing_keyword_links_a_pull_request_to_its_issue() {
 }
 
 #[test]
+fn a_pull_request_names_the_issues_it_closes_in_order() {
+    use super::closing_issues;
+    let r = "acme/app";
+    assert_eq!(closing_issues("Closes #134", r), vec![134]);
+    assert_eq!(closing_issues("Fixes #3, see #9.\nResolves https://github.com/acme/app/issues/5 and closes #3", r), vec![3, 5]);
+    assert_eq!(closing_issues("Fixes other/app#12, see #4", r), Vec::<u64>::new(), "another repository, a mention");
+    assert_eq!(closing_issues("closes #1 closes #2 closes #3 closes #4", r), vec![1, 2, 3], "at most three");
+    assert_eq!(closing_issues("", r), Vec::<u64>::new());
+}
+
+#[test]
 fn a_truncated_issue_listing_fails_the_cap_closed() {
     assert!(super::listing_truncated(1000));
     assert!(!super::listing_truncated(999));

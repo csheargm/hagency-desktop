@@ -56,7 +56,7 @@ impl LoopIo for Fake {
 }
 
 pub(super) fn target(head: &str) -> Target {
-    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 36, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/36".into(), head: head.into() }
+    Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 36, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/36".into(), head: head.into(), issues: Vec::new() }
 }
 fn fixer() -> OwnedUserId {
     owned_user_id!("@_hagency_agt_bird_claude:alpha")

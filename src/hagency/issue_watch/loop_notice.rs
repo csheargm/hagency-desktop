@@ -31,6 +31,23 @@ pub struct Target {
     pub number: u64,
     pub url: String,
     pub head: String,
+    /// The issues its description closes ("Closes #N"), in order: the review
+    /// request reads them and checks their acceptance criteria.
+    pub issues: Vec<u64>,
+}
+
+/// The review request's steps for `t`: the pull request reads, then each
+/// linked issue's read and the acceptance-criteria rule, then the verdict.
+fn review_steps(t: &Target) -> String {
+    let issue_reads: String = t.issues.iter().map(|n| ::hagency::ISSUE_READ.replace("<I>", &n.to_string())).collect();
+    let criteria = if t.issues.is_empty() {
+        String::new()
+    } else {
+        let named: Vec<String> = t.issues.iter().map(|n| format!("#{n}")).collect();
+        ::hagency::CRITERIA_RULE.replace("<issues>", &named.join(", "))
+    };
+    let steps = [::hagency::REVIEW_READS, &issue_reads, &criteria, ::hagency::REVIEW_VERDICT].concat();
+    steps.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,8 +113,7 @@ impl LoopNotice {
         let short = &t.head[..t.head.len().min(12)];
         match self {
             Self::ReviewRequested { reviewer, .. } => {
-                let steps = ::hagency::REVIEW_STEPS.replace("<N>", &t.number.to_string()).replace("<owner/repo>", &t.repo);
-                format!("{}{reviewer} {}: {}\nTo review: {steps}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
+                format!("{}{reviewer} {}: {}\nTo review: {}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url, review_steps(t))
             }
             Self::Approved { fixer, name, .. } => format!(
                 "{lead}{short} — merging under the room rules: {who} run exactly `{command}` as its own command. If GitHub refuses the merge, report why and do not retry.",

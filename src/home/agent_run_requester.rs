@@ -194,7 +194,7 @@ mod tests {
     fn the_viewers_own_loop_notice_waits_for_no_card() {
         use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
         let reviewer = OwnedUserId::try_from("@_hagency_agt_01m7kd31m0vbgw7ed27chayat9:localhost:8450").unwrap();
-        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into() };
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into(), issues: Vec::new() };
         let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
         assert!(waits_for_no_card("@csheargm:localhost:8450", &notice, true), "{notice}");
         assert!(!waits_for_no_card("@csheargm:localhost:8450", "@yue-claude please review PR #109", true), "a typed request still waits");
@@ -207,7 +207,7 @@ mod tests {
         use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
         let bird = OwnedUserId::try_from("@bird:localhost:8452").unwrap();
         let codex = OwnedUserId::try_from("@_hagency_bird_bird-codex:localhost:8452").unwrap();
-        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into() };
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into(), issues: Vec::new() };
         let notice = LoopNotice::ReviewRequested { target, reviewer: codex.clone() }.body();
         assert!(notice.starts_with(&format!("🔎 Review requested — {codex} please review PR #132")), "{notice}");
         let index = crate::home::agent_ask_badge::puppet_index(&serde_json::json!([
@@ -226,7 +226,7 @@ mod tests {
     fn an_expired_notice_never_reads_the_listing() {
         use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
         let codex = OwnedUserId::try_from("@_hagency_bird_bird-codex:localhost:8452").unwrap();
-        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into() };
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into(), issues: Vec::new() };
         let notice = LoopNotice::ReviewRequested { target, reviewer: codex }.body();
         let (sender, expired) = ("@bird:localhost:8452", PENDING_WINDOW.as_millis() as u64 + 1);
         assert_eq!(waiting_age(expired, 0, sender, &notice, || panic!("not consulted"), || panic!("no read")), None);
@@ -242,7 +242,7 @@ mod tests {
     fn a_loop_notice_to_another_owners_agent_still_waits_for_its_card() {
         use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
         let reviewer = OwnedUserId::try_from("@_hagency_agt_bird:localhost:8452").unwrap();
-        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into() };
+        let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 109, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/109".into(), head: "03d8148c63dd54ad69ac1b1435a36b48280b3012".into(), issues: Vec::new() };
         let notice = LoopNotice::ReviewRequested { target, reviewer }.body();
         assert!(!waits_for_no_card("@anna:localhost:8450", &notice, false), "{notice}");
     }
