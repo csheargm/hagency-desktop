@@ -111,12 +111,12 @@ fn local_approvers(ledger: &Ledger, repo: &str, number: u64, view: &PrView, room
 }
 
 impl Ledger {
-    /// How many Agents' approvals of `view`'s head given in `room` are
+    /// The Agents (ids) whose approvals of `view`'s head given in `room` are
     /// recorded and could count (never an author's or the merger's, GPT batch
     /// review P2-4): such a review is never asked for again.
-    pub fn recorded_room_reviews(&self, view: &PrView, number: u64, (merger, room): (&str, &str)) -> Result<usize> {
-        let Some(repo) = repo_of_url(&view.url, number) else { return Ok(0) };
-        Ok(local_approvers(self, repo, number, view, Some(room))?.iter().filter(|r| !r.eq_ignore_ascii_case(merger)).count())
+    pub fn recorded_room_reviewers(&self, view: &PrView, number: u64, (merger, room): (&str, &str)) -> Result<Vec<String>> {
+        let Some(repo) = repo_of_url(&view.url, number) else { return Ok(Vec::new()) };
+        Ok(local_approvers(self, repo, number, view, Some(room))?.into_iter().filter(|r| !r.eq_ignore_ascii_case(merger)).collect())
     }
     /// The Agents the issue tracker handed issues to whose pull request is `number` in `repo`.
     pub(crate) fn pr_author_agents(&self, repo: &str, number: u64) -> Result<Vec<String>> {

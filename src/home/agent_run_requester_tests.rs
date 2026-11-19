@@ -3,6 +3,8 @@
 use super::*;
 use crate::i18n::{Language, text_for};
 
+const ROOM: &str = "!dev:localhost:8452";
+
 #[test]
 fn only_an_agent_mention_within_the_window_waits() {
     let people: Vec<OwnedUserId> = ["@anna:x", "@_hagency_agt_01m7k84kgg5a5mtm2epqhbpjb5:y"]
@@ -55,30 +57,39 @@ fn an_expired_notice_never_reads_the_listing() {
     let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 132, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/132".into(), head: "5d0c3a9e1b2f4a6c8e0d2f4b6a8c0e2d4f6b8a0c".into(), issues: Vec::new() };
     let notice = LoopNotice::ReviewRequested { target, reviewer: codex }.body();
     let (sender, expired) = ("@bird:localhost:8452", PENDING_WINDOW.as_millis() as u64 + 1);
-    assert_eq!(waiting_age(expired, 0, sender, &notice, || panic!("not consulted"), || panic!("no read")), None);
+    assert_eq!(waiting_age(expired, 0, (ROOM, sender), &notice, || panic!("not consulted"), || panic!("no read")), None);
     let mut reads = 0;
-    assert_eq!(waiting_age(5_000, 0, sender, &notice, || None, || reads += 1), Some(Duration::from_secs(5)), "unknown: the line shows");
+    assert_eq!(waiting_age(5_000, 0, (ROOM, sender), &notice, || None, || reads += 1), Some(Duration::from_secs(5)), "unknown: the line shows");
     assert_eq!(reads, 1, "and the listing is asked for");
-    assert_eq!(waiting_age(5_000, 0, sender, &notice, || Some(true), || panic!("no read")), None, "own Agent: no line");
+    assert_eq!(waiting_age(5_000, 0, (ROOM, sender), &notice, || Some(true), || panic!("no read")), None, "own Agent: no line");
 }
 
 /// Bird's window, Nov 18 00:12: "⏳ Waiting for bird-codex to start…"
-/// stayed under bird's own review request after bird-codex reviewed.
+/// stayed under bird's own review request after bird-codex reviewed. GPT
+/// batch review, Nov 19: only that reviewer's recorded review in that room
+/// ends it.
 #[test]
-fn the_waiting_line_goes_once_the_review_is_recorded() {
-    use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target};
+fn the_waiting_line_goes_once_its_reviewers_review_is_recorded_in_its_room() {
+    use crate::hagency::issue_watch::loop_notice::{LoopNotice, Target, note_answered};
     let codex = OwnedUserId::try_from("@_hagency_bird_bird-codex:localhost:8452").unwrap();
+    let claude = OwnedUserId::try_from("@_hagency_bird_bird-claude:localhost:8452").unwrap();
     let target = Target { repo: "csheargm/hagency-demo-sandbox".into(), number: 140, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/140".into(), head: "7e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f".into(), issues: Vec::new() };
     let notice = LoopNotice::ReviewRequested { target: target.clone(), reviewer: codex.clone() }.body();
-    let bird = "@bird:localhost:8452";
+    let (bird, other_room) = ("@bird:localhost:8452", "!other:localhost:8452");
     let (other, same) = (|| Some(false), || None);
-    assert_eq!(waiting_age(5_000, 0, bird, &notice, other, || {}), Some(Duration::from_secs(5)), "requested: the line shows");
-    crate::hagency::issue_watch::loop_notice::note_answered(&target, codex.as_str());
-    assert_eq!(waiting_age(5_000, 0, bird, &notice, other, || panic!("no read")), None, "recorded: no line");
-    assert_eq!(waiting_age(5_000, 0, bird, &notice, same, || panic!("no read")), None, "the same owner's Agent: no line either");
+    let waits = |room: &str, body: &str| waiting_age(5_000, 0, (room, bird), body, other, || {}).is_some();
+    assert!(waits(ROOM, &notice), "requested: the line shows");
+    note_answered(ROOM, &target, claude.as_str());
+    assert!(waits(ROOM, &notice), "another Agent's review: bird-codex's line still waits");
+    note_answered(ROOM, &target, codex.as_str());
+    assert_eq!(waiting_age(5_000, 0, (ROOM, bird), &notice, other, || panic!("no read")), None, "recorded: no line");
+    assert_eq!(waiting_age(5_000, 0, (ROOM, bird), &notice, same, || panic!("no read")), None, "the same owner's Agent: no line either");
+    assert!(waits(other_room, &notice), "the same request in another room is its own");
+    let switched = LoopNotice::ReviewRequested { target: Target { number: 141, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/141".into(), ..target.clone() }, reviewer: claude.clone() }.body();
+    note_answered(ROOM, &Target { number: 141, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/141".into(), ..target.clone() }, codex.as_str());
+    assert!(waits(ROOM, &switched), "switched to bird-claude: the old reviewer's record answers nothing");
     let moved = Target { head: "0123456789abcdef0123456789abcdef01234567".into(), ..target };
-    let pushed = LoopNotice::ReviewRequested { target: moved, reviewer: codex }.body();
-    assert!(waiting_age(5_000, 0, bird, &pushed, other, || {}).is_some(), "a new head's request still waits");
+    assert!(waits(ROOM, &LoopNotice::ReviewRequested { target: moved, reviewer: codex }.body()), "a new head's request still waits");
 }
 
 /// GPT batch review: the loop's review request to another owner's Agent

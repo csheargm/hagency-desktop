@@ -56,34 +56,35 @@ fn still_assist(readiness: &Value, head: &str) -> bool {
     readiness["head"].as_str() == Some(head) && (only_level || super::super::approval_note::only_assist_left(readiness))
 }
 
-/// Record `peer`'s review of `target` as answered once `readiness` holds a
-/// recorded Agent review of its head, or only the Assist level holds it (approvals passed).
-pub(crate) fn note_review(target: &Target, peer: Option<&Pick>, readiness: &Value) {
-    let only_level = readiness["decision"] == "human" && readiness["reason"] == ASSIST_REASON;
-    let recorded = readiness["recorded"].as_u64().is_some_and(|n| n > 0);
-    if let Some(peer) = peer.filter(|_| readiness["head"].as_str() == Some(&target.head) && (recorded || only_level)) {
-        super::super::loop_notice::note_answered(target, peer.reviewer.as_str());
+/// Record `peer`'s review of `target` as answered in `room` only once
+/// `readiness` for its head lists a review recorded by that very reviewer
+/// (`recordedBy`): another Agent's approval, the room's level or a switched
+/// reviewer never answers it (GPT batch review, Nov 19).
+pub(crate) fn note_review(room: &str, target: &Target, peer: Option<&Pick>, readiness: &Value) {
+    let by = |peer: &&Pick| readiness["recordedBy"].as_array().is_some_and(|by| by.iter().any(|r| r.as_str() == Some(peer.reviewer.as_str())));
+    if let Some(peer) = peer.filter(|_| readiness["head"].as_str() == Some(&target.head)).filter(by) {
+        super::super::loop_notice::note_answered(room, target, peer.reviewer.as_str());
     }
 }
 
 /// Whether `target`'s head is settled for the loop: the Assist notice was
 /// posted for it and the room's level still leaves only a person. The gate
-/// is read only once that notice is known.
-pub(crate) async fn settled(io: &impl LoopIo, target: &Target) -> Result<bool, String> {
+/// is read only once that notice is known; the gate's answer when settled.
+pub(crate) async fn settled(io: &impl LoopIo, target: &Target) -> Result<Option<Value>, String> {
     let key = json!({"step": super::super::merge_hold::assist_step(), "pr": target.url, "head": target.head});
     if io.review(json!({"stepTaken": key})).await?["taken"] != true {
-        return Ok(false);
+        return Ok(None);
     }
     let readiness = io.review(readiness_ask(io, &target.repo, target.number)).await?["readiness"].clone();
-    Ok(still_assist(&readiness, &target.head))
+    Ok(still_assist(&readiness, &target.head).then_some(readiness))
 }
 
 /// Advance `target`'s review step for `peer`, unless the head is settled;
 /// `true` when it is (nobody is asked to review it again this check).
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, peer: Option<&Pick>, facts: &impl PeerFacts) -> Result<bool, String> {
     let Some(peer) = peer else { return Ok(false) };
-    if settled(io, target).await? {
-        super::super::loop_notice::note_answered(target, peer.reviewer.as_str());
+    if let Some(readiness) = settled(io, target).await? {
+        note_review(&io.room(), target, Some(peer), &readiness);
         return Ok(true);
     }
     if peer.own {

@@ -177,7 +177,10 @@ pub(super) fn apply(ledger: &mut Ledger, agent: &str, change: ReviewChange, now:
             reply["readiness"]["approvers"] = judged.counted.into();
             // Recorded reviews of this head in this room that could count (never an
             // author's or the merger's, GPT P2-4): one never asks again (PR #109).
-            reply["readiness"]["recorded"] = ledger.recorded_room_reviews(&judged.view, ask.number, (agent, &ask.room))?.into();
+            let recorded = ledger.recorded_room_reviewers(&judged.view, ask.number, (agent, &ask.room))?;
+            reply["readiness"]["recorded"] = recorded.len().into();
+            // Who, as Matrix IDs: a review request's waiting line goes only once its own reviewer's review is recorded.
+            reply["readiness"]["recordedBy"] = recorded.iter().filter_map(|a| hagency_agent_local::attribution::agent_mxid(a)).collect::<Vec<_>>().into();
             // What one more approval would leave (PR #121): the desktop's room line only, never a merge.
             reply["readiness"]["oneMore"] = readiness_json(Some((judged.view.head_sha.as_str(), &judged.one_more)));
         }

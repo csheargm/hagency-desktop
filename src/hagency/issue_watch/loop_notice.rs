@@ -200,23 +200,24 @@ fn request_line(t: &Target, reviewer: &str) -> String {
     format!("{}{reviewer} {}: {}", ::hagency::issue_watch::REVIEW_NOTICE_LEAD, ::hagency::issue_watch::review_ask(t.number, &t.repo, &t.head), t.url)
 }
 
-/// The first lines of review requests the loop knows were answered. In
+/// Review requests the loop knows were answered, as (room, first line). In
 /// memory: the requester's waiting line under its "🔎 Review requested" goes
-/// once the review is recorded (bird's window, Nov 18).
-fn lock_answered() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
-    static ANSWERED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+/// once the review is recorded (bird's window, Nov 18); one room's answer
+/// never hides another room's request (GPT batch review, Nov 19).
+fn lock_answered() -> std::sync::MutexGuard<'static, std::collections::HashSet<(String, String)>> {
+    static ANSWERED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> = std::sync::LazyLock::new(Default::default);
     // Plain strings: still usable after a panic elsewhere held the lock.
     ANSWERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `reviewer`'s review of `target`'s head is recorded.
-pub(crate) fn note_answered(target: &Target, reviewer: &str) {
-    lock_answered().insert(request_line(target, reviewer));
+/// `reviewer`'s review of `target`'s head is recorded in `room`.
+pub(crate) fn note_answered(room: &str, target: &Target, reviewer: &str) {
+    lock_answered().insert((room.to_owned(), request_line(target, reviewer)));
 }
 
-/// Whether `body` is a review request whose review is recorded.
-pub(crate) fn answered(body: &str) -> bool {
-    body.lines().next().is_some_and(|line| lock_answered().contains(line))
+/// Whether `body`, posted in `room`, is a review request whose review is recorded.
+pub(crate) fn answered(room: &str, body: &str) -> bool {
+    body.lines().next().is_some_and(|line| lock_answered().contains(&(room.to_owned(), line.to_owned())))
 }
 
 #[cfg(test)]

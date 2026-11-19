@@ -74,12 +74,12 @@ async fn a_shared_logins_pull_request_counts_the_other_agents_recorded_review() 
     let (shared, command) = (shared_login(), merge_7(temp.path()));
     let (view, _, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 0, "an unknown author among the login's Agents: no local approval counts");
-    assert_eq!(ledger.recorded_room_reviews(&view, 7, ("anna", "!r:x")).unwrap(), 1, "yet the review is recorded");
+    assert_eq!(ledger.recorded_room_reviewers(&view, 7, ("anna", "!r:x")).unwrap(), ["yue"], "yet the review is recorded, by yue");
     created_by(&mut ledger, temp.path(), "anna", 30);
     let (view, decision, counted) = merge_readiness_counted(&mut ledger, &command, ("anna", "!r:x"), &shared).await.unwrap();
     assert_eq!(counted, 1, "the ledger names the author: the other Agent's approval counts");
     assert!(!matches!(decision, Decision::NeedsHuman(ref r) if crate::merge_policy::reason_kind(r) == "approvals"), "{decision:?}");
-    assert_eq!(ledger.recorded_room_reviews(&view, 7, ("anna", "!r:other")).unwrap(), 0, "only the merge's room counts");
+    assert!(ledger.recorded_room_reviewers(&view, 7, ("anna", "!r:other")).unwrap().is_empty(), "only the merge's room counts");
 }
 
 /// GPT batch review P1-1: anna tracks issue #3, yue (same login) opens the
@@ -101,7 +101,7 @@ async fn the_trackers_guess_never_makes_the_real_authors_approval_count() {
     assert_eq!(counted, 0, "yue created it: its own approval never counts");
     assert!(matches!(decision, Decision::NeedsHuman(_)), "{decision:?}");
     // GPT batch review P2-4: the author's own verdict is no recorded review, so a re-review may be asked.
-    assert_eq!(ledger.recorded_room_reviews(&view, 7, ("anna", "!r:x")).unwrap(), 0);
+    assert!(ledger.recorded_room_reviewers(&view, 7, ("anna", "!r:x")).unwrap().is_empty());
 }
 
 /// A create recorded long before GitHub opened this pull request (an old
