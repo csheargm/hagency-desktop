@@ -1343,8 +1343,8 @@ pub struct RoomScreen {
     #[rust] chat_info_inline: bool,
     /// The room information panel's width, once known (see info_panel_width.rs).
     #[rust] info_width: Option<f64>,
-    /// The redraw and room screen width the panel was last laid out for, and the frame that checks it.
-    #[rust] info_layout: Option<(u64, f64)>, #[rust] info_layout_check: NextFrame,
+    /// The room screen widths room info was laid out for and really drawn at (info_panel_width.rs).
+    #[rust] info_layout: info_panel_width::InfoLayout,
     /// The width a drag of the panel's edge started from, while one is under way.
     #[rust] info_drag_from: Option<f64>,
     /// Whether the edge moved during the current press (a click saves nothing).
@@ -8958,10 +8958,6 @@ mod desktop_information_columns_tests {
     pub(super) fn draw(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
         cx.redraw_all();
         screen.layout_desktop_chat_info(cx, width);
-        draw_view(cx, screen, width);
-    }
-    /// Draws the room screen's views `width` wide, as laid out already.
-    pub(super) fn draw_view(cx: &mut Cx, screen: &mut RoomScreen, width: f64) {
         let pass = DrawPass::new(cx); pass.set_size(cx, dvec2(1280.0, 900.0));
         let mut list = DrawList2d::new(cx);
         let overlay = Overlay {draw_list: DrawList::new(cx)};
@@ -9220,7 +9216,7 @@ mod call_link;
 // TODO(R4): move the rest of the information panel's layout
 // (layout_desktop_chat_info, is_over_desktop_chat_info) next to its width.
 #[path = "room_screen/info_panel_width.rs"]
-pub(crate) mod info_panel_width;
+mod info_panel_width;
 use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
 
 /// Offline layout fixture using the production disclosure presentation.
