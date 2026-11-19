@@ -47,10 +47,7 @@ impl<'a> PrCommand<'a> {
         let mut positional = Vec::new();
         let mut words = rest.iter();
         while let Some(word) = words.next() {
-            let (name, inline) = match word.split_once('=') {
-                Some((name, value)) if name.starts_with("--") => (name, Some(value)),
-                _ => (*word, None),
-            };
+            let (name, inline) = crate::merge_policy::gate::option_word(word);
             if !word.starts_with('-') {
                 positional.push(*word);
                 continue;

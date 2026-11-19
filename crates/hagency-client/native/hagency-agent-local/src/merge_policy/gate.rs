@@ -135,7 +135,7 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
     let ok = match kind {
         Kind::Merge => flags.squash && flags.repo.is_some(),
         Kind::Review => [flags.approve, flags.comment, flags.request_changes].iter().filter(|f| **f).count() == 1
-            && (flags.approve || flags.request_changes || flags.body.starts_with(APPROVE_MARKER)),
+            && (flags.approve || flags.request_changes || flags.body.as_deref().is_some_and(|b| b.starts_with(APPROVE_MARKER))),
         Kind::Ready => flags.repo.is_some(),
         Kind::RequestChanges => false,
     };
@@ -143,7 +143,7 @@ pub fn parse_command(proposal: &ToolProposal) -> Option<GhPr> {
         return None;
     }
     let kind = if flags.request_changes { Kind::RequestChanges } else { kind };
-    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind, body: flags.body })
+    Some(GhPr { dir, number: number.parse().ok()?, repo: flags.repo, head: flags.head, kind, body: flags.body.unwrap_or_default() })
 }
 
 /// Characters that would chain, redirect or substitute; any one refuses the command.
@@ -164,7 +164,7 @@ fn command_words(proposal: &ToolProposal) -> Option<(PathBuf, Vec<String>)> {
         ("claude.Bash" | crate::watch_trust::codex_step::TOOL, Value::String(line)) => shell_words(line, cwd),
         // The app-server renders Codex's argv as one shell-quoted line: a
         // `<system shell> -c '<line>'` wrapper is read exactly as the argv is.
-        // TODO(R4): gate.rs is over budget; split command reading into gate/command.rs.
+        // TODO(R4): gate.rs is over budget; split command reading (command_words, Flags, option_word) into gate/command.rs.
         ("codex.command", Value::String(line)) => match shell_words(line, cwd)? {
             // One outer segment only: never after a `cd` (GPT review: `cd . &&`).
             (_, words) if words.len() == 3 && words[1] == "-c" && is_shell(&words[0]) && shell::parse(line)?.segments.len() == 1 => shell_words(&words[2], cwd),
@@ -236,29 +236,58 @@ struct Flags {
     approve: bool,
     comment: bool,
     request_changes: bool,
-    body: String,
+    body: Option<String>,
     repo: Option<String>,
     head: Option<String>,
 }
 impl Flags {
+    /// Read options exactly as the trusted review post does
+    /// ([`crate::watch_trust::review_post`]): `--name=value` or `--name value`
+    /// through [`option_word`], a switch never takes `=`, and no valued option
+    /// twice. A form only one of them read let a request for changes post
+    /// without withdrawing the Agent's approval (full-integration GPT P1-a).
     fn read(words: &[&str], kind: Kind) -> Option<Self> {
         let merge = kind == Kind::Merge;
         let review = kind == Kind::Review;
         let mut flags = Self::default();
         let mut words = words.iter();
         while let Some(word) = words.next() {
-            match *word {
-                "--squash" if merge => flags.squash = true,
-                "--match-head-commit" if merge => flags.head = Some(super::github::commit_sha(words.next()?)?.to_owned()),
-                "--approve" | "-a" if review => flags.approve = true,
-                "--comment" | "-c" if review => flags.comment = true,
-                "--request-changes" | "-r" if review => flags.request_changes = true,
-                "--body" | "-b" if review => flags.body = (*words.next()?).to_owned(),
-                "--repo" | "-R" => flags.repo = Some(repo_name(words.next()?)?.to_owned()),
-                _ => return None,
+            let (name, inline) = option_word(word);
+            let switch = match name {
+                "--squash" if merge => &mut flags.squash,
+                "--approve" | "-a" if review => &mut flags.approve,
+                "--comment" | "-c" if review => &mut flags.comment,
+                "--request-changes" | "-r" if review => &mut flags.request_changes,
+                _ => {
+                    let value = inline.or_else(|| words.next().copied())?;
+                    let slot = match name {
+                        "--match-head-commit" if merge => (&mut flags.head, super::github::commit_sha(value)?),
+                        "--body" | "-b" if review => (&mut flags.body, value),
+                        "--repo" | "-R" => (&mut flags.repo, repo_name(value)?),
+                        _ => return None,
+                    };
+                    if slot.0.replace(slot.1.to_owned()).is_some() {
+                        return None;
+                    }
+                    continue;
+                }
+            };
+            if inline.is_some() {
+                return None;
             }
+            *switch = true;
         }
         Some(flags)
+    }
+}
+
+/// One option word as `gh` reads it: `--name=value` splits at the first `=`,
+/// anything else (`-R`, a bare value) is the name with no inline value. The
+/// one reader for every `gh` shape Hagency checks (R3).
+pub(crate) fn option_word(word: &str) -> (&str, Option<&str>) {
+    match word.split_once('=') {
+        Some((name, value)) if name.starts_with("--") => (name, Some(value)),
+        _ => (word, None),
     }
 }
 
@@ -279,7 +308,10 @@ pub(crate) fn repo_name(text: &str) -> Option<&str> {
 /// `call` is the tool call's id; an allowed review is held under it and
 /// counts only after that call succeeds (an empty id never counts).
 pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolProposal, call: &str, now: i64, source: &impl PrSource) -> Option<bool> {
-    let command = parse_command(proposal)?;
+    let Some(command) = parse_command(proposal) else {
+        // A verdict only the trusted post reads still withdraws (GPT P1-a).
+        return ledger.hold_posted_withdrawal(proposal, call).is_err().then_some(false);
+    };
     // Only Agents of the room's owner or a maintainer merge (ADR 0030): a
     // merge goes on only in a room freshly read as one, or in the Agent's own
     // private chat with its owner; anywhere else it is refused outright, card
@@ -297,9 +329,19 @@ pub async fn auto_answer(ledger: &mut Ledger, owner: &str, proposal: &ToolPropos
     if command.kind == Kind::RequestChanges {
         // Whatever answers it (this gate or the owner's card), a blocking
         // verdict withdraws this Agent's approvals once it has run ([`super::pending`]).
-        // An unreadable pull request leaves the card to the owner.
-        let url = source.pull_request(&command).await?.url;
-        ledger.hold_withdrawal(call, &url, &agent).ok()?;
+        // An unreadable pull request leaves the card to the owner, but a
+        // trusted post may still run it: withdraw by its plain URL then.
+        let (url, read) = match (source.pull_request(&command).await, command.repo.as_deref()) {
+            (Some(view), _) => (view.url, true),
+            (None, Some(repo)) => (super::pending::pull_url(repo, command.number), false),
+            (None, None) => return None,
+        };
+        if ledger.hold_withdrawal(call, &url, &agent).is_err() {
+            return Some(false);
+        }
+        if !read {
+            return None;
+        }
     }
     if !super::admission::admits(ledger, owner, proposal, review, now) {
         return None;

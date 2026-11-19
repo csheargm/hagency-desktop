@@ -64,10 +64,7 @@ impl ReviewPost {
         let (mut mode, mut body, mut repo) = (None, None, None);
         let mut words = rest.iter();
         while let Some(word) = words.next() {
-            let (name, inline) = match word.split_once('=') {
-                Some((name, value)) if name.starts_with("--") => (name, Some(value)),
-                _ => (*word, None),
-            };
+            let (name, inline) = crate::merge_policy::gate::option_word(word);
             let flag = match name {
                 "--comment" | "-c" => Some("--comment"),
                 "--approve" | "-a" => Some("--approve"),

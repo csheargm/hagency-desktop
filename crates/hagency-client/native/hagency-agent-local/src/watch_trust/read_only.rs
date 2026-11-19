@@ -50,7 +50,7 @@ pub(crate) fn allowed(line: &str, repo: &str) -> bool {
 pub(crate) fn named_repo(line: &str) -> Option<String> {
     let parsed = shell::parse(line)?;
     let [words] = parsed.segments.as_slice() else { return None };
-    let named = words.iter().enumerate().find_map(|(at, word)| match split(word) {
+    let named = words.iter().enumerate().find_map(|(at, word)| match crate::merge_policy::gate::option_word(word) {
         ("-R" | "--repo", inline) => inline.or_else(|| words.get(at + 1).map(String::as_str)).map(str::to_owned),
         _ => {
             let mut parts = word.strip_prefix('/').unwrap_or(word).strip_prefix("repos/")?.split(['/', '?']);
@@ -64,14 +64,6 @@ fn same(a: &str, b: &str) -> bool {
     crate::merge_policy::gate::repo_name(a).is_some_and(|a| a.eq_ignore_ascii_case(b))
 }
 
-/// `--name value` or `--name=value` split; `None` value for a bare word.
-fn split(word: &str) -> (&str, Option<&str>) {
-    match word.split_once('=') {
-        Some((name, value)) if name.starts_with("--") => (name, Some(value)),
-        _ => (word, None),
-    }
-}
-
 /// A view/list command: every `-R` names `repo`, at least one does, and the
 /// one positional (if any) is a number.
 fn query(rest: &[&str], repo: &str) -> bool {
@@ -82,7 +74,7 @@ fn query(rest: &[&str], repo: &str) -> bool {
             positionals.push(*word);
             continue;
         }
-        let (name, inline) = split(word);
+        let (name, inline) = crate::merge_policy::gate::option_word(word);
         if FLAGS.contains(&name) && inline.is_none() {
             continue;
         }
@@ -110,7 +102,7 @@ fn api(rest: &[&str], repo: &str) -> bool {
             }
             continue;
         }
-        let (name, inline) = split(word);
+        let (name, inline) = crate::merge_policy::gate::option_word(word);
         if API_FLAGS.contains(&name) && inline.is_none() {
             continue;
         }
