@@ -25,8 +25,9 @@ AUTH_STATUS_TIMEOUT_S = 20
 LOGIN_PHRASES = ("login required", "not logged in")
 NO_ANSWER_MARKS = ("(nothing)", "no answer")
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
-_CONFIG_DIR_ENV = re.compile(r"(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)")
-_CONFIG_DIR_SCRIPT = re.compile(r"--env\s+CLAUDE_CONFIG_DIR=[\"']?([^\"'\s]+)")
+_CONFIG_DIR_ENV = re.compile(r"(?:^|\s)CLAUDE_CONFIG_DIR=(.+?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|$)")
+_CONFIG_DIR_SCRIPT = re.compile(r"--env\s+CLAUDE_CONFIG_DIR=(?:\"([^\"]*)\"|'([^']*)'|(\S+))")
+UNKNOWN_DIR = "<unknown>"  # the desktop's config dir cannot be told: skip the CLI check
 _ITEM_END = re.compile(r"(?<=\.)\s+")
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z")
 
@@ -69,34 +70,56 @@ def parse_auth_status(stdout: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def env_config_dir(ps_output: str) -> str | None:
-    """CLAUDE_CONFIG_DIR from `ps -E -p <pid> -o command=` output (only that
-    variable is extracted; the rest of the environment is never kept)."""
-    m = _CONFIG_DIR_ENV.search(ps_output)
+def env_config_dir(ps_env_output: str, argv: str) -> str | None:
+    """CLAUDE_CONFIG_DIR from `ps -E` output: only the environment after the
+    process's own argv is searched; a value runs to the next NAME= token, so a
+    path with spaces survives. Nothing else from the environment is kept."""
+    if not argv or not ps_env_output.startswith(argv):
+        return UNKNOWN_DIR
+    m = _CONFIG_DIR_ENV.search(ps_env_output[len(argv):].rstrip("\n"))
     return m.group(1) if m else None
 
 
-def script_config_dir(script_text: str) -> str | None:
-    """A literal `--env CLAUDE_CONFIG_DIR=...` in int-demo-up.sh; a value
-    with shell expansions cannot be resolved here, so it counts as none."""
-    m = _CONFIG_DIR_SCRIPT.search(script_text)
-    return m.group(1) if m and "$" not in m.group(1) else None
+def _launch_commands(script_text: str) -> list:
+    """Shell commands of the script with backslash continuations joined."""
+    return [c for c in re.sub(r"\\\n", " ", script_text).splitlines() if c.strip()]
+
+
+def script_config_dir(script_text: str, owner: str) -> str | None:
+    """The literal `--env CLAUDE_CONFIG_DIR=...` of the launch command that
+    names this owner's desktop (fresh-<owner>); UNKNOWN_DIR when the script
+    sets one it cannot attribute or resolve ($VAR), None when it sets none."""
+    hits = [c for c in _launch_commands(script_text) if _CONFIG_DIR_SCRIPT.search(c)]
+    if not hits:
+        return None
+    mine = [c for c in hits if re.search(rf"fresh-{re.escape(owner)}\b", c)]
+    if len(mine) != 1:
+        return UNKNOWN_DIR
+    m = _CONFIG_DIR_SCRIPT.search(mine[0])
+    value = next(g for g in m.groups() if g is not None)
+    return value if "$" not in value else UNKNOWN_DIR
+
+
+def _ps(pid: str, with_env: bool) -> str:
+    flags = "-wwE" if with_env else "-ww"
+    return subprocess.run(["ps", flags, "-p", pid, "-o", "command="], capture_output=True, text=True,
+                          timeout=AUTH_STATUS_TIMEOUT_S).stdout
 
 
 def desktop_config_dir(owner: str) -> str | None:
-    """The CLAUDE_CONFIG_DIR the owner's running desktop has (its process
-    env), else the literal one int-demo-up.sh passes; None = CLI default."""
+    """The CLAUDE_CONFIG_DIR the owner's running desktop has (its process env),
+    else this owner's literal one in int-demo-up.sh; None = CLI default,
+    UNKNOWN_DIR = cannot tell (the CLI check is then skipped)."""
     try:
         pid = config.DESKTOP_PIDS[owner].read_text().strip()
         if pid.isdigit():
-            out = subprocess.run(["ps", "-E", "-p", pid, "-o", "command="], capture_output=True,
-                                 text=True, timeout=AUTH_STATUS_TIMEOUT_S).stdout
-            if (found := env_config_dir(out)):
+            found = env_config_dir(_ps(pid, True), _ps(pid, False).rstrip("\n"))
+            if found != UNKNOWN_DIR:
                 return found
     except (OSError, subprocess.TimeoutExpired):  # no pid file / ps failed: fall back to the launch script
         pass
     try:
-        return script_config_dir(config.DEMO_UP_SCRIPT.read_text())
+        return script_config_dir(config.DEMO_UP_SCRIPT.read_text(), owner)
     except OSError:  # no launch script: the CLI default login is the one the desktop inherits
         return None
 
@@ -116,9 +139,10 @@ def claude_cli_logged_in(config_dir: str | None = None) -> bool | None:
 
 def owner_cli_status(dirs: dict, probe=None) -> dict:
     """owner -> loggedIn under that owner's config dir (one probe per distinct dir)."""
-    probe, cache = probe or claude_cli_logged_in, {}
+    probe, cache = probe or claude_cli_logged_in, {UNKNOWN_DIR: None}
     for d in dict.fromkeys(dirs.values()):
-        cache[d] = probe(d)
+        if d not in cache:
+            cache[d] = probe(d)
     return {o: cache[d] for o, d in dirs.items()}
 
 

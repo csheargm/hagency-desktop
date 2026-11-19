@@ -96,37 +96,56 @@ class SignedOutAgents(unittest.TestCase):
 
 class ConfigDir(unittest.TestCase):
     """`claude auth status` must check the login the desktop's Agents use."""
-    PS = ("/x/Hagency-fresh-anna.app/Contents/MacOS/rinx HOME=/Users/u "
-          "CLAUDE_CONFIG_DIR=/Users/u/.hagency-claude/anna HAGENCY_GH_TOKEN_FILE=/t")
+    ARGV = "/x/Hagency-fresh-anna.app/Contents/MacOS/rinx --flag CLAUDE_CONFIG_DIR=/argv/not/env"
+    PS = ARGV + " HOME=/Users/u CLAUDE_CONFIG_DIR=/Users/u/Library/Hagency Claude/anna HAGENCY_GH_TOKEN_FILE=/t\n"
+    TWO_OWNERS = ('if [ "$1" = anna ]; then\n'
+                  '  open -n -a "$ROOT/Hagency-fresh-anna.app" --env HOME="$HOME" \\\n'
+                  '    --env CLAUDE_CONFIG_DIR="/srv/claude a" --env RUST_LOG=warn\n'
+                  'else\n'
+                  '  open -n -a "$ROOT/Hagency-fresh-betty.app" --env CLAUDE_CONFIG_DIR=/srv/claude-b\n'
+                  'fi\n')
 
-    def test_reads_config_dir_from_process_env(self):
-        self.assertEqual(provider.env_config_dir(self.PS), "/Users/u/.hagency-claude/anna")
-        self.assertIsNone(provider.env_config_dir("/x/rinx HOME=/Users/u PATH=/bin"))
-        self.assertIsNone(provider.env_config_dir("/x/rinx MY_CLAUDE_CONFIG_DIR=/nope"))
+    def test_reads_config_dir_from_the_env_part_only_with_spaces(self):
+        self.assertEqual(provider.env_config_dir(self.PS, self.ARGV), "/Users/u/Library/Hagency Claude/anna")
+        self.assertIsNone(provider.env_config_dir(self.ARGV + " HOME=/Users/u PATH=/bin", self.ARGV))
+        self.assertIsNone(provider.env_config_dir(self.ARGV + " MY_CLAUDE_CONFIG_DIR=/nope", self.ARGV))
+        self.assertEqual(provider.env_config_dir("other HOME=/h", self.ARGV), provider.UNKNOWN_DIR)
 
-    def test_reads_only_a_literal_config_dir_from_the_launch_script(self):
-        self.assertEqual(provider.script_config_dir('open -n A.app --env HOME="$HOME" '
-                                                    '--env CLAUDE_CONFIG_DIR="/srv/claude-a" \\'), "/srv/claude-a")
-        self.assertIsNone(provider.script_config_dir('--env CLAUDE_CONFIG_DIR="$AGENT_DIR"'))
-        self.assertIsNone(provider.script_config_dir('--env HOME="$HOME" --env RUST_LOG=warn'))
+    def test_script_value_comes_from_that_owners_launch_block(self):
+        self.assertEqual(provider.script_config_dir(self.TWO_OWNERS, "anna"), "/srv/claude a")
+        self.assertEqual(provider.script_config_dir(self.TWO_OWNERS, "betty"), "/srv/claude-b")
 
-    def _desktop_dir(self, ps_out, script):
+    def test_script_value_it_cannot_attribute_or_resolve_is_unknown(self):
+        generic = 'open -n -a "$APP" --env HOME="$HOME" \\\n  --env CLAUDE_CONFIG_DIR=/srv/shared\n'
+        self.assertEqual(provider.script_config_dir(generic, "anna"), provider.UNKNOWN_DIR)
+        var = 'open -a Hagency-fresh-anna.app --env CLAUDE_CONFIG_DIR="$AGENT_DIR"'
+        self.assertEqual(provider.script_config_dir(var, "anna"), provider.UNKNOWN_DIR)
+        self.assertIsNone(provider.script_config_dir('open -a "$APP" --env HOME="$HOME"', "anna"))
+
+    def _desktop_dir(self, ps_env, script, argv=ARGV):
         with tempfile.TemporaryDirectory() as tmp:
             pid, sh = Path(tmp) / "desktop.pid", Path(tmp) / "up.sh"
             pid.write_text("70973\n")
             sh.write_text(script)
-            ran = mock.Mock(stdout=ps_out)
+            outs = {"-wwE": ps_env, "-ww": argv + "\n"}
             with mock.patch.object(provider.config, "DESKTOP_PIDS", {"anna": pid}), \
                     mock.patch.object(provider.config, "DEMO_UP_SCRIPT", sh), \
-                    mock.patch.object(provider.subprocess, "run", return_value=ran) as run:
+                    mock.patch.object(provider.subprocess, "run",
+                                      side_effect=lambda cmd, **_: mock.Mock(stdout=outs[cmd[1]])) as run:
                 return provider.desktop_config_dir("anna"), run
 
     def test_process_env_wins_then_script_then_none(self):
-        got, run = self._desktop_dir(self.PS, '--env CLAUDE_CONFIG_DIR=/srv/other')
-        self.assertEqual(got, "/Users/u/.hagency-claude/anna")
-        self.assertEqual(run.call_args[0][0], ["ps", "-E", "-p", "70973", "-o", "command="])
-        self.assertEqual(self._desktop_dir("/x/rinx HOME=/h", '--env CLAUDE_CONFIG_DIR=/srv/other')[0], "/srv/other")
-        self.assertIsNone(self._desktop_dir("/x/rinx HOME=/h", '--env HOME="$HOME"')[0])
+        got, run = self._desktop_dir(self.PS, self.TWO_OWNERS)
+        self.assertEqual(got, "/Users/u/Library/Hagency Claude/anna")
+        self.assertIn(["ps", "-wwE", "-p", "70973", "-o", "command="], [c[0][0] for c in run.call_args_list])
+        self.assertIsNone(self._desktop_dir(self.ARGV + " HOME=/h\n", self.TWO_OWNERS)[0])
+        self.assertEqual(self._desktop_dir("garbled", self.TWO_OWNERS)[0], "/srv/claude a")
+        self.assertIsNone(self._desktop_dir("garbled", 'open -a "$APP" --env HOME="$HOME"')[0])
+
+    def test_unknown_dir_skips_the_cli_probe(self):
+        probe = mock.Mock(return_value=False)
+        self.assertEqual(provider.owner_cli_status({"anna": provider.UNKNOWN_DIR}, probe), {"anna": None})
+        probe.assert_not_called()
 
     def _auth_env(self, config_dir, inherited):
         ran = mock.Mock(stdout='{"loggedIn": true}')
