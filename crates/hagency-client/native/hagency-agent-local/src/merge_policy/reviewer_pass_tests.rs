@@ -112,3 +112,27 @@ fn a_reviewer_is_passed_only_after_the_back_off() {
     assert_eq!((late.taken, late.say.map(|s| s.gave_up)), (true, Some(true)));
     assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
 }
+
+/// Live PR #121 (Nov 18): bird-codex, bird's Agent on another server, was
+/// asked to review; its runs only bird's device sees, so "no run of it
+/// reached this device … will not be retried" was said and the review was
+/// sent again. Another owner's reviewer is never judged by this device's
+/// dispatches: after the window it is passed over once with one plain line,
+/// never re-sent, and this owner's own Agent gets a round of its own.
+#[test]
+fn another_owners_reviewer_is_never_judged_by_this_devices_runs() {
+    const OWN: &str = "@anna-claude:test";
+    let (_temp, mut l) = ledger();
+    let remote = |l: &mut Ledger, now: i64| l.remote_review_due(AGENT, (PR, HEAD), CODEX, now).unwrap();
+    assert!(!remote(&mut l, T0).taken, "first asked: bird-codex");
+    l.claim_dispatched_step(AGENT, "review", PR, HEAD).unwrap();
+    assert_eq!(remote(&mut l, T0 + 1), StepDue { taken: true, again: 0, say: None }, "it waits for its verdict");
+    assert_eq!(remote(&mut l, T0 + UNSEEN_AFTER_SECS), StepDue { taken: true, again: 0, say: None }, "its own clock started at the first check after the ask");
+    let late = T0 + 1 + UNSEEN_AFTER_SECS;
+    assert_eq!(remote(&mut l, late), StepDue { taken: true, again: 0, say: say(Why::Unanswered, true, 0) }, "one plain line, never a re-send");
+    assert_eq!(l.passed_reviewers(AGENT, PR, HEAD).unwrap(), [CODEX]);
+    l.step_line_said(AGENT, ("review", PR, HEAD), 0).unwrap();
+    assert_eq!(remote(&mut l, late + 600).say, None, "said once");
+    // This owner's own Agent is asked next, as a new message on its own round.
+    assert_eq!(l.step_due(AGENT, ("review", PR, HEAD), (ME, OWN, ROOM), late + 601).unwrap(), StepDue { taken: false, again: 1, say: None });
+}

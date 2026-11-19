@@ -48,6 +48,9 @@ pub enum Why {
     Unrecorded,
     /// No dispatch of its notice reached this device within [`UNSEEN_AFTER_SECS`].
     Unseen,
+    /// Another owner's reviewer, whose runs this device never sees, gave no
+    /// verdict within [`UNSEEN_AFTER_SECS`] (`reviewer_pass::remote_review_due`).
+    Unanswered,
 }
 impl Why {
     pub fn word(self) -> &'static str {
@@ -57,6 +60,7 @@ impl Why {
             Self::Lost => "lost",
             Self::Unrecorded => "unrecorded",
             Self::Unseen => "unseen",
+            Self::Unanswered => "unanswered",
         }
     }
     /// The rounds a step is given back for this reason before the loop gives up.
