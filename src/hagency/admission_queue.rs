@@ -21,6 +21,20 @@ pub(super) async fn limited<F: Future>(admission: F) -> F::Output {
     admission.await
 }
 
+/// Runs `admit` for each of `items` in turn, each in its own slot (so queued
+/// admissions get turns between items); whether any returned true.
+pub(super) async fn each_limited<'a, T, F, Fut>(items: &'a [T], mut admit: F) -> bool
+where
+    F: FnMut(&'a T) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let mut changed = false;
+    for item in items {
+        changed |= limited(admit(item)).await;
+    }
+    changed
+}
+
 /// Tries `attempt` after each pause in `pauses` until it yields a value, each
 /// try in a slot (`limited`), the pauses outside one. None after the last try.
 pub(super) async fn with_backoff<T, F, Fut>(pauses: &[Duration], mut attempt: F) -> Option<T>

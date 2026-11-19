@@ -212,28 +212,26 @@ impl Drop for Unsettled {
     }
 }
 
-/// One try at the unsettled cards, each edit fetched first; whether any changed.
-async fn admit_once(room: &Room, unsettled: &Unsettled) -> bool {
-    let mut changed = false;
-    for card in &unsettled.cards {
-        let mut events = vec![card.original.clone()];
-        if card.edit.is_some() {
-            events.extend(edit_to_admit(card, fetch_edit(room, card).await));
-        }
-        changed |= super::pending_questions::admit_loaded(unsettled.generation, room, events).await;
+/// One card's try: its edit fetched, then both admitted; whether it changed.
+async fn admit_card(room: &Room, generation: u64, card: &Loaded) -> bool {
+    let mut events = vec![card.original.clone()];
+    if card.edit.is_some() {
+        events.extend(edit_to_admit(card, fetch_edit(room, card).await));
     }
-    changed
+    super::pending_questions::admit_loaded(generation, room, events).await
 }
 
-/// Admits the unsettled cards (one admission slot per try, `admission_queue`),
-/// trying the ones not stored again after a pause.
+/// Admits the unsettled cards (one admission slot per card try, so other
+/// rooms get turns between cards: `admission_queue::each_limited`), trying the
+/// ones not stored again after a pause.
 async fn admit_with_retries(room: Room, mut unsettled: Unsettled) {
     for pause in TRIES_AFTER {
         tokio::time::sleep(pause).await;
         if super::pending_questions::generation() != unsettled.generation {
             return;
         }
-        if super::admission_queue::limited(admit_once(&room, &unsettled)).await {
+        let generation = unsettled.generation;
+        if super::admission_queue::each_limited(&unsettled.cards, |card| admit_card(&room, generation, card)).await {
             Cx::post_action(super::pending_questions::PendingQuestionsChanged);
         }
         let (done, left): (Vec<_>, Vec<_>) = std::mem::take(&mut unsettled.cards).into_iter()
