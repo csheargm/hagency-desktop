@@ -247,6 +247,13 @@ fn joining_a_room_never_adopts_an_issue_opened_before_the_work_list_entry() {
     let inputs = Inputs { repo: REPO, now: T0 + 5, tracks: &[], seen: &seen, since: T0, open_issues: &open, own_pulls: &[] };
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
     assert_eq!(fake.tracks().iter().map(|t| t.number).collect::<Vec<_>>(), [108], "#31 predates the entry");
+    // GPT review: a track the old watch already saved for #31 is not advanced either.
+    let fake = Fake::default();
+    first_hand_off(&fake, 31);
+    let tracks = fake.tracks();
+    let inputs = Inputs { tracks: &tracks, now: T0 + 100 * HANDOFF_TIMEOUT_SECS, ..inputs };
+    let out = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(follow(&fake, &inputs));
+    assert!(out.lines.iter().all(|l| !l.contains("#31")) && fake.handed.borrow().is_empty(), "{:?}", out.lines);
 }
 
 #[test]
