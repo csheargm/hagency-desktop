@@ -90,7 +90,17 @@ pub(crate) fn run(command: &mut Command, stdin: Option<&str>, ctx: &HostCtx) -> 
         std::thread::sleep(POLL);
     }
     let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
-    if status.success() { Ok(out.trim().to_owned()) } else { Err(err.trim().to_owned()) }
+    outcome(status, &out, &err)
+}
+
+/// A finished step's answer: its output, or why it failed, never an empty
+/// failure (GPT review P2: `git grep` with no match exits 1 silently).
+fn outcome(status: std::process::ExitStatus, out: &str, err: &str) -> Result<String, String> {
+    if status.success() {
+        return Ok(out.trim().to_owned());
+    }
+    let err = err.trim();
+    Err(if err.is_empty() { format!("exited with {status} and no output (for grep: nothing matched)") } else { err.to_owned() })
 }
 
 /// SIGKILL to every process of the group `pid` leads, repeated until no

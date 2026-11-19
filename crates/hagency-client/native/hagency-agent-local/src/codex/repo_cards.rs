@@ -49,9 +49,9 @@ pub(super) fn ask(ledger: &mut Ledger, turn: &Turn<'_>, call: Call, proposal: To
     };
     let card = match ledger.tool_disposition(&proposal, super::now()) {
         Ok(ToolPolicy::AskOwner) => true,
-        // A read outside the room's set always asks: no saved rule reads
-        // every repository the token reaches for a room member.
-        Ok(ToolPolicy::AllowWithRules { .. }) => post.is_none(),
+        // A saved rule naming this tool and workspace runs it, as for Claude
+        // (its approval would never be spent: GPT review P2).
+        Ok(ToolPolicy::AllowWithRules { .. }) => false,
         // The ledger says Deny by refusing the check itself.
         Ok(_) | Err(crate::Error::Denied) => return refuse(call, "your owner's rules refuse this step here"),
         Err(_) => return refuse(call, "this step cannot be checked now"),

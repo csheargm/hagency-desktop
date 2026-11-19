@@ -19,6 +19,12 @@ fn a_read_only_grep_is_pinned() {
     }
     let out = std::process::Command::new("sh").arg("-c").arg(command("git -C app grep -n hi -- README.md", &root).unwrap()).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "README.md:1:hi\n");
+    // GPT review P2: no match is exit 1 with no output; the host run says so instead of an empty error.
+    let mut none = std::process::Command::new("sh");
+    none.arg("-c").arg(command("git -C app grep -n absent-word", &root).unwrap());
+    let ctx = crate::watch_trust::host_git::HostCtx::new(None, std::sync::Arc::default(), Box::new(|| true));
+    let failed = crate::watch_trust::host_run::run(&mut none, None, &ctx).unwrap_err();
+    assert!(failed.contains("nothing matched"), "{failed}");
 }
 
 #[test]

@@ -28,7 +28,9 @@ pub(crate) fn command(line: &str) -> String {
 pub(crate) fn allowed(line: &str, repo: &str) -> bool {
     let Some(parsed) = shell::parse(line) else { return false };
     let [words] = parsed.segments.as_slice() else { return false };
-    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '\n']) {
+    // `gh` as written, never quoted or escaped: the token check before a
+    // host run looks for that word, and must see it (GPT review P1).
+    if parsed.heredoc_at.is_some() || line.contains(['>', '<', '\n']) || !line.starts_with("gh ") {
         return false;
     }
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -176,6 +178,9 @@ mod tests {
             "gh issue list -R csheargm/hagency-demo-sandbox | sh",
             "gh issue list -R csheargm/hagency-demo-sandbox > out.txt",
             "gh issue list -R $(echo csheargm/hagency-demo-sandbox)",
+            "'gh' pr view 3 -R csheargm/hagency-demo-sandbox",
+            "\\gh pr view 3 -R csheargm/hagency-demo-sandbox",
+            " gh pr view 3 -R csheargm/hagency-demo-sandbox",
             "GH_HOST=evil gh issue list -R csheargm/hagency-demo-sandbox",
             "gh issue view 1 -R csheargm/hagency-demo-sandbox --web",
             "gh issue close 1 -R csheargm/hagency-demo-sandbox",
