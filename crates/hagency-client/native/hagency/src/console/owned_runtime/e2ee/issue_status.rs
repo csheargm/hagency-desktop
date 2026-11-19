@@ -14,8 +14,6 @@ pub(in crate::console) struct StatusRoom {
     pub members: BTreeMap<String, Member>,
     /// Repositories linked to the room by hand (`io.hagency.room_repos`).
     pub linked: Vec<String>,
-    /// Who sent the linked list (empty: no list).
-    pub linked_by: String,
 }
 impl AgentDevice {
     pub(in crate::console) async fn issue_status_room(&self, room: &str) -> Result<StatusRoom, RuntimeError> {
@@ -26,7 +24,7 @@ impl AgentDevice {
             return Err(RuntimeError::Transport);
         }
         if security.is_encrypted() {
-            return Ok(StatusRoom { events: Vec::new(), members: BTreeMap::new(), linked: Vec::new(), linked_by: String::new() });
+            return Ok(StatusRoom { events: Vec::new(), members: BTreeMap::new(), linked: Vec::new() });
         }
         let raw = joined.get_state_events(StateEventType::from(ISSUE_STATUS_STATE_TYPE)).await.map_err(|_| RuntimeError::Transport)?;
         let events = raw.iter().map(|e| serde_json::to_value(e).map_err(|_| RuntimeError::Transport)).collect::<Result<Vec<_>, _>>()?;
@@ -42,8 +40,7 @@ impl AgentDevice {
             Some(raw) => serde_json::to_value(&raw).map_err(|_| RuntimeError::Transport)?,
             None => Value::Null,
         };
-        let linked_by = repos["sender"].as_str().unwrap_or_default().to_owned();
-        Ok(StatusRoom { events, members, linked: linked(&repos["content"]), linked_by })
+        Ok(StatusRoom { events, members, linked: linked(&repos["content"]) })
     }
 }
 
