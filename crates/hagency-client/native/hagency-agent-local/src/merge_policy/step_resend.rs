@@ -136,14 +136,22 @@ impl Ledger {
         }
         let Some((why, runner, at)) = self.unrun(agent, (step, pr, head), (requester, to, room), (&round, now))? else { return Ok(kept) };
         let why = if out(self, &runner)? { Why::Budget } else { why };
-        // Only the current reviewer's rounds count toward its cap.
-        let spent = round.again - if step == "review" { self.reviewer_base(agent, (pr, head))?.min(round.again) } else { 0 };
+        // Only this reviewer's own rounds count toward its cap (round-2 GPT review P2-4).
+        let spent = round.again - if step == "review" { self.reviewer_base(agent, (pr, head), to)?.min(round.again) } else { 0 };
         let say = (round.said <= round.again).then_some(Say { why, gave_up: spent >= why.cap(), round: round.again });
-        // A used-up budget is a hold, never a pass (GPT review).
-        if spent >= why.cap() && step == "review" && why != Why::Budget {
-            self.pass_reviewer(agent, (pr, head), to, round.again)?;
+        // A used-up budget is a hold, never a pass (GPT review), and a reviewer
+        // is passed only once the back-off elapsed (round-2 GPT review P2-6).
+        if why == Why::Budget {
+            return Ok(StepDue { say, ..kept });
         }
-        if spent >= why.cap() || why == Why::Budget || now - at < RESEND_AFTER_SECS {
+        // Inside the back-off the last round says nothing yet: it gives up only after.
+        if now - at < RESEND_AFTER_SECS {
+            return Ok(StepDue { say: say.filter(|s| !s.gave_up), ..kept });
+        }
+        if spent >= why.cap() {
+            if step == "review" {
+                self.pass_reviewer(agent, (pr, head), to, round.again)?;
+            }
             return Ok(StepDue { say, ..kept });
         }
         // Given back: the re-post itself shows the retry, so its line counts as said.
@@ -193,18 +201,36 @@ impl Ledger {
     /// The claimed round shows no dispatch here: [`Why::Unseen`] once
     /// [`UNSEEN_AFTER_SECS`] passed since that was first found. A review is
     /// never asked again once it is known done here (an approval of the head
-    /// recorded in `room`, or its merge step taken).
+    /// recorded in `room` that could count, or its merge step taken).
     fn unseen(&self, agent: &str, (step, pr, head): (&str, &str, &str), room: &str, now: i64) -> Result<Option<(Why, String, i64)>> {
         self.db.execute("INSERT OR IGNORE INTO review_loop_unseen VALUES (?,?,?,?,?)", (agent, step, pr, head, now))?;
         let first: i64 = self.db.query_row("SELECT first_at FROM review_loop_unseen WHERE agent=? AND step=? AND pr=? AND head=?", (agent, step, pr, head), |r| r.get(0))?;
         if first < 0 || now - first < UNSEEN_AFTER_SECS {
             return Ok(None);
         }
-        if step == "review" && (!self.agent_reviewers_in(pr, head, Some(room))?.is_empty() || self.loop_step_taken(agent, "merge", pr, head)?) {
+        if step == "review" && (self.eligible_recorded(agent, (pr, head), room)? > 0 || self.loop_step_taken(agent, "merge", pr, head)?) {
             return Ok(None);
         }
         // No runner is known: the re-post is never held for a budget.
         Ok(Some((Why::Unseen, String::new(), first)))
+    }
+
+    /// Approvals of the head recorded in `room` that could count, as
+    /// [`Ledger::recorded_room_reviews`] counts them without GitHub's view:
+    /// never the step's Agent (the merger) nor an Agent the tracker handed
+    /// the pull request to (round-2 GPT review P2-5: an author's or merger's
+    /// approval stopped the rotation while readiness counted zero). Residual:
+    /// an author known only from GitHub (its body's "Opened by", its branch's
+    /// publishes) still stops it; that only waits for a person, never merges.
+    fn eligible_recorded(&self, agent: &str, (pr, head): (&str, &str), room: &str) -> Result<usize> {
+        let number = pr.rsplit('/').next().and_then(|n| n.parse::<u64>().ok());
+        let authors = match number.and_then(|n| Some((super::github::repo_of_url(pr, n)?, n))) {
+            Some((repo, n)) => self.pr_author_agents(repo, n)?,
+            None => Vec::new(),
+        };
+        let reviewers = self.agent_reviewers_in(pr, head, Some(room))?;
+        let excluded = |r: &String| r.eq_ignore_ascii_case(agent) || authors.iter().any(|a| a.eq_ignore_ascii_case(r));
+        Ok(reviewers.iter().filter(|r| !excluded(r)).count())
     }
 
     fn newest_sent(&self, (step, pr, head): (&str, &str, &str), (requester, to, room): Sender<'_>, since: i64) -> Result<Option<Sent>> {

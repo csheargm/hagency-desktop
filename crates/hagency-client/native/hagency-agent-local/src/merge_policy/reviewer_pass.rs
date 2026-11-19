@@ -34,26 +34,44 @@ impl Ledger {
         Ok(())
     }
 
-    /// The head's review is posted to `reviewer` from round `base` on (its
-    /// first round stays when it was asked before).
+    /// The head's review is posted to `reviewer` from round `base` on. Its
+    /// first round stays while it is the newest reviewer asked; a reviewer
+    /// the review returns to starts a stint of its own (round-2 GPT review
+    /// P2-4: it never inherits another reviewer's rounds or unseen timer).
     pub(super) fn note_asked(&self, agent: &str, (pr, head): (&str, &str), reviewer: &str, base: u32) -> Result<()> {
-        self.db.execute("INSERT OR IGNORE INTO review_loop_asked VALUES (?,?,?,?,?)", (agent, pr, head, reviewer, base))?;
+        if self.newest_asked(agent, (pr, head))?.as_deref() != Some(reviewer) {
+            self.db.execute("INSERT OR REPLACE INTO review_loop_asked VALUES (?,?,?,?,?)", (agent, pr, head, reviewer, base))?;
+        }
         Ok(())
     }
 
-    /// The first round of the newest reviewer's requests (0 while none was noted).
-    pub(super) fn reviewer_base(&self, agent: &str, (pr, head): (&str, &str)) -> Result<u32> {
-        Ok(self.db.query_row(&format!("SELECT COALESCE(MAX(base), 0) FROM review_loop_asked WHERE {KEY}"), (agent, pr, head), |r| r.get(0))?)
+    /// The first round of `reviewer`'s current stint (0 while none was noted).
+    pub(super) fn reviewer_base(&self, agent: &str, (pr, head): (&str, &str), reviewer: &str) -> Result<u32> {
+        let sql = format!("SELECT COALESCE(MAX(base), 0) FROM review_loop_asked WHERE {KEY} AND reviewer=?");
+        Ok(self.db.query_row(&sql, (agent, pr, head, reviewer), |r| r.get(0))?)
     }
 
-    /// Whether the review goes to `to` afresh: another reviewer was asked or
-    /// passed over for this head, and `to` was neither.
+    /// The reviewer the head's review was last handed to.
+    fn newest_asked(&self, agent: &str, (pr, head): (&str, &str)) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let sql = format!("SELECT reviewer FROM review_loop_asked WHERE {KEY} ORDER BY base DESC, rowid DESC LIMIT 1");
+        Ok(self.db.query_row(&sql, (agent, pr, head), |r| r.get(0)).optional()?)
+    }
+
+    /// Whether the review goes to `to` afresh: `to` was never passed over,
+    /// and the review was last handed to another reviewer (or, with none
+    /// noted, one was passed over).
     pub(super) fn hands_on(&self, agent: &str, (pr, head): (&str, &str), to: &str) -> Result<bool> {
-        let count = |table: &str, who: Option<&str>| -> Result<i64> {
-            let sql = format!("SELECT COUNT(*) FROM {table} WHERE {KEY} AND (?4 IS NULL OR reviewer=?4)");
-            Ok(self.db.query_row(&sql, rusqlite::params![agent, pr, head, who], |r| r.get(0))?)
+        let passed = |who: Option<&str>| -> Result<bool> {
+            let sql = format!("SELECT COUNT(*) FROM review_loop_passed WHERE {KEY} AND (?4 IS NULL OR reviewer=?4)");
+            Ok(self.db.query_row(&sql, rusqlite::params![agent, pr, head, who], |r| r.get::<_, i64>(0))? > 0)
         };
-        let others = count("review_loop_asked", None)? + count("review_loop_passed", None)? > 0;
-        Ok(others && count("review_loop_asked", Some(to))? == 0 && count("review_loop_passed", Some(to))? == 0)
+        if passed(Some(to))? {
+            return Ok(false);
+        }
+        Ok(match self.newest_asked(agent, (pr, head))? {
+            Some(newest) => newest != to,
+            None => passed(None)?,
+        })
     }
 }

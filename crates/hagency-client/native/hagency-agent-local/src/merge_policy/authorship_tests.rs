@@ -47,3 +47,48 @@ fn every_publisher_of_the_branch_is_an_author_and_a_recent_create_makes_it_known
     note(&ledger.db, &bash("gh pr view 7 -R Acme/App", temp.path(), "bird"), None, OPENED).unwrap();
     assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap().0.len(), 2, "a read publishes nothing");
 }
+
+/// Round-2 GPT review P1-1: a chained, piped or prefixed create succeeds
+/// whether or not the create did, so only a lone `gh pr create` vouches.
+#[test]
+fn only_a_lone_create_vouches_for_its_pull_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna", "yue"]);
+    for (call, line) in [
+        ("or", "gh pr create -R Acme/App -H fix-3 -t x || true"),
+        ("seq", "gh pr create -R Acme/App -H fix-3 -t x; echo done"),
+        ("pipe", "gh pr create -R Acme/App -H fix-3 -t x | cat"),
+        ("cd", "cd app && gh pr create -R Acme/App -H fix-3 -t x"),
+        ("host", "GH_HOST=evil.example gh pr create -R Acme/App -H fix-3 -t x"),
+        ("redirect", "gh pr create -R Acme/App -H fix-3 -t x 2>&1"),
+        ("help", "gh pr create -R Acme/App -H fix-3 --help"),
+        ("web", "gh pr create -R Acme/App -H fix-3 --web"),
+        ("dry", "gh pr create -R Acme/App -H fix-3 -t x --dry-run"),
+    ] {
+        ledger.hold_create(call, &bash(line, temp.path(), "yue"), OPENED - 30).unwrap();
+        ledger.settle_tool_call(call, true).unwrap();
+        assert!(!ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap().1, "{line}");
+    }
+    assert_eq!(created_branch("cd app && gh pr create -R Acme/App -H fix-3"), Some((REPO.to_owned(), "fix-3".to_owned())), "it still names an author");
+    ledger.hold_create("lone", &bash("gh pr create -R Acme/App -H fix-3 -t x", temp.path(), "anna"), OPENED - 30).unwrap();
+    ledger.settle_tool_call("lone", true).unwrap();
+    assert!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap().1);
+}
+
+/// Round-2 GPT review P2-2: a create outside this pull request's window (a
+/// reused branch name) or one that was refused names no author; a push does.
+#[test]
+fn an_old_or_refused_create_names_no_author() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = ledger_with(temp.path(), &["anna", "yue", "bird"]);
+    let create = |who: &str| bash("gh pr create -R Acme/App -H fix-3 -t x", temp.path(), who);
+    note(&ledger.db, &create("bird"), None, OPENED - 7 * 86_400).unwrap();
+    ledger.hold_create("denied", &create("yue"), OPENED - 60).unwrap();
+    note(&ledger.db, &create("yue"), None, OPENED + 3_600).unwrap();
+    assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap(), (vec![], false), "old, refused and late creates");
+    ledger.hold_create("ran", &create("anna"), OPENED - 30).unwrap();
+    ledger.settle_tool_call("ran", true).unwrap();
+    let push = TrustedStep::Host(HostStep::Push { dir: temp.path().into(), remote: "origin".into(), branch: "fix-3".into(), repo: "acme/app".into(), upstream: false });
+    note(&ledger.db, &bash("git -C app push origin fix-3", temp.path(), "bird"), Some(&push), OPENED + 3_600).unwrap();
+    assert_eq!(ledger.branch_authors(REPO, &view(Some("fix-3"))).unwrap(), (vec!["anna".to_owned(), "bird".to_owned()], true));
+}

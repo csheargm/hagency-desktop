@@ -51,7 +51,7 @@ fn a_room_members_review_posts_its_verdict_without_a_card() {
     let mut ledger = dev_room(db.path());
     let review = proposal(ROOM, REVIEW);
     let Some(TrustedStep::Command(command)) = ledger.trusted_publish(OWNER, &review, 11).unwrap() else { panic!("Anna's review posts") };
-    assert!(command.ends_with("GH_HOST='github.com' gh pr review 7 --comment -R 'csheargm/hagency-demo-sandbox' -b 'Hagency verdict: CHANGES - the test is missing'"), "{command}");
+    assert!(command.ends_with("GH_HOST='github.com' gh api -X POST 'repos/csheargm/hagency-demo-sandbox/pulls/7/reviews' -f 'event=COMMENT' -f 'body=Hagency verdict: CHANGES - the test is missing'"), "{command}");
     // Reading the PR first is card-free too (ADR 0019).
     for read in ["gh pr view 7 -R csheargm/hagency-demo-sandbox --json title,files", "gh pr diff 7 -R csheargm/hagency-demo-sandbox", "gh pr checks 7 -R csheargm/hagency-demo-sandbox"] {
         assert!(ledger.trusted_publish(OWNER, &proposal(ROOM, read), 11).unwrap().is_some(), "{read}");

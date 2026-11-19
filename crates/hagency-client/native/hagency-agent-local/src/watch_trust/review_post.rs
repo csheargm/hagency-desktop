@@ -10,6 +10,7 @@
 //! runs is rebuilt from the parsed words (every value single-quoted, pinned
 //! to github.com with git's helpers off), never the model's own text, so the
 //! posted body is exactly the verdict that was checked.
+use crate::merge_policy::gate::APPROVE_MARKER;
 use crate::outside::shell;
 
 /// Every verdict body starts with this (the merge gate's approval marker
@@ -17,6 +18,25 @@ use crate::outside::shell;
 pub const VERDICT_PREFIX: &str = "Hagency verdict:";
 /// GitHub keeps review bodies up to 65536 characters; a longer one fails there.
 const MAX_BODY_CHARS: usize = 60_000;
+
+/// Whether a post approves: `--approve`, or the merge gate's approval marker.
+fn approving(mode: &str, body: &str) -> bool {
+    mode == "--approve" || body.starts_with(APPROVE_MARKER)
+}
+
+/// The full commit SHA right after [`APPROVE_MARKER`], if the body names one.
+fn approved_commit(body: &str) -> Option<&str> {
+    let sha = body.strip_prefix(APPROVE_MARKER)?.trim_start().split(|c: char| !c.is_ascii_hexdigit()).next()?;
+    (sha.len() == 40).then_some(sha)
+}
+
+/// An approval names its commit right after the marker and no other commit,
+/// so the head the gate finds in it is the one the post is pinned to (GPT
+/// review of round-2 P2-3: a body naming two commits passed for one and posted on the other).
+fn names_one_commit(body: &str) -> bool {
+    let Some(sha) = approved_commit(body) else { return false };
+    body.split(|c: char| !c.is_ascii_hexdigit()).filter(|w| w.len() >= 40).all(|w| w == sha)
+}
 
 /// One review post, as checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,7 +92,8 @@ impl ReviewPost {
         }
         let body = body.filter(|b| b.starts_with(VERDICT_PREFIX) && b.chars().count() <= MAX_BODY_CHARS)?;
         let repo = crate::merge_policy::gate::repo_name(repo?)?;
-        Some(Self { number, repo: repo.to_owned(), mode: mode?, body: body.to_owned() })
+        let (mode, body) = (mode?, body.to_owned());
+        (!approving(mode, &body) || names_one_commit(&body)).then(|| Self { number, repo: repo.to_owned(), mode, body })
     }
 
     /// Whether it reviews one of `repos`.
@@ -80,13 +101,21 @@ impl ReviewPost {
         repos.iter().any(|r| r.eq_ignore_ascii_case(&self.repo))
     }
 
-    /// The command that runs in place of the model's text.
-    // TODO(GPT P2, Nov 18): `gh pr review` cannot name a commit, so a push between the
-    // head check and this post still lands it on the new head; post through
-    // `POST repos/{repo}/pulls/{n}/reviews` with `commit_id` to bind it.
+    /// The command that runs in place of the model's text: the review is
+    /// posted through GitHub's reviews API, so a verdict naming a commit
+    /// after the approval marker is pinned to it with `commit_id` (round-2
+    /// GPT review P2-3): a push between the head check and this post leaves
+    /// the approval on the commit it judged, never on the new head.
     pub(crate) fn command(&self) -> String {
         let q = super::quote;
-        let line = format!("GH_HOST='github.com' gh pr review {} {} -R {} -b {}", self.number, self.mode, q(&self.repo), q(&self.body));
+        let event = match self.mode {
+            "--approve" => "APPROVE",
+            "--request-changes" => "REQUEST_CHANGES",
+            _ => "COMMENT",
+        };
+        let path = format!("repos/{}/pulls/{}/reviews", self.repo, self.number);
+        let commit = approved_commit(&self.body).map(|sha| format!(" -f {}", q(&format!("commit_id={sha}")))).unwrap_or_default();
+        let line = format!("GH_HOST='github.com' gh api -X POST {}{commit} -f {} -f {}", q(&path), q(&format!("event={event}")), q(&format!("body={}", self.body)));
         super::pin_env(&line)
     }
 }
@@ -98,7 +127,7 @@ mod tests {
 
     #[test]
     fn exactly_the_three_verdict_shapes_pass() {
-        let approve = ReviewPost::parse("gh pr review 7 --repo csheargm/hagency-demo-sandbox --approve -b \"Hagency verdict: APPROVE abc - ok\"").unwrap();
+        let approve = ReviewPost::parse("gh pr review 7 --repo csheargm/hagency-demo-sandbox --approve -b \"Hagency verdict: APPROVE 0aed2bbbefa935ed6b91ed2a657b60776c57e107 - ok\"").unwrap();
         assert_eq!((approve.number, approve.mode, approve.repo.as_str()), (7, "--approve", REPO));
         let comment = ReviewPost::parse("gh pr review 7 -c -R csheargm/hagency-demo-sandbox --body='Hagency verdict: COMMENT\nline two'").unwrap();
         assert_eq!(comment.body, "Hagency verdict: COMMENT\nline two", "a multi-line quoted body is kept whole");
@@ -150,12 +179,34 @@ mod tests {
         let command = post.command();
         assert!(command.starts_with("GIT_CONFIG_COUNT="), "{command}");
         assert!(
-            command.ends_with("GH_HOST='github.com' gh pr review 7 --comment -R 'csheargm/hagency-demo-sandbox' -b 'Hagency verdict: it'\\''s fine; rm -rf / | sh'"),
+            command.ends_with("GH_HOST='github.com' gh api -X POST 'repos/csheargm/hagency-demo-sandbox/pulls/7/reviews' -f 'event=COMMENT' -f 'body=Hagency verdict: it'\\''s fine; rm -rf / | sh'"),
             "{command}"
         );
         // A real shell reads the body back as one literal word.
         let echoed = std::process::Command::new("sh").arg("-c").arg(format!("printf %s {}", super::super::quote(&post.body))).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&echoed.stdout), post.body);
+    }
+
+    /// Round-2 GPT review P2-3: an approval naming its commit is pinned to it.
+    #[test]
+    fn a_verdict_naming_its_commit_is_pinned_to_it() {
+        let sha = "0aed2bbbefa935ed6b91ed2a657b60776c57e107";
+        let approve = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -a -b 'Hagency verdict: APPROVE {sha} - ok'")).unwrap();
+        assert!(approve.command().contains(&format!("gh api -X POST 'repos/{REPO}/pulls/7/reviews' -f 'commit_id={sha}' -f 'event=APPROVE' -f ")), "{}", approve.command());
+        let own = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -c -b 'Hagency verdict: APPROVE {sha}'")).unwrap();
+        assert!(own.command().contains(&format!("-f 'commit_id={sha}' -f 'event=COMMENT'")), "the own-login approval comment too");
+        for body in ["Hagency verdict: CHANGES abc - ok", "Hagency verdict: CHANGES 0aed2bbbefa935ed6b91ed2a657b60776c57e107"] {
+            let post = ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -r -b '{body}'")).unwrap();
+            assert!(!post.command().contains("commit_id"), "{body}");
+        }
+        assert!(ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -r -b 'x'")).is_none());
+        // An approval names one commit, right after the marker: the one it is pinned to.
+        let old = "1".repeat(40);
+        for body in [format!("Hagency verdict: APPROVE {old} - also saw {sha}"), format!("Hagency verdict: APPROVE - ok {sha}"), "Hagency verdict: APPROVE abc".to_owned()] {
+            assert_eq!(ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -a -b '{body}'")), None, "{body}");
+            assert_eq!(ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -c -b '{body}'")), None, "{body}");
+        }
+        assert!(ReviewPost::parse(&format!("gh pr review 7 -R {REPO} -c -b 'Hagency verdict: COMMENT - saw {old}'")).is_some(), "a comment names any commit");
     }
 
     #[test]
