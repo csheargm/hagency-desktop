@@ -56,14 +56,18 @@ fn still_assist(readiness: &Value, head: &str) -> bool {
     readiness["head"].as_str() == Some(head) && (only_level || super::super::approval_note::only_assist_left(readiness))
 }
 
-/// Record `peer`'s review of `target` as answered in `room` only once
-/// `readiness` for its head lists a review recorded by that very reviewer
+/// Record as answered in `room` the review request of every reviewer that
+/// `readiness` for `target`'s head lists as having recorded a review
 /// (`recordedBy`): another Agent's approval, the room's level or a switched
-/// reviewer never answers it (GPT batch review, Nov 19).
-pub(crate) fn note_review(room: &str, target: &Target, peer: Option<&Pick>, readiness: &Value) {
-    let by = |peer: &&Pick| readiness["recordedBy"].as_array().is_some_and(|by| by.iter().any(|r| r.as_str() == Some(peer.reviewer.as_str())));
-    if let Some(peer) = peer.filter(|_| readiness["head"].as_str() == Some(&target.head)).filter(by) {
-        super::super::loop_notice::note_answered(room, target, peer.reviewer.as_str());
+/// reviewer never answers someone else's request (GPT batch review, Nov 19);
+/// a reviewer the loop rotated away from whose late review is recorded is
+/// answered too, not left "waiting" (polish round 3, Nov 19).
+pub(crate) fn note_review(room: &str, target: &Target, readiness: &Value) {
+    if readiness["head"].as_str() != Some(&target.head) {
+        return;
+    }
+    for reviewer in readiness["recordedBy"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        super::super::loop_notice::note_answered(room, target, reviewer);
     }
 }
 
@@ -84,7 +88,7 @@ pub(crate) async fn settled(io: &impl LoopIo, target: &Target) -> Result<Option<
 pub(crate) async fn advance(io: &impl LoopIo, target: &Target, peer: Option<&Pick>, facts: &impl PeerFacts) -> Result<bool, String> {
     let Some(peer) = peer else { return Ok(false) };
     if let Some(readiness) = settled(io, target).await? {
-        note_review(&io.room(), target, Some(peer), &readiness);
+        note_review(&io.room(), target, &readiness);
         return Ok(true);
     }
     if peer.own {

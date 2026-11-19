@@ -200,18 +200,20 @@ fn only_the_asked_reviewers_recorded_review_answers_its_request() {
         r["recordedBy"] = json!(who.iter().map(|p| p.reviewer.as_str()).collect::<Vec<_>>());
         r
     };
-    super::note_review(ROOM, &pr, Some(&codex), &by(HEAD, &[]));
+    super::note_review(ROOM, &pr, &by(HEAD, &[]));
     assert!(!answered(ROOM, &request(&pr, &codex)), "asked, nothing recorded: still waiting");
-    super::note_review(ROOM, &pr, Some(&codex), &by(HEAD, &[&claude]));
+    super::note_review(ROOM, &pr, &by(HEAD, &[&claude]));
     assert!(!answered(ROOM, &request(&pr, &codex)), "another Agent approved the head: bird-codex still waits");
     let level_only = json!({"decision": "human", "head": HEAD, "reason": ASSIST_REASON, "kind": "autonomy", "recorded": 1, "recordedBy": [claude.reviewer.as_str()]});
-    super::note_review(ROOM, &pr, Some(&codex), &level_only);
+    super::note_review(ROOM, &pr, &level_only);
     assert!(!answered(ROOM, &request(&pr, &codex)), "only the level holds, approved by another: still waiting");
-    super::note_review(ROOM, &Target { head: MOVED.into(), ..pr.clone() }, Some(&codex), &by(HEAD, &[&codex]));
+    super::note_review(ROOM, &Target { head: MOVED.into(), ..pr.clone() }, &by(HEAD, &[&codex]));
     assert!(!answered(ROOM, &request(&Target { head: MOVED.into(), ..pr.clone() }, &codex)), "a record of another head answers nothing");
-    super::note_review(ROOM, &pr, Some(&codex), &by(HEAD, &[&codex]));
+    super::note_review(ROOM, &pr, &by(HEAD, &[&codex]));
     assert!(answered(ROOM, &request(&pr, &codex)), "bird-codex's own review recorded: answered");
-    assert!(!answered(ROOM, &request(&pr, &claude)), "a switched reviewer still waits");
+    assert!(answered(ROOM, &request(&pr, &claude)), "bird-claude's own recorded review answers its own request");
+    let gemini = Pick { reviewer: owned_user_id!("@_hagency_bird_bird-gemini:localhost:8452"), notice: None, own: true };
+    assert!(!answered(ROOM, &request(&pr, &gemini)), "a switched reviewer with no recorded review still waits");
     assert!(!answered("!other:localhost:8450", &request(&pr, &codex)), "another room's same request is its own");
 }
 
@@ -232,4 +234,23 @@ fn a_settled_head_answers_only_the_reviewer_whose_review_is_recorded() {
     fake.readiness.borrow_mut()["recordedBy"] = json!([codex.reviewer.as_str()]);
     assert!(block(advance(&fake, &pr, Some(&codex), &Facts::default())).unwrap());
     assert!(answered(ROOM, &request), "its own review recorded: answered");
+}
+
+/// Polish round 3 (Nov 19): the loop rotated from bird-codex to bird-claude,
+/// then bird-codex's late review is recorded. Its original request is
+/// answered; bird-claude's request still waits.
+#[test]
+fn a_rotated_away_reviewers_late_review_answers_its_own_request() {
+    use super::super::super::loop_notice::answered;
+    const ROOM: &str = "!rotated:localhost:8450";
+    let codex = Pick { reviewer: owned_user_id!("@_hagency_bird_bird-codex:localhost:8452"), notice: None, own: true };
+    let claude = Pick { reviewer: owned_user_id!("@_hagency_bird_bird-claude:localhost:8452"), notice: None, own: true };
+    let pr = Target { number: 123, url: "https://github.com/csheargm/hagency-demo-sandbox/pull/123".into(), ..target(HEAD) };
+    let request = |peer: &Pick| LoopNotice::ReviewRequested { target: pr.clone(), reviewer: peer.reviewer.clone() }.body();
+    let mut late = at_assist(HEAD, "assist");
+    late["recorded"] = json!(1);
+    late["recordedBy"] = json!([codex.reviewer.as_str()]);
+    super::note_review(ROOM, &pr, &late);
+    assert!(answered(ROOM, &request(&codex)), "bird-codex's late review recorded: its line is gone");
+    assert!(!answered(ROOM, &request(&claude)), "bird-claude, the current pick, still waits");
 }
