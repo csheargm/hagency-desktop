@@ -8,6 +8,7 @@
 //! shown to every member and editable by room admins (`merge_rules`).
 pub mod autonomy;
 pub mod autonomy_setup;
+mod autonomy_store;
 mod autonomy_watch;
 pub mod merge_rules;
 pub mod merge_rules_model;

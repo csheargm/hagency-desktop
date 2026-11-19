@@ -141,6 +141,11 @@ const WRITE_ATTEMPTS: usize = 2;
 /// landing between the read and the write can still undo this one: the levels
 /// are read again after the write, and when `change` would still alter them
 /// it is made once more on the newer levels; after that the race is reported.
+/// Not closed (GPT review, not adoptable client-side): another client whose
+/// stale snapshot lands *after* this change was verified undoes it unseen, and
+/// that client checks only its own entries. Only a conditional state write or
+/// a single authoritative writer would close it; a removed maintainer should
+/// be checked on the Members tab after concurrent admin edits.
 pub async fn change_levels(room: &Room, mut change: impl FnMut(Value) -> anyhow::Result<Option<Value>>) -> anyhow::Result<()> {
     let _one = CHANGING.lock().await;
     for _ in 0..WRITE_ATTEMPTS {

@@ -18,6 +18,10 @@ pub struct Done {
     pub agents: usize,
     /// The level the room has now (`None`: Off and this account may not change it).
     pub level: Option<Level>,
+    /// Some of this account's Agents' "may work" could not be saved or read (named in `failed`).
+    pub agents_failed: bool,
+    /// The level could not be read or set (named in `failed`).
+    pub level_failed: bool,
     pub rules: Rules,
     /// Agents of this account in the room that run on another device, so are ticked there.
     pub not_here: usize,
@@ -41,7 +45,7 @@ pub fn done_line(done: &Done) -> String {
     use crate::i18n::{format, tr};
     let mut parts = vec![format("Linked {repo}", &[("repo", done.repo.clone())])];
     match done.agents {
-        0 if done.not_here > 0 || !done.failed.is_empty() => {}
+        0 if done.not_here > 0 || done.agents_failed => {}
         0 => parts.push(tr("none of your agents is in this room yet").to_owned()),
         1 => parts.push(tr("1 of your agents may work here").to_owned()),
         n => parts.push(format("{count} of your agents may work here", &[("count", n.to_string())])),
@@ -50,10 +54,11 @@ pub fn done_line(done: &Done) -> String {
         parts.push(format("{count} run on another device: tick \"May work\" there", &[("count", done.not_here.to_string())]));
     }
     parts.extend(done.failed.iter().cloned());
-    parts.push(match done.level {
-        Some(level) => format("agent work is {level}", &[("level", tr(crate::hagency::room_autonomy::lines::level_name(level)).to_owned())]),
-        None => tr("the room's owner or a maintainer still needs to choose Assist").to_owned(),
-    });
+    match done.level {
+        _ if done.level_failed => {}
+        Some(level) => parts.push(format("agent work is {level}", &[("level", tr(crate::hagency::room_autonomy::lines::level_name(level)).to_owned())])),
+        None => parts.push(tr("the room's owner or a maintainer still needs to choose Assist").to_owned()),
+    }
     match done.rules {
         Rules::Suggested => parts.push(tr("suggested merge rules set").to_owned()),
         Rules::LeftForOwner => parts.push(tr("the room's owner can set merge rules below").to_owned()),
@@ -126,20 +131,32 @@ async fn rules_after(room: &Room) -> Result<Rules, String> {
     }
 }
 
-/// The whole action for `repo` in `room`; stops at the first part that fails.
+/// The whole action for `repo` in `room`. Only a failed link is an error
+/// (nothing was done); after it, each part that fails is named in the line
+/// and the rest still runs, so no failure hides another (GPT review).
 pub async fn run(room: &Room, repo: &str) -> Result<Done, String> {
     let client = room.client();
     // Linking also adds the room's missing Hagency power-level entries this account may add.
     crate::home::room_watches::status::set_link(&client, room.room_id(), repo, true).await?;
     let repo = repo.trim().trim_start_matches("https://github.com/").trim_end_matches('/').trim_end_matches(".git").to_owned();
-    let Agents { saved, elsewhere, mut failed } = let_agents_work(room).await?;
+    let Agents { saved, elsewhere, mut failed } = let_agents_work(room).await.unwrap_or_else(|error| Agents { failed: vec![error], ..Agents::default() });
     if !saved.is_empty() {
         // The Agent settings' "May work" ticks read again (GPT review).
         makepad_widgets::Cx::post_action(crate::hagency::issue_watch::may_work_section::MayWorkChanged { agent_ids: saved.clone() });
     }
-    let level = level_after(room, &mut failed).await?;
-    let rules = rules_after(room).await?;
-    Ok(Done { repo, agents: saved.len(), level, rules, not_here: elsewhere, failed })
+    let agents_failed = !failed.is_empty();
+    let (level, level_failed) = match level_after(room, &mut failed).await {
+        Ok(level) => (level, false),
+        Err(error) => {
+            failed.push(error);
+            (None, true)
+        }
+    };
+    let rules = rules_after(room).await.unwrap_or_else(|error| {
+        failed.push(error);
+        Rules::Kept
+    });
+    Ok(Done { repo, agents: saved.len(), agents_failed, level, level_failed, rules, not_here: elsewhere, failed })
 }
 
 #[cfg(test)]
@@ -148,9 +165,9 @@ mod tests {
 
     #[test]
     fn the_confirmation_line_says_every_part() {
-        let done = Done { repo: "acme/app".into(), agents: 2, level: Some(Level::Assist), rules: Rules::Suggested, not_here: 0, failed: Vec::new() };
+        let done = Done { repo: "acme/app".into(), agents: 2, level: Some(Level::Assist), rules: Rules::Suggested, not_here: 0, ..Done::default() };
         assert_eq!(done_line(&done), "Linked acme/app · 2 of your agents may work here · agent work is Assist · suggested merge rules set.");
-        let partial = Done { repo: "acme/app".into(), agents: 0, level: None, rules: Rules::LeftForOwner, not_here: 1, failed: Vec::new() };
+        let partial = Done { repo: "acme/app".into(), agents: 0, level: None, rules: Rules::LeftForOwner, not_here: 1, ..Done::default() };
         let line = done_line(&partial);
         assert!(line.contains("1 run on another device") && line.contains("still needs to choose Assist") && line.contains("owner can set merge rules"), "{line}");
         assert!(!line.contains("none of your agents is in this room"), "an Agent on another device is in the room: {line}");
@@ -161,9 +178,14 @@ mod tests {
     #[test]
     fn a_failed_local_save_is_named_as_a_failure() {
         let failed = vec!["\"May work\" could not be saved for bird: storage_unavailable".to_owned()];
-        let done = Done { repo: "acme/app".into(), agents: 0, level: Some(Level::Assist), rules: Rules::Kept, not_here: 0, failed };
+        let done = Done { repo: "acme/app".into(), agents: 0, level: Some(Level::Assist), rules: Rules::Kept, failed, agents_failed: true, ..Done::default() };
         assert_eq!(done_line(&done), "Linked acme/app · \"May work\" could not be saved for bird: storage_unavailable · agent work is Assist.");
         let none = Done { repo: "acme/app".into(), level: Some(Level::Assist), ..Done::default() };
         assert_eq!(done_line(&none), "Linked acme/app · none of your agents is in this room yet · agent work is Assist.");
+        let both = vec!["\"May work\" could not be saved for bird: storage_unavailable".to_owned(), "Could not save the merge rules: M_FORBIDDEN".to_owned()];
+        let later = Done { repo: "acme/app".into(), failed: both, agents_failed: true, level_failed: true, ..Done::default() };
+        let rules_only = Done { repo: "acme/app".into(), failed: vec!["Could not save the merge rules: M_FORBIDDEN".to_owned()], level: Some(Level::Assist), ..Done::default() };
+        assert!(done_line(&rules_only).contains("none of your agents is in this room yet"), "a rules failure says nothing about the Agents");
+        assert_eq!(done_line(&later), "Linked acme/app · \"May work\" could not be saved for bird: storage_unavailable · Could not save the merge rules: M_FORBIDDEN.", "a later failure keeps the earlier one and says no level it does not know");
     }
 }

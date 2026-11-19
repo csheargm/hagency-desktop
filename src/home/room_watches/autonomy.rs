@@ -8,8 +8,9 @@ use crate::hagency::room_autonomy::{lines, server, state::RoomState};
 use ::hagency::issue_watch::safeguards::room_autonomy::Level;
 use makepad_widgets::*;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+pub use super::autonomy_store::{AutonomyChanged, badge_of, current, observe, observed, refresh};
+use super::account;
+use super::autonomy_store::{note, read_into, set_note};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -164,64 +165,6 @@ impl RoomAutonomyRef {
     }
 }
 
-/// Posted when a room's agent work was read or changed.
-#[derive(Clone, Debug)]
-pub struct AutonomyChanged {
-    pub room_id: OwnedRoomId,
-}
-
-type Key = (String, OwnedRoomId);
-static SHOWN: LazyLock<Mutex<HashMap<Key, Shown>>> = LazyLock::new(Default::default);
-static NOTES: LazyLock<Mutex<HashMap<Key, String>>> = LazyLock::new(Default::default);
-
-use super::account;
-fn set(account: String, room: &RoomId, shown: Shown) {
-    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).insert((account, room.to_owned()), shown);
-    Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
-}
-/// What the section (and the room header's badge) shows for `room`.
-pub fn current(room: &RoomId) -> Shown {
-    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned().unwrap_or(Shown::Loading)
-}
-/// The room header's badge for `room`, once its agent work was read.
-pub fn badge_of(room: &RoomId) -> Option<&'static str> {
-    match current(room) {
-        Shown::Ready(state) => lines::badge(&state),
-        Shown::Loading | Shown::Failed(_) => None,
-    }
-}
-fn note(room: &RoomId) -> Option<String> {
-    NOTES.lock().unwrap_or_else(|p| p.into_inner()).get(&(account(), room.to_owned())).cloned()
-}
-fn set_note(account: String, room: &RoomId, text: String) {
-    NOTES.lock().unwrap_or_else(|p| p.into_inner()).insert((account, room.to_owned()), text);
-    Cx::post_action(AutonomyChanged { room_id: room.to_owned() });
-}
-
-/// Whether `room`'s agent work was read on this desktop (shown in its header or Status tab).
-pub(super) fn was_read(room: &RoomId) -> bool {
-    SHOWN.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&(account(), room.to_owned()))
-}
-
-/// Read `room`'s agent work from the homeserver; from then on also on each
-/// change another member makes ([`super::autonomy_watch`]).
-pub fn refresh(room: &RoomId) {
-    let account = account();
-    let client = crate::sliding_sync::get_client();
-    if let Some(client) = &client {
-        super::autonomy_watch::attach(client);
-    }
-    let Some(joined) = client.and_then(|c| c.get_room(room)) else {
-        return set(account, room, Shown::Failed(crate::i18n::tr("Room not found").to_owned()));
-    };
-    crate::sliding_sync::spawn_async_task(async move { read_into(account, &joined).await });
-}
-
-async fn read_into(account: String, joined: &matrix_sdk::Room) {
-    let shown = server::read(joined).await.map_or_else(Shown::Failed, Shown::Ready);
-    set(account, joined.room_id(), shown);
-}
-
 enum Act {
     Level(Level),
     Pause,
@@ -239,7 +182,7 @@ fn act(room: &RoomId, act: Act) {
         let outcome = match act {
             Act::Level(level) => server::set_level(&joined, level).await.map(Option::unwrap_or_default),
             // This desktop stops its own loop runs now; other owners' desktops on their next check.
-            Act::Pause => pause_then_stop(server::pause(&joined), crate::hagency::room_autonomy::stop::stop_loop_runs(&joined)).await,
+            Act::Pause => server::pause(&joined, crate::hagency::room_autonomy::stop::stop_loop_runs(&joined)).await.map(|(stopped, announced)| pause_note(stopped, announced)),
             Act::Resume => server::resume(&joined).await.map(Option::unwrap_or_default),
             Act::Setup(repo) => super::autonomy_setup::run(&joined, &repo).await.map(|done| super::autonomy_setup::done_line(&done)),
         };
@@ -249,15 +192,10 @@ fn act(room: &RoomId, act: Act) {
     });
 }
 
-/// Pause, then stop this desktop's loop runs once the pause is saved, even
-/// when its room line was refused (GPT review); the note names both.
-async fn pause_then_stop(
-    pause: impl std::future::Future<Output = Result<server::Announced, String>>,
-    stop: impl std::future::Future<Output = usize>,
-) -> Result<String, String> {
-    let announced = pause.await?;
-    let notes = [stopped_line(stop.await), announced.unwrap_or_default()];
-    Ok(notes.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" "))
+/// After a saved Pause: the runs stopped, and the room line's failure if any.
+fn pause_note(stopped: usize, announced: server::Announced) -> String {
+    let notes = [stopped_line(stopped), announced.unwrap_or_default()];
+    notes.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// After Pause: how many of this desktop's loop runs were stopped.
@@ -273,18 +211,11 @@ fn stopped_line(stopped: usize) -> String {
 mod tests {
     use super::*;
 
-    fn run<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
-    }
-
-    /// GPT review (P2): a saved pause stops the runs even when its room line was refused.
+    /// GPT review (P2): a saved pause reports the stopped runs and a refused room line both.
     #[test]
-    fn a_saved_pause_stops_runs_even_when_the_room_line_fails() {
-        let note = run(pause_then_stop(async { Ok(Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned())) }, async { 2 }));
-        assert_eq!(note, Ok("Stopped 2 runs of your agents' work here. The change is saved, but the room was not told: M_FORBIDDEN".to_owned()));
-        let stopped = std::cell::Cell::new(false);
-        let refused = run(pause_then_stop(async { Err("Could not pause the room: no".to_owned()) }, async { stopped.set(true); 1 }));
-        assert_eq!(refused, Err("Could not pause the room: no".to_owned()));
-        assert!(!stopped.get(), "an unsaved pause stops nothing");
+    fn a_saved_pause_names_the_stopped_runs_and_a_refused_line() {
+        let note = pause_note(2, Some("The change is saved, but the room was not told: M_FORBIDDEN".to_owned()));
+        assert_eq!(note, "Stopped 2 runs of your agents' work here. The change is saved, but the room was not told: M_FORBIDDEN");
+        assert_eq!(pause_note(0, None), "");
     }
 }

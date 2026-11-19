@@ -2,11 +2,14 @@
 //! review): the Status tab's controls and the room header's badge were read
 //! only when the room opened or this desktop acted, so they stayed stale when
 //! someone else paused, resumed or changed the level. Sliding sync carries
-//! those custom state events in the timeline, so each one (and a power-level
-//! change, which moves who may change what) reads the room's agent work again
-//! from the homeserver; the event itself is only a hint, never the state.
+//! those custom state events in the timeline (and power levels, which move
+//! who may change what, in required state too), so each one reads the room's
+//! agent work again from the homeserver; the event itself is only a hint,
+//! never the state. A limited timeline can skip a custom event (they are not
+//! in the subscription's required state); the loop's own check of the room
+//! then shows its fresh read ([`server::read`](crate::hagency::room_autonomy::server::read)).
 use ::hagency::issue_watch::safeguards::room_autonomy::{ROOM_AUTONOMY_STATE_TYPE, ROOM_PAUSE_STATE_TYPE};
-use matrix_sdk::{Client, room::Room, ruma::{events::AnySyncTimelineEvent, serde::Raw}};
+use matrix_sdk::{Client, room::Room, ruma::{events::{AnySyncStateEvent, AnySyncTimelineEvent}, serde::Raw}};
 use std::sync::Mutex;
 
 /// The state types whose change makes a room's agent work stale.
@@ -29,13 +32,18 @@ pub fn attach(client: &Client) {
         return;
     }
     *watched = account;
-    client.add_event_handler(|event: Raw<AnySyncTimelineEvent>, room: Room| async move {
-        // An event without a readable type is no agent work change: nothing to do.
-        let Ok(Some(kind)) = event.get_field::<String>("type") else { return };
-        if makes_stale(&kind) && super::autonomy::was_read(room.room_id()) {
-            super::autonomy::refresh(room.room_id());
-        }
-    });
+    client.add_event_handler(|event: Raw<AnySyncTimelineEvent>, room: Room| async move { reread_on(event.get_field::<String>("type"), &room) });
+    // Power levels also come in a room's required state, without a timeline event (GPT review).
+    client.add_event_handler(|event: Raw<AnySyncStateEvent>, room: Room| async move { reread_on(event.get_field::<String>("type"), &room) });
+}
+
+/// Reads `room`'s agent work again when an event of type `kind` changed it.
+fn reread_on(kind: serde_json::Result<Option<String>>, room: &Room) {
+    // An event without a readable type is no agent work change: nothing to do.
+    let Ok(Some(kind)) = kind else { return };
+    if makes_stale(&kind) && super::autonomy_store::was_read(room.room_id()) {
+        super::autonomy_store::refresh(room.room_id());
+    }
 }
 
 #[cfg(test)]
