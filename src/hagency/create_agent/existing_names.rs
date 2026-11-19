@@ -37,11 +37,12 @@ impl CreateAgentDialog {
     }
 
     /// Until the owner types a name, the field takes the first free name for
-    /// the harness shown.
+    /// the harness shown. Once Create is pressed the name is left alone: the
+    /// spec is rebuilt after the repository check and must keep what was clicked.
     pub(super) fn handle_name_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
             let Some(loaded) = action.downcast_ref::<NamesLoaded>() else { continue };
-            if loaded.request != self.request { continue; }
+            if loaded.request != self.request || self.busy { continue; }
             self.taken = loaded.names.clone();
             if self.name_edited { continue; }
             let runtime = self.state.runtime().unwrap_or_else(|| super::super::HARNESSES[0].clone());
@@ -98,5 +99,16 @@ mod tests {
         dialog.name_typed(&mut cx, "anna-codex".into());
         deliver(&mut dialog, &mut cx, &["anna-codex"]);
         assert_eq!(dialog.state.name, "anna-codex");
+    }
+
+    #[test]
+    fn a_late_lookup_after_create_does_not_change_the_submitted_name() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.state.name = "anna-codex".into();
+        dialog.busy = true; // Create pressed: `create` sets it before the repository check.
+        deliver(&mut dialog, &mut cx, &["anna-codex"]);
+        let spec = dialog.state.spec(crate::hagency::quick_setup::default_spec).expect("ready");
+        assert_eq!(spec.name, "anna-codex");
     }
 }
