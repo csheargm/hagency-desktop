@@ -4944,6 +4944,7 @@ async fn add_new_room(
     // which are now dead, so we inform it that there are new endpoints it needs to take & use.
     Cx::post_action(TimelineEndpointsRecreated { room_id: new_room.room_id.clone() });
 
+    crate::hagency::loaded_run_cards::admit_latest(&new_room.room);
     let latest = get_latest_event_details(
         &new_room.room.latest_event().await,
         room_list_service.client(),
@@ -5753,6 +5754,7 @@ async fn get_latest_event_details(
 /// Recomputes `room`'s rooms-list preview from its latest event.
 // TODO(split): rooms-list preview computation (this, `get_latest_event_details`) belongs in its own module.
 pub(crate) async fn update_latest_event(room: &Room) {
+    crate::hagency::loaded_run_cards::admit_latest(room);
     if let Some(latest) = get_latest_event_details(
         &room.latest_event().await,
         &room.client(),
