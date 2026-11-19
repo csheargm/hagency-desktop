@@ -57,8 +57,12 @@ impl CreateAgentDialog {
 
     /// A harness's model probe answered. When that changes the harness shown
     /// (the listing may have answered first, with the Claude fallback), an
-    /// untyped name follows the shown harness (GPT review, Nov 19).
+    /// untyped name follows the shown harness (GPT review, Nov 19). While
+    /// Create is busy the answer waits: the shown harness stays the clicked one.
     pub(super) fn probe_answered(&mut self, cx: &mut Cx, index: usize, models: Result<Vec<super::super::ModelChoice>, String>) {
+        if self.busy {
+            return self.late_probes.push((index, models));
+        }
         let before = self.state.runtime();
         self.state.probes[index] = Some(models);
         self.refresh_stem(cx);
@@ -187,6 +191,26 @@ mod tests {
         dialog.busy = false;
         dialog.render_create(&mut cx);
         assert!(!dialog.view.text_input(&mut cx, ids!(name)).is_read_only());
+    }
+
+    /// Polish round 3, Nov 19: Create pressed with Codex shown; during the
+    /// repository check Claude's probe answered, shifting index 0 to Claude,
+    /// and `create_now` rebuilt a Claude spec. The clicked spec is submitted.
+    #[test]
+    fn a_probe_while_create_is_busy_never_changes_the_submitted_spec() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut dialog = codex_only_dialog(&mut cx);
+        dialog.state.probes[0] = None;
+        dialog.state.name = "anna-codex".into();
+        dialog.frozen = Some(dialog.state.spec(crate::hagency::quick_setup::default_spec).expect("ready"));
+        dialog.busy = true; // As `create` leaves it before the repository check.
+        dialog.probe_answered(&mut cx, 0, Ok(parse_models(&serde_json::json!({"models": [{"model": "sonnet"}]}))));
+        assert_eq!(dialog.state.runtime(), Some(Runtime::Codex), "the shown harness stays the clicked one");
+        let spec = dialog.submitted_spec().expect("frozen");
+        assert_eq!((spec.name.as_str(), spec.runtime.clone(), spec.model.as_deref()), ("anna-codex", Runtime::Codex, Some("gpt-5")));
+        dialog.settle(&mut cx);
+        assert!(dialog.state.probes[0].is_some(), "the late probe applies once Create is done");
+        assert!(dialog.frozen.is_none() && dialog.late_probes.is_empty());
     }
 
     /// GPT review, Nov 19: "anna-claude" showed until the listing said it was taken.
